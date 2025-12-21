@@ -108,6 +108,11 @@ pub const Interpreter = struct {
     /// Cached function specializations keyed by binding states.
     specializations: std.AutoHashMap(u128, FunctionSpecializationEntry),
 
+    /// Optional callback to retrieve the symbol table for a given file ID (used for imports).
+    get_module_symtab: ?*const fn (ctx: *anyopaque, file_id: u32) ?*@import("symbols.zig").SymbolStore = null,
+    /// Context pointer passed to `get_module_symtab`.
+    checker_context: *anyopaque = undefined,
+
     /// Errors that the interpreter can emit when the AST is malformed or runtime errors occur.
     pub const Error = error{
         UnsupportedExpr,
@@ -125,12 +130,21 @@ pub const Interpreter = struct {
     };
 
     /// Initialize an interpreter for `ast_unit` with optional `symtab`/`compilation_unit`.
-    pub fn init(allocator: std.mem.Allocator, ast_unit: *ast.Ast, symtab: ?*@import("symbols.zig").SymbolStore, compilation_unit: ?*@import("package.zig").CompilationUnit) anyerror!Interpreter {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        ast_unit: *ast.Ast,
+        symtab: ?*@import("symbols.zig").SymbolStore,
+        compilation_unit: ?*@import("package.zig").CompilationUnit,
+        get_module_symtab: ?*const fn (ctx: *anyopaque, file_id: u32) ?*@import("symbols.zig").SymbolStore,
+        checker_context: *anyopaque,
+    ) anyerror!Interpreter {
         var interp = Interpreter{
             .allocator = allocator,
             .ast = ast_unit,
             .symtab = symtab,
             .compilation_unit = compilation_unit,
+            .get_module_symtab = get_module_symtab,
+            .checker_context = checker_context,
             .bindings = std.ArrayList(Binding).empty,
             .method_table = .init(allocator),
             .specializations = .init(allocator),
@@ -207,9 +221,54 @@ pub const Interpreter = struct {
             .ErrUnwrap => self.evalErrUnwrap(self.ast.exprs.get(.ErrUnwrap, expr)),
             .Defer => self.evalDefer(self.ast.exprs.get(.Defer, expr)),
             .TypeOf => self.evalTypeOf(self.ast.exprs.get(.TypeOf, expr)),
-            .MlirBlock => Value{ .Void = {} },
+            .MlirBlock => self.evalMlirBlock(expr),
             .Await => Value{ .Void = {} },
             else => std.debug.panic("Unsupported expr: {}", .{self.ast.kind(expr)}),
+        };
+    }
+
+    /// Evaluate an MLIR block by interpolating splices into the string.
+    fn evalMlirBlock(self: *Interpreter, expr: ast.ExprId) anyerror!Value {
+        const block = self.ast.exprs.get(.MlirBlock, expr);
+        const pieces = self.ast.exprs.mlir_piece_pool.slice(block.pieces);
+
+        var buf = std.ArrayList(u8){};
+        defer buf.deinit(self.allocator);
+        const writer = buf.writer(self.allocator);
+
+        for (pieces) |pid| {
+            const piece = self.ast.exprs.MlirPiece.get(pid);
+            switch (piece.kind) {
+                .literal => {
+                    const text = self.ast.exprs.strs.get(piece.text);
+                    try buf.appendSlice(self.allocator, text);
+                },
+                .splice => {
+                    // Splice: lookup binding and format it
+                    if (try self.lookup(piece.text)) |val| {
+                        var temp_val = val;
+                        defer temp_val.destroy(self.allocator);
+
+                        switch (temp_val) {
+                            .Type => |ty| try self.ast.type_info.store.fmt(ty, writer),
+                            .Int => |i| try writer.print("{}", .{i}),
+                            .Float => |f| try writer.print("{}", .{f}),
+                            .Bool => |b| try writer.print("{}", .{b}),
+                            .String => |s| try writer.print("{s}", .{s}),
+                            else => return Error.InvalidType, // Unsupported splice value
+                        }
+                    } else return Error.BindingNotFound;
+                },
+            }
+        }
+
+        const final_str = self.ast.type_info.store.strs.intern(buf.items);
+
+        return switch (block.kind) {
+            .Type => Value{ .Type = self.ast.type_info.store.mkMlirType(final_str) },
+            .Attribute => Value{ .Type = self.ast.type_info.store.mkMlirAttribute(final_str) },
+            .Module => Value{ .Type = self.ast.type_info.store.tMlirModule() },
+            else => Value{ .Void = {} },
         };
     }
 
@@ -227,7 +286,6 @@ pub const Interpreter = struct {
     }
 
     /// Evaluate a block of statements, returning the last value or void.
-    /// Evaluate `block`, returning the last expression value or `Void`.
     fn evalBlock(self: *Interpreter, block: ast.Rows.Block) anyerror!Value {
         var last_value: ?Value = null;
         const stmts = self.ast.stmts.stmt_pool.slice(block.items);
@@ -400,25 +458,73 @@ pub const Interpreter = struct {
         const elem_ty = try self.typeIdFromTypeExpr(row.elem);
         const shape_exprs = self.ast.exprs.expr_pool.slice(row.shape);
         const ts = self.ast.type_info.store;
-        var dims = try ts.gpa.alloc(usize, shape_exprs.len);
-        defer ts.gpa.free(dims);
+
+        var dims = try std.ArrayList(usize).initCapacity(self.allocator, shape_exprs.len);
+        defer dims.deinit(self.allocator);
+
         var idx: usize = 0;
         while (idx < shape_exprs.len) : (idx += 1) {
-            var dim_value = try self.evalExpr(shape_exprs[idx]);
-            const dim = switch (dim_value) {
-                .Int => |val| std.math.cast(usize, val) orelse {
-                    dim_value.destroy(self.allocator);
-                    return Error.InvalidType;
-                },
-                else => {
-                    dim_value.destroy(self.allocator);
-                    return Error.InvalidType;
-                },
-            };
-            dim_value.destroy(self.allocator);
-            dims[idx] = dim;
+            const dim_expr_id = shape_exprs[idx];
+
+            // Check for spread syntax `..expr` (Range with no start)
+            var is_spread = false;
+            var expr_to_eval = dim_expr_id;
+
+            if (self.ast.kind(dim_expr_id) == .Range) {
+                const rng = self.ast.exprs.get(.Range, dim_expr_id);
+                if (rng.start.isNone() and !rng.end.isNone()) {
+                    is_spread = true;
+                    expr_to_eval = rng.end.unwrap();
+                }
+            }
+
+            var dim_value = try self.evalExpr(expr_to_eval);
+            defer dim_value.destroy(self.allocator);
+
+            if (is_spread) {
+                switch (dim_value) {
+                    .Sequence => |seq| {
+                        for (seq.values.items) |item| {
+                            switch (item) {
+                                .Int => |val| {
+                                    const dim = std.math.cast(usize, val) orelse return Error.InvalidType;
+                                    try dims.append(self.allocator, dim);
+                                },
+                                else => return Error.InvalidType,
+                            }
+                        }
+                    },
+                    else => return Error.InvalidType, // Spread expects a sequence
+                }
+            } else {
+                switch (dim_value) {
+                    .Int => |val| {
+                        const dim = std.math.cast(usize, val) orelse return Error.InvalidType;
+                        try dims.append(self.allocator, dim);
+                    },
+                    .Sequence => |seq| {
+                        // Also support flattening if passed directly without spread?
+                        // For now, assume explicit spread is required or single Sequence expands?
+                        // Existing logic supported flattening Sequence, let's keep it.
+                        for (seq.values.items) |item| {
+                            switch (item) {
+                                .Int => |val| {
+                                    const dim = std.math.cast(usize, val) orelse return Error.InvalidType;
+                                    try dims.append(self.allocator, dim);
+                                },
+                                else => return Error.InvalidType,
+                            }
+                        }
+                    },
+                    else => return Error.InvalidType,
+                }
+            }
         }
-        return Value{ .Type = ts.mkTensor(elem_ty, dims) };
+
+        const dims_slice = try ts.gpa.alloc(usize, dims.items.len);
+        defer ts.gpa.free(dims_slice);
+        @memcpy(dims_slice, dims.items);
+        return Value{ .Type = ts.mkTensor(elem_ty, dims_slice) };
     }
 
     /// Evaluate a fixed-size array type expression.
@@ -839,6 +945,19 @@ pub const Interpreter = struct {
         return self.evalFieldAccessWithParent(row, &parent, true);
     }
 
+    fn findDeclInUnit(ast_unit: *ast.Ast, name: ast.StrId) ?ast.DeclId {
+        const decls = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
+        for (decls) |did| {
+            const row = ast_unit.exprs.Decl.get(did);
+            if (row.pattern.isNone()) continue;
+            const pat_id = row.pattern.unwrap();
+            if (ast_unit.kind(pat_id) != .Binding) continue;
+            const binding = ast_unit.pats.get(.Binding, pat_id);
+            if (binding.name.eq(name)) return did;
+        }
+        return null;
+    }
+
     /// Evaluate a field access using a pre-evaluated parent value.
     fn evalFieldAccessWithParent(
         self: *Interpreter,
@@ -898,11 +1017,36 @@ pub const Interpreter = struct {
                                     // Re-intern field name into the imported unit's interner
                                     const fname = self.ast.exprs.strs.get(row.field);
                                     const target_sid = a.exprs.strs.intern(fname);
-                                    if (a.type_info.getExport(target_sid)) |ex| {
-                                        // Try to get the comptime value for this export
-                                        const decl = a.exprs.Decl.get(ex.decl_id);
+
+                                    var decl_id: ?ast.DeclId = null;
+                                    if (self.get_module_symtab) |get_symtab| {
+                                        if (get_symtab(self.checker_context, parent_unit.file_id)) |symtab| {
+                                            // Assuming the top-level scope is at index 0 (or bottom of stack)
+                                            if (symtab.stack.items.len > 0) {
+                                                const root_scope = symtab.stack.items[0].id;
+                                                if (symtab.lookup(root_scope, target_sid)) |sid| {
+                                                    const srow = symtab.syms.get(sid);
+                                                    if (!srow.origin_decl.isNone()) {
+                                                        decl_id = srow.origin_decl.unwrap();
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if (decl_id == null) {
+                                        decl_id = findDeclInUnit(a, target_sid);
+                                    }
+
+                                    if (decl_id) |did| {
+                                        const decl = a.exprs.Decl.get(did);
+                                        // Try to get the comptime value for this declaration
                                         if (a.type_info.getComptimeValue(decl.value)) |val_ptr| {
                                             return try self.cloneValue(val_ptr.*);
+                                        }
+                                        // Fallback: if it's a function literal, just return the function value
+                                        if (a.kind(decl.value) == .FunctionLit) {
+                                            return Value{ .Function = .{ .expr = decl.value, .ast = a } };
                                         }
                                     }
                                 }
@@ -1175,7 +1319,7 @@ pub const Interpreter = struct {
     /// Return whether `kind` represents a type-level expression.
     fn isTypeExprKind(kind: ast.ExprKind) bool {
         return switch (kind) {
-            .TupleType, .ArrayType, .DynArrayType, .MapType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType, .Literal => true,
+            .TupleType, .ArrayType, .DynArrayType, .MapType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType, .Literal, .Import, .Call, .FieldAccess, .MlirBlock => true,
             else => false,
         };
     }
@@ -1462,7 +1606,7 @@ pub const Interpreter = struct {
     }
 
     /// Return the binding entry for `name`, if already present.
-    fn findBinding(self: *Interpreter, name: ast.StrId) ?*Binding {
+    pub fn findBinding(self: *Interpreter, name: ast.StrId) ?*Binding {
         for (self.bindings.items) |*binding| if (binding.name.eq(name)) return binding;
         return null;
     }

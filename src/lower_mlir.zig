@@ -137,7 +137,7 @@ pub const LowerMlir = struct {
         self.noteGlobalInit(global_mlir_decls.items.len);
 
         const name = b.intern("__sr_global_mlir_init");
-        var f = try b.beginFunction(name, self.context.type_store.tVoid(), false, .empty());
+        var f = try b.beginFunction(self.context, name, self.context.type_store.tVoid(), false, false, .empty(), false);
         var blk = try b.beginBlock(&f);
         const env_ptr = try hooks.createEnv(hooks.host);
         defer hooks.destroyEnv(hooks.host, env_ptr);
@@ -172,8 +172,8 @@ pub const LowerMlir = struct {
         if (hooks.isAny(hooks.host, ty0)) {
             ty0 = switch (row.kind) {
                 .Module => self.context.type_store.tMlirModule(),
-                .Attribute => self.context.type_store.tMlirAttribute(),
-                .Type => self.context.type_store.tMlirType(),
+                .Attribute => self.context.type_store.mkMlirAttribute(row.text),
+                .Type => self.context.type_store.mkTypeType(self.context.type_store.mkMlirType(row.text)),
                 .Operation => ty0,
             };
         }
@@ -198,7 +198,7 @@ pub const LowerMlir = struct {
                 splice_value = try self.resolveSpliceValue(hooks, a, env_ptr, f, blk, pid, piece.text, row.loc);
             }
             const new_id = blk.builder.t.instrs.addMlirPieceRow(
-                .{ .kind = piece.kind, .text = piece.text, .value = splice_value },
+                .{ .kind = piece.kind, .text = piece.text, .value = splice_value, .ty = null },
             );
             tir_piece_ids.append(self.gpa, new_id) catch @panic("OOM");
         }

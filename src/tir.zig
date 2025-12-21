@@ -217,7 +217,7 @@ pub const Rows = struct {
     /// IndirectCall struct definition used by the compiler.
     pub const IndirectCall = struct { result: ValueId, ty: types.TypeId, callee: ValueId, args: RangeValue, loc: OptLocId };
     /// MlirPiece struct definition used by the compiler.
-    pub const MlirPiece = struct { kind: ast.MlirPieceKind, text: StrId, value: comp.ComptimeValue };
+    pub const MlirPiece = struct { kind: ast.MlirPieceKind, text: StrId, value: comp.ComptimeValue, ty: ?types.TypeId };
     /// MlirBlock struct definition used by the compiler.
     pub const MlirBlock = struct {
         result: OptValueId,
@@ -540,6 +540,7 @@ pub const FuncRows = struct {
         is_variadic: bool,
         is_extern: bool,
         attrs: RangeAttribute,
+        is_triton_fn: bool,
     };
     /// Global struct definition used by the compiler.
     pub const Global = struct { name: StrId, ty: types.TypeId, init: ConstInit };
@@ -584,6 +585,7 @@ pub const TIR = struct {
     instrs: InstrStore,
     terms: TermStore,
     funcs: FuncStore,
+    value_defs: std.ArrayListUnmanaged(InstrId) = .{},
     loc_store: ?*const dod.LocStore = null,
 
     /// init TIR builder helper.
@@ -594,6 +596,7 @@ pub const TIR = struct {
             .instrs = .init(gpa, store.strs),
             .terms = .init(gpa),
             .funcs = .init(gpa),
+            .value_defs = .{},
             .loc_store = null,
         };
     }
@@ -602,6 +605,7 @@ pub const TIR = struct {
         self.instrs.deinit();
         self.terms.deinit();
         self.funcs.deinit();
+        self.value_defs.deinit(self.gpa);
     }
 
     pub fn kind(self: *TIR, id: anytype) if (@TypeOf(id) == TermId) TermKind else OpKind {
@@ -673,6 +677,7 @@ pub const Builder = struct {
         is_variadic: bool,
         is_extern: bool,
         attrs: RangeAttribute,
+        is_triton_fn: bool,
     ) !FunctionFrame {
         const idx = self.t.funcs.Function.add(self.gpa, .{
             .name = name,
@@ -682,6 +687,7 @@ pub const Builder = struct {
             .is_variadic = is_variadic,
             .is_extern = is_extern,
             .attrs = attrs,
+            .is_triton_fn = is_triton_fn,
         });
         // Add to global function map
         try context.global_func_map.put(name, .{ idx, &self.t.funcs });
@@ -749,6 +755,11 @@ pub const Builder = struct {
         }
         v.loc = loc;
         const instr_id = self.t.instrs.add(kind, v);
+        self.t.value_defs.ensureTotalCapacity(self.gpa, vid.toRaw() + 1) catch @panic("OOM");
+        if (self.t.value_defs.items.len <= vid.toRaw()) {
+            self.t.value_defs.appendNTimes(self.gpa, InstrId.fromRaw(std.math.maxInt(u32)), vid.toRaw() + 1 - self.t.value_defs.items.len) catch @panic("OOM");
+        }
+        self.t.value_defs.items[vid.toRaw()] = instr_id;
         blk.instrs.append(self.gpa, instr_id) catch @panic("OOM");
         return vid;
     }
@@ -765,6 +776,11 @@ pub const Builder = struct {
         std.debug.assert(self.t.type_store.getKind(ty) != .Any);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(k, Rows.Bin2{ .result = vid, .ty = ty, .lhs = l, .rhs = r, .loc = loc });
+        self.t.value_defs.ensureTotalCapacity(self.gpa, vid.toRaw() + 1) catch @panic("OOM");
+        if (self.t.value_defs.items.len <= vid.toRaw()) {
+            self.t.value_defs.appendNTimes(self.gpa, InstrId.fromRaw(std.math.maxInt(u32)), vid.toRaw() + 1 - self.t.value_defs.items.len) catch @panic("OOM");
+        }
+        self.t.value_defs.items[vid.toRaw()] = iid;
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
@@ -781,6 +797,11 @@ pub const Builder = struct {
         std.debug.assert(self.t.type_store.getKind(bty) != .Any);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(k, Rows.Bin2{ .result = vid, .ty = bty, .lhs = l, .rhs = r, .loc = loc });
+        self.t.value_defs.ensureTotalCapacity(self.gpa, vid.toRaw() + 1) catch @panic("OOM");
+        if (self.t.value_defs.items.len <= vid.toRaw()) {
+            self.t.value_defs.appendNTimes(self.gpa, InstrId.fromRaw(std.math.maxInt(u32)), vid.toRaw() + 1 - self.t.value_defs.items.len) catch @panic("OOM");
+        }
+        self.t.value_defs.items[vid.toRaw()] = iid;
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }

@@ -107,7 +107,8 @@ pub const SpecializationKey = struct {
     original_decl_id: u32,
     /// The concrete types mapped to the function's parameters for this specific call.
     param_types: []const TypeId,
-    // (Future: Add comptime_values hash here)
+    /// Hashes of comptime parameter values (0 for non-comptime params).
+    comptime_hashes: []const u64,
 
     pub fn hash(self: SpecializationKey) u64 {
         var hasher: std.hash.Fnv1a_64 = .init();
@@ -116,13 +117,20 @@ pub const SpecializationKey = struct {
             const raw = pt.toRaw();
             hasher.update(std.mem.asBytes(&raw));
         }
+        for (self.comptime_hashes) |h| {
+            hasher.update(std.mem.asBytes(&h));
+        }
         return hasher.final();
     }
     pub fn eql(self: SpecializationKey, other: SpecializationKey) bool {
         if (self.original_decl_id != other.original_decl_id) return false;
         if (self.param_types.len != other.param_types.len) return false;
+        if (self.comptime_hashes.len != other.comptime_hashes.len) return false;
         for (self.param_types, other.param_types) |a, b| {
             if (!a.eq(b)) return false;
+        }
+        for (self.comptime_hashes, other.comptime_hashes) |a, b| {
+            if (a != b) return false;
         }
         return true;
     }
@@ -187,6 +195,13 @@ pub const TypeInfo = struct {
     const CallSpecSnapshot = struct {
         expr_ids: []u32,
         specs: []CallSpecialization,
+        comptime_snapshot: ?ComptimeBindingSnapshot = null,
+    };
+
+    const ComptimeBindingSnapshot = struct {
+        names: []ast.StrId,
+        types: []TypeId,
+        values: []comp.ComptimeValue,
     };
 
     /// init type system helper.
@@ -232,6 +247,12 @@ pub const TypeInfo = struct {
         while (call_snapshot_it.next()) |entry| {
             self.gpa.free(entry.value_ptr.expr_ids);
             self.gpa.free(entry.value_ptr.specs);
+            if (entry.value_ptr.comptime_snapshot) |c| {
+                for (c.values) |*v| v.destroy(self.gpa);
+                self.gpa.free(c.names);
+                self.gpa.free(c.types);
+                self.gpa.free(c.values);
+            }
         }
         self.specialization_call_snapshots.deinit(self.gpa);
         self.mlir_splice_info.deinit(self.gpa);
@@ -393,6 +414,7 @@ pub const TypeInfo = struct {
     ) !void {
         std.debug.assert(expr_ids.len == specs.len);
         const gop = try self.specialization_call_snapshots.getOrPut(self.gpa, decl_id.toRaw());
+        const existing_comptime = if (gop.found_existing) gop.value_ptr.comptime_snapshot else null;
         if (gop.found_existing) {
             self.gpa.free(gop.value_ptr.expr_ids);
             self.gpa.free(gop.value_ptr.specs);
@@ -401,7 +423,7 @@ pub const TypeInfo = struct {
         const specs_copy = try self.gpa.alloc(CallSpecialization, specs.len);
         std.mem.copyForwards(u32, ids_copy, expr_ids);
         std.mem.copyForwards(CallSpecialization, specs_copy, specs);
-        gop.value_ptr.* = .{ .expr_ids = ids_copy, .specs = specs_copy };
+        gop.value_ptr.* = .{ .expr_ids = ids_copy, .specs = specs_copy, .comptime_snapshot = existing_comptime };
     }
 
     /// getSpecializationExprSnapshot type system helper.
@@ -411,6 +433,53 @@ pub const TypeInfo = struct {
 
     pub fn getSpecializationCallSnapshot(self: *const TypeInfo, decl_id: ast.DeclId) ?CallSpecSnapshot {
         return self.specialization_call_snapshots.get(decl_id.toRaw());
+    }
+
+    pub fn storeSpecializationComptimeSnapshot(
+        self: *TypeInfo,
+        gpa: std.mem.Allocator,
+        decl_id: ast.DeclId,
+        names: []const ast.StrId,
+        types: []const TypeId,
+        values: []const comp.ComptimeValue,
+    ) !void {
+        std.debug.assert(names.len == types.len and types.len == values.len);
+        const key = decl_id.toRaw();
+        const gop = try self.specialization_call_snapshots.getOrPut(gpa, key);
+        if (gop.found_existing) {
+            if (gop.value_ptr.comptime_snapshot) |c| {
+                for (c.values) |*v| v.destroy(gpa);
+                gpa.free(c.names);
+                gpa.free(c.types);
+                gpa.free(c.values);
+            }
+        } else {
+            gop.value_ptr.* = .{ .expr_ids = &.{}, .specs = &.{}, .comptime_snapshot = null };
+        }
+        const name_copy = try gpa.alloc(ast.StrId, names.len);
+        const type_copy = try gpa.alloc(TypeId, types.len);
+        const value_copy = try gpa.alloc(comp.ComptimeValue, values.len);
+        errdefer gpa.free(name_copy);
+        errdefer gpa.free(type_copy);
+        errdefer gpa.free(value_copy);
+        @memcpy(name_copy, names);
+        @memcpy(type_copy, types);
+        var idx: usize = 0;
+        while (idx < values.len) : (idx += 1) {
+            value_copy[idx] = try comp.cloneComptimeValue(gpa, values[idx]);
+        }
+        gop.value_ptr.comptime_snapshot = .{
+            .names = name_copy,
+            .types = type_copy,
+            .values = value_copy,
+        };
+    }
+
+    pub fn getSpecializationComptimeSnapshot(self: *const TypeInfo, decl_id: ast.DeclId) ?ComptimeBindingSnapshot {
+        if (self.specialization_call_snapshots.get(decl_id.toRaw())) |snap| {
+            return snap.comptime_snapshot;
+        }
+        return null;
     }
 
     /// addExport type system helper.
@@ -497,6 +566,13 @@ pub const TypeInfo = struct {
             return try comp.cloneComptimeValue(gpa, entry.value);
         }
         return null;
+    }
+
+    pub fn removeComptimeBinding(self: *TypeInfo, name: ast.StrId) void {
+        if (self.comptime_bindings.fetchSwapRemove(name)) |removed| {
+            var item = removed.value;
+            self.destroyStoredComptimeBinding(&item);
+        }
     }
 
     /// forEachComptimeBinding type system helper.
@@ -640,8 +716,8 @@ pub const Rows = struct {
     pub const Error = struct { variants: RangeField };
     pub const ErrorSet = struct { value_ty: TypeId, error_ty: TypeId };
     pub const MlirModule = struct {};
-    pub const MlirAttribute = struct {};
-    pub const MlirType = struct {};
+    pub const MlirAttribute = struct { src: StrId };
+    pub const MlirType = struct { src: StrId };
     pub const TypeType = struct { of: TypeId };
     pub const Ast = struct { pkg_name: ast.StrId, filepath: ast.StrId };
     pub const TypeError = struct {};
@@ -731,6 +807,7 @@ pub const TypeStore = struct {
     field_pool: Pool(FieldId) = .{},
     enum_member_pool: Pool(EnumMemberId) = .{},
     strs: *StringInterner,
+    type_names: std.AutoArrayHashMapUnmanaged(TypeId, StrId) = .{},
 
     // cached builtins
     t_void: ?TypeId = null,
@@ -752,8 +829,6 @@ pub const TypeStore = struct {
     t_type: ?TypeId = null,
     t_noreturn: ?TypeId = null,
     t_mlir_module: ?TypeId = null,
-    t_mlir_attribute: ?TypeId = null,
-    t_mlir_type: ?TypeId = null,
     t_type_error: ?TypeId = null,
     t_test_error: ?TypeId = null,
 
@@ -772,6 +847,7 @@ pub const TypeStore = struct {
         self.type_pool.deinit(gpa);
         self.field_pool.deinit(gpa);
         self.enum_member_pool.deinit(gpa);
+        self.type_names.deinit(gpa);
     }
 
     /// getKind type system helper.
@@ -783,6 +859,18 @@ pub const TypeStore = struct {
     pub fn get(self: *TypeStore, comptime K: TypeKind, id: TypeId) RowT(K) {
         const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
         return tbl.get(.{ .index = self.index.rows.items[id.toRaw()] });
+    }
+
+    /// setQualifiedName records an optional user-visible identifier for `id`.
+    pub fn setQualifiedName(self: *TypeStore, id: TypeId, name: StrId) !void {
+        const gop = try self.type_names.getOrPut(self.gpa, id);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = name;
+        }
+    }
+    /// getQualifiedName retrieves the recorded identifier for `id`.
+    pub fn getQualifiedName(self: *const TypeStore, id: TypeId) ?StrId {
+        return self.type_names.get(id);
     }
 
     /// addMethod type system helper.
@@ -1055,28 +1143,16 @@ pub const TypeStore = struct {
         return self.tMlirModuleLocked();
     }
 
-    /// tMlirAttributeLocked type system helper.
-    fn tMlirAttributeLocked(self: *TypeStore) TypeId {
-        if (self.t_mlir_attribute) |id| return id;
-        const id = self.addLocked(.MlirAttribute, .{});
-        self.t_mlir_attribute = id;
-        return id;
-    }
-    /// tMlirAttribute type system helper.
-    pub fn tMlirAttribute(self: *TypeStore) TypeId {
-        return self.tMlirAttributeLocked();
+    /// mkMlirType type system helper.
+    pub fn mkMlirType(self: *TypeStore, src: StrId) TypeId {
+        if (self.findMlirType(src)) |id| return id;
+        return self.addLocked(.MlirType, .{ .src = src });
     }
 
-    /// tMlirTypeLocked type system helper.
-    fn tMlirTypeLocked(self: *TypeStore) TypeId {
-        if (self.t_mlir_type) |id| return id;
-        const id = self.addLocked(.MlirType, .{});
-        self.t_mlir_type = id;
-        return id;
-    }
-    /// tMlirType type system helper.
-    pub fn tMlirType(self: *TypeStore) TypeId {
-        return self.tMlirTypeLocked();
+    /// mkMlirAttribute type system helper.
+    pub fn mkMlirAttribute(self: *TypeStore, src: StrId) TypeId {
+        if (self.findMlirAttribute(src)) |id| return id;
+        return self.addLocked(.MlirAttribute, .{ .src = src });
     }
 
     /// tTypeErrorLocked type system helper.
@@ -1334,6 +1410,24 @@ pub const TypeStore = struct {
             /// eq type system helper.
             fn eq(_: *const TypeStore, row: Rows.Ast, key: anytype) bool {
                 return row.filepath.eq(key.filepath) and row.pkg_name.eq(key.pkg);
+            }
+        });
+    }
+    /// findMlirType type system helper.
+    fn findMlirType(self: *TypeStore, src: StrId) ?TypeId {
+        return self.findMatch(.MlirType, src, struct {
+            /// eq type system helper.
+            fn eq(_: *const TypeStore, row: Rows.MlirType, key: StrId) bool {
+                return row.src.eq(key);
+            }
+        });
+    }
+    /// findMlirAttribute type system helper.
+    fn findMlirAttribute(self: *TypeStore, src: StrId) ?TypeId {
+        return self.findMatch(.MlirAttribute, src, struct {
+            /// eq type system helper.
+            fn eq(_: *const TypeStore, row: Rows.MlirAttribute, key: StrId) bool {
+                return row.src.eq(key);
             }
         });
     }
@@ -1710,6 +1804,13 @@ pub const TypeStore = struct {
             return;
         }
 
+        if (options.prefer_names) {
+            if (self.getQualifiedName(type_id)) |name| {
+                try writer.print("{s}", .{self.strs.get(name)});
+                return;
+            }
+        }
+
         const kind = self.getKind(type_id);
 
         switch (kind) {
@@ -1761,15 +1862,13 @@ pub const TypeStore = struct {
             },
             .Tensor => {
                 const r = self.get(.Tensor, type_id);
-                try writer.print("tensor{}@", .{r.rank});
-                try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
-                try writer.print("[", .{});
+                try writer.print("tensor<", .{});
                 var i: u8 = 0;
                 while (i < r.rank) : (i += 1) {
-                    if (i != 0) try writer.print(" x ", .{});
-                    try writer.print("{}", .{r.dims[i]});
+                    try writer.print("{}x", .{r.dims[i]});
                 }
-                try writer.print("]", .{});
+                try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
+                try writer.print(">", .{});
             },
             .Simd => {
                 const r = self.get(.Simd, type_id);

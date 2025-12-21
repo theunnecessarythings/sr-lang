@@ -2,18 +2,20 @@ const std = @import("std");
 
 const use_llvm = true;
 
+const skipped_libs = std.StaticStringMap(void).initComptime(.{
+    .{"MLIRFuncMeshShardingExtensions"}, .{"llvm_gtest_main"},
+    .{"benchmark_main"},                 .{"MLIRMlirOptMain"},
+});
+
 fn linkMLIR(LLVM_HOME: []const u8, exe: *std.Build.Step.Compile) !void {
     const dir = try std.fs.cwd().openDir(LLVM_HOME, .{ .iterate = true });
     var iter = dir.iterate();
     while (try iter.next()) |entry| {
         const name = entry.name;
-        if (std.mem.eql(u8, name, "libMLIRFuncMeshShardingExtensions.so")) continue;
-        if (std.mem.eql(u8, name, "libllvm_gtest_main.so")) continue;
-        if (std.mem.eql(u8, name, "libbenchmark_main.so")) continue;
-        if (std.mem.eql(u8, name, "libMLIRMlirOptMain.so")) continue;
-        if (std.mem.startsWith(u8, name, "lib") and std.mem.endsWith(u8, name, ".so")) {
-            const libname = name[3 .. name.len - 3];
-            exe.root_module.linkSystemLibrary(libname, .{ .preferred_link_mode = .dynamic });
+        if (std.mem.startsWith(u8, name, "lib") and std.mem.endsWith(u8, name, ".a")) {
+            const libname = name[3 .. name.len - 2];
+            if (skipped_libs.get(libname)) |_| continue;
+            exe.root_module.linkSystemLibrary(libname, .{ .preferred_link_mode = .static });
         }
     }
     // Ensure runtime can locate the shared libs
@@ -24,14 +26,25 @@ fn linkMLIR(LLVM_HOME: []const u8, exe: *std.Build.Step.Compile) !void {
     exe.linkSystemLibrary("m");
     exe.linkSystemLibrary("z");
     exe.linkSystemLibrary("zstd");
-    exe.addIncludePath(.{ .cwd_relative = "/usr/include/c++/v1" });
-    exe.addObjectFile(.{ .cwd_relative = "/usr/lib/libc++.so" });
-    exe.addObjectFile(.{ .cwd_relative = "/usr/lib/libc++abi.so" });
-    exe.addObjectFile(.{ .cwd_relative = "/home/sreeraj/Documents/triton/python/triton/_C/libtriton_mlir_plugin.so" });
-    exe.addRPath(.{ .cwd_relative = "/home/sreeraj/Documents/triton/python/triton/_C" });
+
+    // Force Link to libstdc++
+    exe.addObjectFile(.{
+        .cwd_relative = "/usr/lib/libstdc++.so.6",
+    });
+
+    // If we want to force link it to libc++ abi instead
+    // exe.addIncludePath(.{ .cwd_relative = "/usr/include/c++/v1" });
+    // exe.addObjectFile(.{ .cwd_relative = "/usr/lib/libc++.so" });
+    // exe.addObjectFile(.{ .cwd_relative = "/usr/lib/libc++abi.so" });
+
     exe.linkSystemLibrary("libunwind");
     exe.linkSystemLibrary("gcc_s");
     exe.linkLibC();
+}
+
+fn linkTriton(exe: *std.Build.Step.Compile) !void {
+    exe.addObjectFile(.{ .cwd_relative = "/home/sreeraj/Documents/triton/python/triton/_C/libtriton_mlir_plugin.so" });
+    exe.addRPath(.{ .cwd_relative = "/home/sreeraj/Documents/triton/python/triton/_C" });
 }
 
 pub fn build(b: *std.Build) void {

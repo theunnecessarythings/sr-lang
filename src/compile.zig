@@ -593,11 +593,10 @@ pub fn initMLIR(alloc: std.mem.Allocator) mlir.Context {
         g_passes_registered = true;
     }
     mlir.registerAllLLVMTranslations(mlir_context);
-    // const triton_info = mlir.mlirGetDialectPluginInfo();
-    // triton_info.registerDialectRegistryCallbacks(registry.handle);
 
     mlir_context.appendDialectRegistry(registry);
     mlir_context.loadAllAvailableDialects();
+    mlir_context.setAllowUnregisteredDialects(true);
 
     return mlir_context;
 }

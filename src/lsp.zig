@@ -3035,7 +3035,7 @@ fn printHoverFields(writer: *std.io.Writer, type_store: *types.TypeStore, fields
             const field_row = type_store.Field.get(field_id);
             const field_name = type_store.strs.get(field_row.name);
             try writer.print("{s}: ", .{field_name});
-            try type_store.fmt(field_row.ty, writer);
+            try type_store.formatTypeForDiagnostic(field_row.ty, .{}, writer);
             try writer.print("\n", .{});
         }
     }
@@ -3077,7 +3077,7 @@ fn computeHover(gpa: std.mem.Allocator, doc: *const DocumentStore.Document, entr
         if (getExprType(ast_unit, expr_id)) |type_id| {
             try writer.print("\n\n---\n\n", .{});
             try writer.print("```sr\n", .{});
-            try entry.context.type_store.fmt(type_id, writer);
+            try entry.context.type_store.formatTypeForDiagnostic(type_id, .{}, writer);
             try writer.print("\n```", .{});
         }
 
@@ -3091,7 +3091,7 @@ fn computeHover(gpa: std.mem.Allocator, doc: *const DocumentStore.Document, entr
     // Fallback for unresolved symbols
     if (getExprType(ast_unit, expr_id)) |type_id| {
         try writer.print("```sr\n", .{});
-        try entry.context.type_store.fmt(type_id, writer);
+        try entry.context.type_store.formatTypeForDiagnostic(type_id, .{}, writer);
         try writer.print("\n```", .{});
         const message = try msg_builder.toOwnedSlice();
         return HoverInfo{

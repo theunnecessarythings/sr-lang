@@ -1,0 +1,47 @@
+package main
+
+io :: import "stdlib/io"
+tools :: import "stdlib/tools"
+utility :: import "stdlib/utility"
+
+main := proc() void {
+    args := [&][]string{"app", "--name", "sr-lang", "run", "input.sr"}
+    parser := tools.Parser.new(args)
+
+    parser.with_flag(tools.Flag{ .name = "--name" })
+    parser.with_subcommand(tools.Subcommand{ .name = "run", .args = tools.Args.init([]string{}) })
+
+    parser.run()
+
+    chosen_name := "guest"
+    if parser.flags.len > 0 {
+        if value := parser.flags[0].value {
+            chosen_name = value
+        }
+    }
+
+    mutable_count := 0
+    lazy_value := utility.lazy(comptime i32, proc() i32 {
+        mutable_count = mutable_count + 1
+        return mutable_count
+    })
+
+    once_action := utility.once(proc() void {
+        io.println("one-time setup", []any{})
+    })
+
+    once_action()
+    once_action()
+
+    io.println("Hello, {s}!", []any{ chosen_name })
+    io.println("lazy count= {d}", []any{ lazy_value() })
+    io.println("lazy count= {d}", []any{ lazy_value() })
+
+    guard := utility.defer(proc() void {
+        io.println("cleanup deferred", []any{})
+    })
+    defer guard.defer()
+
+    range := utility.Range{ .start = 1, .end = 4 }
+    io.println("range len={d}", []any{ range.len() })
+}

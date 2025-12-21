@@ -464,6 +464,8 @@ pub const Rows = struct {
         pieces: RangeMlirPiece,
         /// External arguments supplied to the block.
         args: RangeExpr,
+        /// Explicit result type (if any).
+        result_ty: OptExprId,
         /// Location of the `mlir { }` block.
         loc: LocId,
     };

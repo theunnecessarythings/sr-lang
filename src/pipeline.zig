@@ -413,7 +413,7 @@ pub const Pipeline = struct {
         if (progress) |reporter| reporter.report(.mlir_codegen);
         codegen.enable_debug_info = self.debug_info;
         const mlir_ctx_ptr = self.ensureMlirContext();
-        var gen: codegen.Codegen = .init(self.allocator, self.context, mlir_ctx_ptr.*);
+        var gen: codegen.Codegen = .init(self.allocator, self.context, mlir_ctx_ptr, false);
         gen.resetDebugCaches();
 
         var mlir_module = gen.emit(&dep_levels) catch |err| {
@@ -451,6 +451,108 @@ pub const Pipeline = struct {
         if (self.context.diags.anyErrors()) {
             return error.MlirCodegenFailed;
         }
+
+        // Emit Triton-only MLIR module and invoke Triton driver to produce PTX.
+        // Re-run codegen in Triton-only mode to emit tt.func stubs.
+        if (gen.has_triton_fns) {
+            var gen_triton: codegen.Codegen = .init(self.allocator, self.context, mlir_ctx_ptr, true);
+            defer gen_triton.deinit();
+            var triton_module = gen_triton.emitTritonModule(&dep_levels) catch |err| {
+                switch (err) {
+                    error.CompilationFailed => return error.MlirCodegenFailed,
+                    else => return err,
+                }
+            };
+
+            var tbuf: std.array_list.Managed(u8) = .init(self.allocator);
+            defer tbuf.deinit();
+            var thad_error = false;
+            var tsink = codegen.PrintBuffer{ .list = &tbuf, .had_error = &thad_error };
+            triton_module.getOperation().print(codegen.printCallback, &tsink);
+            if (thad_error) return error.MlirCodegenFailed;
+
+            const tpath = "out/triton_kernels.mlir";
+            std.fs.cwd().makePath("out") catch |err| {
+                if (err != error.PathAlreadyExists) return err;
+            };
+            try std.fs.cwd().writeFile(.{ .data = tsink.list.items, .sub_path = tpath });
+
+            const driver_path = "third-party/triton/build/cmake.linux-x86_64-cpython-3.13/bin/triton_mlir_driver";
+
+            var arg_sm: ?[]u8 = null;
+            var arg_num_warps: ?[]u8 = null;
+            var arg_threads_per_warp: ?[]u8 = null;
+            var arg_ptx_version: ?[]u8 = null;
+            var arg_num_ctas: ?[]u8 = null;
+
+            var mod_op = triton_module.getOperation();
+            const target_attr = mod_op.getDiscardableAttributeByName(.from("ttg.target"));
+            if (!target_attr.isNull() and target_attr.isAString()) {
+                const s = target_attr.stringAttrGetValue();
+                const slice = s.toSlice();
+                if (std.mem.startsWith(u8, slice, "cuda:")) {
+                    const sm_ver = slice["cuda:".len..];
+                    arg_sm = try std.fmt.allocPrint(self.allocator, "--sm={s}", .{sm_ver});
+                }
+            }
+
+            const num_warps_attr = mod_op.getDiscardableAttributeByName(.from("ttg.num-warps"));
+            if (!num_warps_attr.isNull() and num_warps_attr.isAInteger()) {
+                arg_num_warps = try std.fmt.allocPrint(self.allocator, "--num-warps={d}", .{num_warps_attr.integerAttrGetValueInt()});
+            }
+
+            const threads_per_warp_attr = mod_op.getDiscardableAttributeByName(.from("ttg.threads-per-warp"));
+            if (!threads_per_warp_attr.isNull() and threads_per_warp_attr.isAInteger()) {
+                arg_threads_per_warp = try std.fmt.allocPrint(self.allocator, "--threads-per-warp={d}", .{threads_per_warp_attr.integerAttrGetValueInt()});
+            }
+
+            const ptx_version_attr = mod_op.getDiscardableAttributeByName(.from("ttg.ptx-version"));
+            if (!ptx_version_attr.isNull() and ptx_version_attr.isAInteger()) {
+                arg_ptx_version = try std.fmt.allocPrint(self.allocator, "--ptx-version={d}", .{ptx_version_attr.integerAttrGetValueInt()});
+            }
+
+            const num_ctas_attr = mod_op.getDiscardableAttributeByName(.from("ttg.num-ctas"));
+            if (!num_ctas_attr.isNull() and num_ctas_attr.isAInteger()) {
+                arg_num_ctas = try std.fmt.allocPrint(self.allocator, "--num-ctas={d}", .{num_ctas_attr.integerAttrGetValueInt()});
+            } else {
+                arg_num_ctas = try std.fmt.allocPrint(self.allocator, "--num-ctas=1", .{});
+            }
+
+            const arg_input = try std.fmt.allocPrint(self.allocator, "--input={s}", .{tpath});
+            const arg_ptx = try std.fmt.allocPrint(self.allocator, "--emit-ptx={s}", .{"out/triton_kernels.ptx"});
+            defer {
+                self.allocator.free(arg_input);
+                self.allocator.free(arg_ptx);
+                if (arg_sm) |t| self.allocator.free(t);
+                if (arg_num_warps) |t| self.allocator.free(t);
+                if (arg_threads_per_warp) |t| self.allocator.free(t);
+                if (arg_ptx_version) |t| self.allocator.free(t);
+                if (arg_num_ctas) |t| self.allocator.free(t);
+            }
+
+            var args = std.ArrayList([]const u8){};
+            defer args.deinit(self.allocator);
+            try args.append(self.allocator, driver_path);
+            try args.append(self.allocator, arg_input);
+            try args.append(self.allocator, arg_ptx);
+            if (arg_sm) |t| try args.append(self.allocator, t);
+            if (arg_num_warps) |t| try args.append(self.allocator, t);
+            if (arg_threads_per_warp) |t| try args.append(self.allocator, t);
+            if (arg_ptx_version) |t| try args.append(self.allocator, t);
+            if (arg_num_ctas) |t| try args.append(self.allocator, t);
+
+            var child: std.process.Child = .init(args.items, self.allocator);
+            child.cwd = ".";
+            try child.spawn();
+            const term = try child.wait();
+            switch (term) {
+                .Exited => |code| {
+                    if (code != 0) return error.TritonDriverFailed;
+                },
+                else => return error.TritonDriverFailed,
+            }
+        }
+
         if (mode == .mlir) {
             std.debug.print("Generated MLIR module:\n", .{});
             var op = mlir_module.getOperation();
@@ -581,7 +683,7 @@ fn runInterpreterStage(self: *Pipeline) anyerror!void {
 
 /// Interpret the comptime declarations in `ast_unit` and install bindings.
 fn interpretAstUnit(self: *Pipeline, ast_unit: *ast_mod.Ast) anyerror!bool {
-    var interp = try interpreter.Interpreter.init(self.allocator, ast_unit, null, null);
+    var interp = try interpreter.Interpreter.init(self.allocator, ast_unit, null, null, null, undefined);
     defer interp.deinit();
 
     var found_block = false;

@@ -282,6 +282,27 @@ fn collectExprIds(gpa: std.mem.Allocator, ast_unit: *ast.Ast, expr_id: ast.ExprI
     }
 }
 
+/// Return true if `expr_id` (or any nested expression) mentions one of the names.
+pub fn exprMentionsAnyName(
+    gpa: std.mem.Allocator,
+    ast_unit: *ast.Ast,
+    expr_id: ast.ExprId,
+    names: []const ast.StrId,
+) !bool {
+    if (names.len == 0) return false;
+    var ids = std.ArrayList(ast.ExprId){};
+    defer ids.deinit(gpa);
+    try collectExprIds(gpa, ast_unit, expr_id, &ids);
+    for (ids.items) |eid| {
+        if (ast_unit.kind(eid) != .Ident) continue;
+        const name = ast_unit.exprs.get(.Ident, eid).name;
+        for (names) |candidate| {
+            if (candidate.eq(name)) return true;
+        }
+    }
+    return false;
+}
+
 pub const PatternChildDesc = union(enum) {
     TupleElem: usize,
     StructField: ast.StrId,
@@ -632,6 +653,146 @@ fn lookupValueBinding(bindings: []const Binding, name: ast.StrId) ?comp.Comptime
         }
     }
     return null;
+}
+
+fn resolveTensorType(
+    self: *Checker,
+    ctx: *Checker.CheckerContext,
+    ast_unit: *ast.Ast,
+    row: ast.Rows.TensorType,
+    bindings: []const Binding,
+) anyerror!struct { bool, types.TypeId } {
+    const ts = self.context.type_store;
+    var status = true;
+    // Validate shape dimensions are integer literals or comptime-known integers
+    const dims = ast_unit.exprs.expr_pool.slice(row.shape);
+    const dim_bindings = bindings;
+
+    var dim_values = [_]usize{0} ** types.max_tensor_rank;
+    var current_rank: usize = 0;
+    var i: usize = 0;
+
+    while (i < dims.len) : (i += 1) {
+        const dim_expr = dims[i];
+        var expr_to_eval = dim_expr;
+
+        if (ast_unit.kind(dim_expr) == .Range) {
+            const rng = ast_unit.exprs.get(.Range, dim_expr);
+            if (rng.start.isNone() and !rng.end.isNone()) {
+                expr_to_eval = rng.end.unwrap();
+            }
+        }
+
+        var val_computed = evalComptimeValueWithBindings(self, ctx, ast_unit, expr_to_eval, dim_bindings) catch {
+            // Fallback for literals or unresolved comptime bindings.
+            var literal_val: usize = 0;
+            var from_binding = false;
+
+            if (ast_unit.kind(expr_to_eval) == .Ident) {
+                const name = ast_unit.exprs.get(.Ident, expr_to_eval).name;
+                if (lookupValueBinding(dim_bindings, name)) |val| {
+                    switch (val) {
+                        .Int => |v| literal_val = std.math.cast(usize, v) orelse 0,
+                        else => {},
+                    }
+                    from_binding = true;
+                } else {
+                    if (lookupTypeBinding(dim_bindings, name)) |ty| {
+                        if (isIntegerKind(self, self.typeKind(ty))) {
+                            literal_val = 1; // placeholder until specialized
+                        }
+                    } else {
+                        // Unknown ident, but allow deferral for comptime params.
+                        literal_val = 1;
+                    }
+                    from_binding = true;
+                }
+            }
+
+            if (literal_val == 0 and ast_unit.kind(expr_to_eval) == .Literal) {
+                const dl = ast_unit.exprs.get(.Literal, expr_to_eval);
+                if (dl.kind == .int) {
+                    const info = switch (dl.data) {
+                        .int => |ii| ii,
+                        else => ast.LiteralInt{ .text = .{ .index = 0 }, .value = 0, .base = 0, .valid = false },
+                    };
+                    if (info.valid) {
+                        literal_val = std.math.cast(usize, info.value) orelse 0;
+                    }
+                }
+            }
+
+            if (literal_val == 0 and !from_binding) {
+                try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
+                status = false;
+            } else {
+                if (current_rank < types.max_tensor_rank) {
+                    dim_values[current_rank] = if (literal_val == 0) 1 else literal_val;
+                    current_rank += 1;
+                } else {
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_rank_exceeds_limit, .{});
+                    status = false;
+                }
+            }
+            continue;
+        };
+        defer val_computed.destroy(self.gpa);
+
+        switch (val_computed) {
+            .Int => |v| {
+                const dim_val = std.math.cast(usize, v) orelse val: {
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
+                    status = false;
+                    break :val 0;
+                };
+                if (current_rank < types.max_tensor_rank) {
+                    dim_values[current_rank] = dim_val;
+                    current_rank += 1;
+                } else {
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_rank_exceeds_limit, .{});
+                    status = false;
+                }
+            },
+            .Sequence => |seq| {
+                for (seq.values.items) |item| {
+                    const dim_val = switch (item) {
+                        .Int => |v| std.math.cast(usize, v) orelse 0,
+                        else => 0,
+                    };
+                    if (dim_val == 0) {
+                        try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
+                        status = false;
+                    }
+                    if (current_rank < types.max_tensor_rank) {
+                        dim_values[current_rank] = dim_val;
+                        current_rank += 1;
+                    } else {
+                        try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_rank_exceeds_limit, .{});
+                        status = false;
+                    }
+                }
+            },
+            else => {
+                try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
+                status = false;
+            },
+        }
+    }
+
+    if (current_rank > types.max_tensor_rank) {
+        // Error already reported
+        status = false;
+    }
+
+    // Validate element type present and resolvable
+    const res = try typeFromTypeExprWithBindings(self, ctx, ast_unit, row.elem, bindings);
+    const combined_status = status and res[0];
+    const ety = res[1];
+    if (self.typeKind(ety) == .TypeError) {
+        try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_missing_element_type, .{});
+    }
+    const tensor_ty = ts.mkTensor(ety, dim_values[0..current_rank]);
+    return .{ combined_status, tensor_ty };
 }
 
 /// Reset cached type info for the pattern subtree rooted at `pat_id`.
@@ -1231,7 +1392,7 @@ fn evalLiteralToComptime(ast_unit: *ast.Ast, id: ast.ExprId) !?comp.ComptimeValu
     };
 }
 
-/// Resolve a type expression while providing `bindings` that shadow names during evaluation.
+/// Resolve a type expression while providing `param_bindings` that shadow names during evaluation.
 pub fn typeFromTypeExprWithBindings(
     self: *Checker,
     ctx: *Checker.CheckerContext,
@@ -1247,6 +1408,22 @@ pub fn typeFromTypeExprWithBindings(
             if (lookupTypeBinding(bindings, name)) |ty|
                 break :blk_ident .{ status, ty };
             break :blk_ident try typeFromTypeExpr(self, ctx, ast_unit, id);
+        },
+        .TypeOf => blk_typeof: {
+            const tr = ast_unit.exprs.get(.TypeOf, id);
+            if (ast_unit.kind(tr.expr) == .Ident) {
+                const name = ast_unit.exprs.get(.Ident, tr.expr).name;
+                if (lookupTypeBinding(bindings, name)) |bound_ty| {
+                    break :blk_typeof .{ status, bound_ty };
+                }
+            }
+            const typeof_ty = try checkTypeOf(self, ctx, ast_unit, id);
+            if (self.typeKind(typeof_ty) == .TypeError) break :blk_typeof .{ false, typeof_ty };
+            if (self.typeKind(typeof_ty) == .TypeType) {
+                const tt = self.context.type_store.get(.TypeType, typeof_ty);
+                break :blk_typeof .{ status, tt.of };
+            }
+            break :blk_typeof .{ status, typeof_ty };
         },
         .StructType => blk_struct: {
             const row = ast_unit.exprs.get(.StructType, id);
@@ -1307,6 +1484,12 @@ pub fn typeFromTypeExprWithBindings(
 
             break :blk_at .{ status, ts.mkArray(elem, size) };
         },
+        .TensorType => blk_tensor: {
+            const row = ast_unit.exprs.get(.TensorType, id);
+            const res = try resolveTensorType(self, ctx, ast_unit, row, bindings);
+            status = status and res[0];
+            break :blk_tensor .{ status, res[1] };
+        },
         .Call => blk_call: {
             const res = try typeFromTypeExpr(self, ctx, ast_unit, ast_unit.exprs.get(.Call, id).callee);
             status = status and res[0];
@@ -1317,7 +1500,11 @@ pub fn typeFromTypeExprWithBindings(
             const call_row = ast_unit.exprs.get(.Call, id);
             const callee_kind = ast_unit.kind(call_row.callee);
             if (callee_kind == .FieldAccess or callee_kind == .Ident) {
-                var value = evalComptimeValueWithBindings(self, ctx, ast_unit, id, bindings) catch {
+                var value = evalComptimeValueWithBindings(self, ctx, ast_unit, id, bindings) catch |err| {
+                    if (status) {
+                        const msg = std.fmt.allocPrint(self.gpa, "comptime evaluation of type function failed: {s}", .{@errorName(err)}) catch "comptime evaluation failed";
+                        try self.context.diags.addError(ast_unit.exprs.locs.get(call_row.loc), .could_not_resolve_type, .{@as([]const u8, msg)});
+                    }
                     break :blk_call .{ false, ts.tTypeError() };
                 };
                 defer value.destroy(self.gpa);
@@ -1329,9 +1516,15 @@ pub fn typeFromTypeExprWithBindings(
                         break :blk_call .{ status, resolved };
                     },
                     else => {
-                        std.debug.print("evalComptimeValueWithBindings returned non-Type for call {}\n", .{id});
+                        if (status) {
+                            try self.context.diags.addError(ast_unit.exprs.locs.get(call_row.loc), .could_not_resolve_type, .{@as([]const u8, "expression evaluated to a value, but a type was expected")});
+                            status = false;
+                        }
                     },
                 }
+            }
+            if (status) {
+                try self.context.diags.addError(ast_unit.exprs.locs.get(call_row.loc), .could_not_resolve_type, .{@as([]const u8, "invalid type expression")});
             }
             break :blk_call .{ false, ts.tTypeError() };
         },
@@ -1457,10 +1650,10 @@ fn resolveTypeFunctionCall(
     try self.ensureInterpreter(ast_unit, callee_ctx);
     const interp = callee_ctx.interp.?;
 
-    var interp_bindings = std.ArrayList(interpreter.Binding){};
+    var interp_param_bindings = std.ArrayList(interpreter.Binding){};
     defer {
-        for (interp_bindings.items) |*b| b.value.destroy(self.gpa);
-        interp_bindings.deinit(self.gpa);
+        for (interp_param_bindings.items) |*b| b.value.destroy(self.gpa);
+        interp_param_bindings.deinit(self.gpa);
     }
 
     for (bindings_builder.items) |binding| {
@@ -1469,16 +1662,16 @@ fn resolveTypeFunctionCall(
                 try callee_ctx.param_specializations.append(self.gpa, .{ .name = t.name, .ty = t.ty });
                 // Also bind types in the interpreter so typeof() or type expressions using them work
                 const val = comp.ComptimeValue{ .Type = t.ty };
-                try interp_bindings.append(self.gpa, .{ .name = t.name, .value = val });
+                try interp_param_bindings.append(self.gpa, .{ .name = t.name, .value = val });
             },
             .Value => |v| {
                 const cloned = try comp.cloneComptimeValue(self.gpa, v.value);
-                try interp_bindings.append(self.gpa, .{ .name = v.name, .value = cloned });
+                try interp_param_bindings.append(self.gpa, .{ .name = v.name, .value = cloned });
             },
         }
     }
 
-    var scope = try interp.pushBindings(&interp_bindings);
+    var scope = try interp.pushBindings(&interp_param_bindings);
     defer scope.deinit();
 
     for (stmts) |sid| {
@@ -1615,8 +1808,8 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
         .MlirBlock => blk: {
             const row = ast_unit.exprs.get(.MlirBlock, id);
             break :blk switch (row.kind) {
-                .Type => .{ true, ts.tMlirType() },
-                .Attribute => .{ true, ts.tMlirAttribute() },
+                .Type => .{ true, ts.mkTypeType(ts.mkMlirType(row.text)) },
+                .Attribute => .{ true, ts.mkMlirAttribute(row.text) },
                 .Module => .{ true, ts.tMlirModule() },
                 .Operation => blk_inner: {
                     try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .mlir_block_not_a_type, .{});
@@ -1721,51 +1914,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
         },
         .TensorType => blk_tensor: {
             const row = ast_unit.exprs.get(.TensorType, id);
-            // Validate shape dimensions are integer literals
-            const dims = ast_unit.exprs.expr_pool.slice(row.shape);
-            if (dims.len > types.max_tensor_rank) {
-                try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_rank_exceeds_limit, .{});
-                status = false;
-            }
-            var dim_values = [_]usize{0} ** types.max_tensor_rank;
-            var i: usize = 0;
-            while (i < dims.len) : (i += 1) {
-                if (ast_unit.kind(dims[i]) != .Literal) {
-                    try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
-                    status = false;
-                    continue;
-                }
-                const dl = ast_unit.exprs.get(.Literal, dims[i]);
-                if (dl.kind != .int) {
-                    try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
-                    status = false;
-                    continue;
-                }
-                const info = switch (dl.data) {
-                    .int => |int_info| int_info,
-                    else => ast.LiteralInt{ .text = .{ .index = 0 }, .value = 0, .base = 0, .valid = false },
-                };
-                if (!info.valid) {
-                    try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
-                    status = false;
-                }
-                const dim_val = std.math.cast(usize, info.value) orelse val: {
-                    try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
-                    status = false;
-                    break :val 0;
-                };
-                dim_values[i] = dim_val;
-            }
-            // Validate element type present and resolvable
-            const res = try typeFromTypeExpr(self, ctx, ast_unit, row.elem);
-            status = status and res[0];
-            const ety = res[1];
-            if (self.typeKind(ety) == .TypeError) {
-                try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_missing_element_type, .{});
-            }
-            const rank = dims.len;
-            const tensor_ty = ts.mkTensor(ety, dim_values[0..rank]);
-            break :blk_tensor .{ status, tensor_ty };
+            break :blk_tensor try resolveTensorType(self, ctx, ast_unit, row, &[_]Binding{});
         },
         .StructType => blk_sty: {
             const row = ast_unit.exprs.get(.StructType, id);
@@ -2216,7 +2365,13 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             const call_row = ast_unit.exprs.get(.Call, id);
             const callee_kind = ast_unit.kind(call_row.callee);
             if (callee_kind == .FieldAccess or callee_kind == .Ident) {
-                var value = evalComptimeValueWithBindings(self, ctx, ast_unit, id, &[_]Binding{}) catch break :blk_call .{ false, ts.tTypeError() };
+                var value = evalComptimeValueWithBindings(self, ctx, ast_unit, id, &[_]Binding{}) catch |err| {
+                    if (status) {
+                        const msg = std.fmt.allocPrint(self.gpa, "comptime evaluation of type function failed: {s}", .{@errorName(err)}) catch "comptime evaluation failed";
+                        try self.context.diags.addError(ast_unit.exprs.locs.get(call_row.loc), .could_not_resolve_type, .{@as([]const u8, msg)});
+                    }
+                    break :blk_call .{ false, ts.tTypeError() };
+                };
                 defer value.destroy(self.gpa);
                 switch (value) {
                     .Type => |resolved| {
@@ -2225,8 +2380,16 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                         ast_unit.type_info.expr_types.items[id.toRaw()] = wrapped;
                         break :blk_call .{ status, resolved };
                     },
-                    else => {},
+                    else => {
+                        if (status) {
+                            try self.context.diags.addError(ast_unit.exprs.locs.get(call_row.loc), .could_not_resolve_type, .{@as([]const u8, "expression evaluated to a value, but a type was expected")});
+                            status = false;
+                        }
+                    },
                 }
+            }
+            if (status) {
+                try self.context.diags.addError(ast_unit.exprs.locs.get(call_row.loc), .could_not_resolve_type, .{@as([]const u8, "invalid type expression")});
             }
             break :blk_call .{ false, ts.tTypeError() };
         },

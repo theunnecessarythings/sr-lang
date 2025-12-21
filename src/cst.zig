@@ -758,6 +758,7 @@ pub const Rows = struct {
         text: StrId,
         pieces: RangeOf(MlirPieceId),
         args: OptRangeOf(ExprId),
+        result_ty: OptExprId,
         loc: LocId,
     };
 

@@ -327,6 +327,7 @@ pub const DiagnosticCode = enum {
     mlir_splice_unknown_identifier,
     mlir_splice_not_comptime,
     mlir_splice_unbound,
+    mlir_operation_missing_result_type,
 
     comptime_type_not_supported,
     package_missing_declaration,
@@ -592,6 +593,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .mlir_splice_unknown_identifier => "unknown '@{s}' splice",
         .mlir_splice_not_comptime => "'@{s}' must name a comptime value or type",
         .mlir_splice_unbound => "no comptime binding available for '@{s}'",
+        .mlir_operation_missing_result_type => "inline MLIR operation must have an explicit result type",
 
         .comptime_type_not_supported => "comptime type not supported",
         .package_missing_declaration => "missing package declaration; expected 'package {s}'",

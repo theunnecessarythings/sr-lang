@@ -1,0 +1,117 @@
+package triton
+
+cuda :: import "vendor/cuda"
+
+/// Returns the Triton pointer type !tt.ptr<T> as an MLIR type object.
+Ptr :: proc(comptime T: type) type {
+    return mlir type { !tt.ptr<`T`> }
+}
+
+/// Returns the program ID (block index) for the given axis.
+program_id :: @[triton] proc(comptime axis: i32) i32 {
+    return mlir op { "tt.get_program_id"() {axis = `axis`} : () -> i32 }
+}
+
+/// Returns the number of programs for the given axis.
+num_programs :: @[triton] proc(comptime axis: i32) i32 {
+    return mlir op { "tt.get_num_programs"() {axis = `axis`} : () -> i32 }
+}
+
+/// Create a range of values [start, end).
+make_range :: @[triton] proc(comptime start: i32, comptime end: i32) tensor(end - start, i32) {
+    T :: tensor(end - start, i32)
+    return mlir op { "tt.make_range"() {end = `end`, start = `start`} : () -> `T` }
+}
+
+/// Splat a scalar value to a tensor of the given size.
+splat :: @[triton] proc(val: any, comptime size: i32) tensor(size, typeof(val)) {
+    val_ty :: typeof(val)
+    out_ty :: tensor(size, typeof(val))
+    return mlir op(val) { "tt.splat"(%arg0) : (`val_ty`) -> `out_ty` }
+}
+
+/// Elementwise exp for Triton tensors.
+exp :: @[triton] proc(val: any) typeof(val) {
+    val_ty :: typeof(val)
+    return mlir op(val) { "math.exp"(%arg0) : (`val_ty`) -> `val_ty` }
+}
+
+/// Reduce a tensor of values by max along the given axis.
+reduce_max :: @[triton] proc(comptime T: type, val: any, comptime axis: i32) T {
+    val_ty :: typeof(val)
+    return mlir op(val) {
+        "tt.reduce"(%arg0) ({
+        ^bb0(%lhs: `T`, %rhs: `T`):
+        %m = arith.maximumf %lhs, %rhs : `T`
+        "tt.reduce.return"(%m) : (`T`) -> ()
+        }) {axis = `axis`} : (`val_ty`) -> `T`
+        }
+}
+
+/// Reduce a tensor of values by sum along the given axis.
+reduce_sum :: @[triton] proc(comptime T: type, val: any, comptime axis: i32) T {
+    val_ty :: typeof(val)
+    return mlir op(val) {
+        "tt.reduce"(%arg0) ({
+        ^bb0(%lhs: `T`, %rhs: `T`):
+        %s = arith.addf %lhs, %rhs : `T`
+        "tt.reduce.return"(%s) : (`T`) -> ()
+        }) {axis = `axis`} : (`val_ty`) -> `T`
+        }
+}
+
+/// Load a value from a pointer with a mask and fallback value.
+load :: @[triton] proc(ptr: any, mask: any, other: any) typeof(other) {
+    ptr_ty :: typeof(ptr)
+    mask_ty :: typeof(mask)
+    other_ty :: typeof(other)
+    return mlir op(ptr, mask, other) { "tt.load"(%arg0, %arg1, %arg2) {operand_segment_sizes = array<i32: 1, 1, 1>} : (`ptr_ty`, `mask_ty`, `other_ty`) -> `other_ty` }
+}
+
+/// Store a value to a pointer with a mask.
+store :: @[triton] proc(ptr: any, val: any, mask: any) void {
+    ptr_ty :: typeof(ptr)
+    val_ty :: typeof(val)
+    mask_ty :: typeof(mask)
+    mlir op(ptr, val, mask):void { "tt.store"(%arg0, %arg1, %arg2) : (`ptr_ty`, `val_ty`, `mask_ty`) -> () }
+}
+
+// Triton launch helpers for scratch arguments appended by the compiler.
+Scratch :: struct {
+    global: cuda.CUdeviceptr,
+    profile: cuda.CUdeviceptr,
+}
+
+alloc_scratch :: proc(global_size: usize, profile_size: usize) Scratch {
+    scratch := Scratch{ global: 0, profile: 0 }
+    if global_size > 0 {
+        _ = cuda.cuMemAlloc(&scratch.global, global_size)
+    }
+    if profile_size > 0 {
+        _ = cuda.cuMemAlloc(&scratch.profile, profile_size)
+    }
+    return scratch
+}
+
+free_scratch :: proc(scratch: *Scratch) {
+    if scratch.*.global != 0 {
+        _ = cuda.cuMemFree(scratch.*.global)
+        scratch.*.global = 0
+    }
+    if scratch.*.profile != 0 {
+        _ = cuda.cuMemFree(scratch.*.profile)
+        scratch.*.profile = 0
+    }
+}
+
+make_params :: proc(comptime N: usize, args: [N]?*void, scratch: *Scratch) [N + 2]?*void {
+    out: [N + 2]?*void = undefined
+    i: usize = 0
+    while i < N {
+        out[i] = args[i]
+        i = i + 1
+    }
+    out[N] = (&scratch.*.global).^?*void
+    out[N + 1] = (&scratch.*.profile).^?*void
+    return out
+}

@@ -25,6 +25,11 @@ const F_CMP_UNO: i64 = 14;
 pub fn intOrFloatWidth(t: mlir.Type) !u32 {
     if (t.isAInteger()) return t.getIntegerBitwidth();
     if (t.isAFloat()) return t.getFloatBitwidth();
+    if (t.isAVector() or t.isATensor()) {
+        const et = t.getShapedElementType();
+        if (et.isAInteger()) return et.getIntegerBitwidth();
+        if (et.isAFloat()) return et.getFloatBitwidth();
+    }
     return error.NotIntOrFloat;
 }
 
@@ -242,6 +247,25 @@ pub fn emitCastNormal(self: *Codegen, dst_sr: types.TypeId, to_ty: mlir.Type, fr
         return self.constInt(to_ty, 0);
     }
 
+    // Special-case: Scalar -> Tensor (splat)
+    if (self.context.type_store.getKind(dst_sr) == .Tensor) {
+        const tensor_info = self.context.type_store.get(.Tensor, dst_sr);
+        const elem_ty = try self.llvmTypeOf(tensor_info.elem);
+        // If source is scalar and matches element type (or can be coerced)
+        if (!from_ty.isATensor() and !from_ty.isAVector()) {
+            // Coerce scalar if needed
+            var scalar = from_v;
+            if (!scalar.getType().equal(elem_ty)) {
+                scalar = try self.coerceOnBranch(scalar, elem_ty, tensor_info.elem, src_sr);
+            }
+            const op_name = if (self.emit_only_triton) "tt.splat" else "tensor.splat";
+            return self.emitOp(op_name, EmitOpArgs{
+                .operands = &.{scalar},
+                .results = &.{to_ty},
+            });
+        }
+    }
+
     // Special-case: static Array -> DynArray. For zero-length arrays, return an empty dyn array
     // (ptr = null, len = 0, cap = 0). This matches expected semantics and fixes join-arg typing
     // when early-returning an empty dynamic array from an empty literal.
@@ -254,13 +278,13 @@ pub fn emitCastNormal(self: *Codegen, dst_sr: types.TypeId, to_ty: mlir.Type, fr
 
     // Scalars & pointers
     const from_is_int = from_ty.isAInteger() or
-        (from_ty.isAVector() and from_ty.getShapedElementType().isAInteger());
+        ((from_ty.isAVector() or from_ty.isATensor()) and from_ty.getShapedElementType().isAInteger());
     const to_is_int = to_ty.isAInteger() or
-        (to_ty.isAVector() and to_ty.getShapedElementType().isAInteger());
+        ((to_ty.isAVector() or to_ty.isATensor()) and to_ty.getShapedElementType().isAInteger());
     const from_is_f = from_ty.isAFloat() or
-        (from_ty.isAVector() and from_ty.getShapedElementType().isAFloat());
+        ((from_ty.isAVector() or from_ty.isATensor()) and from_ty.getShapedElementType().isAFloat());
     const to_is_f = to_ty.isAFloat() or
-        (to_ty.isAVector() and to_ty.getShapedElementType().isAFloat());
+        ((to_ty.isAVector() or to_ty.isATensor()) and to_ty.getShapedElementType().isAFloat());
     const from_is_ptr = from_ty.equal(self.llvm_ptr_ty);
     const to_is_ptr = to_ty.equal(self.llvm_ptr_ty);
 

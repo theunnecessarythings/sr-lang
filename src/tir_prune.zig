@@ -75,6 +75,13 @@ pub fn pruneUnusedFunctions(
         name_to_funcs.deinit();
     }
 
+    // Worklist on function names reached by calls, starting from implicit roots
+    var reachable_names = std.AutoHashMapUnmanaged(tir.StrId, void){};
+    defer reachable_names.deinit(gpa);
+
+    var wl = std.ArrayListUnmanaged(tir.StrId){};
+    defer wl.deinit(gpa);
+
     // Do not bail on indirect calls; we simply won't add edges for them.
 
     // Track which unit each function id belongs to (per TIR module)
@@ -94,6 +101,9 @@ pub fn pruneUnusedFunctions(
                 const gop = try name_to_funcs.getOrPut(frow.name);
                 if (!gop.found_existing) gop.value_ptr.* = .{};
                 try gop.value_ptr.append(gpa, .{ .unit = unit, .fid = fid });
+                if (frow.is_triton_fn) {
+                    try wl.append(gpa, frow.name);
+                }
                 // // DEBUG
                 // std.debug.print("Registered: {s}\n", .{t.instrs.strs.get(frow.name)});
             }
@@ -102,13 +112,6 @@ pub fn pruneUnusedFunctions(
     }
 
     // Proceed regardless of presence of indirect calls.
-
-    // Worklist on function names reached by calls, starting from implicit roots
-    var reachable_names = std.AutoHashMapUnmanaged(tir.StrId, void){};
-    defer reachable_names.deinit(gpa);
-
-    var wl = std.ArrayListUnmanaged(tir.StrId){};
-    defer wl.deinit(gpa);
 
     const main_sid = context.interner.intern("main");
     const init_sid = context.interner.intern("__sr_global_mlir_init");

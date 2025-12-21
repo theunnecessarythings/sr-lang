@@ -1,0 +1,210 @@
+package main
+
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+
+PtrF32 :: triton.Ptr(f32)
+
+matmul_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    a_ptr: PtrF32,
+    b_ptr: PtrF32,
+    c_ptr: PtrF32,
+    M: i32,
+    N: i32,
+    K: i32,
+    stride_am: i32,
+    stride_ak: i32,
+    stride_bk: i32,
+    stride_bn: i32,
+    stride_cm: i32,
+    stride_cn: i32,
+    comptime BLOCK_N: i32 = 128,
+) {
+    row := triton.program_id(0)
+    if row >= M { return }
+
+    offs_n := triton.make_range(0, BLOCK_N)
+    n_vec := triton.splat(N, BLOCK_N)
+    mask_n := offs_n < n_vec
+
+    acc := triton.splat(0.(f32), BLOCK_N)
+    k: i32 = 0
+    while k < K {
+        a_offset := triton.splat(row * stride_am + k * stride_ak, BLOCK_N)
+        a_ptrs := a_ptr + a_offset
+        a_vals := triton.load(a_ptrs, mask_n, triton.splat(0.(f32), BLOCK_N))
+
+        k_offset := triton.splat(k * stride_bk, BLOCK_N)
+        b_ptrs := b_ptr + (k_offset + offs_n * stride_bn)
+        b_vals := triton.load(b_ptrs, mask_n, triton.splat(0.(f32), BLOCK_N))
+
+        acc = acc + a_vals * b_vals
+        k = k + 1
+        if k >= K {
+            out_offsets := triton.splat(row * stride_cm, BLOCK_N) + offs_n * stride_cn
+            out_ptrs := c_ptr + out_offsets
+            triton.store(out_ptrs, acc, mask_n)
+        }
+    }
+}
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    ptx_path := "out/triton_kernels.ptx"
+
+    mod: cuda.CUmodule = null
+    res = cuda.cuModuleLoad(&mod, ptx_path.ptr)
+    if res != cuda.SUCCESS {
+        io.println("Failed to load module: %d", res)
+        return
+    }
+
+    kernel: cuda.CUfunction = null
+    res = cuda.cuModuleGetFunction(&kernel, mod, "matmul_kernel".ptr)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get kernel function", ())
+        return
+    }
+
+    M: i32 = 128
+    N: i32 = 128
+    K: i32 = 128
+
+    size_a := M.(usize) * K.(usize) * 4
+    size_b := K.(usize) * N.(usize) * 4
+    size_c := M.(usize) * N.(usize) * 4
+
+    a_h_ptr := alloc.alloc(size_a) orelse return
+    a_h := a_h_ptr.^*f32
+    b_h_ptr := alloc.alloc(size_b) orelse return
+    b_h := b_h_ptr.^*f32
+    c_h_ptr := alloc.alloc(size_c) orelse return
+    c_h := c_h_ptr.^*f32
+
+    i: i32 = 0
+    total_a: i32 = M * K
+    while i < total_a {
+        a_h[i] = (i % 7.(i32)).(f32) * 0.1
+        i = i + 1
+    }
+    i = 0
+    total_b: i32 = K * N
+    while i < total_b {
+        b_h[i] = (i % 5.(i32)).(f32) * 0.2
+        i = i + 1
+    }
+
+    a_d: cuda.CUdeviceptr = 0
+    b_d: cuda.CUdeviceptr = 0
+    c_d: cuda.CUdeviceptr = 0
+
+    _ = cuda.cuMemAlloc(&a_d, size_a)
+    _ = cuda.cuMemAlloc(&b_d, size_b)
+    _ = cuda.cuMemAlloc(&c_d, size_c)
+    _ = cuda.cuMemcpyHtoD(a_d, a_h.^?*void, size_a)
+    _ = cuda.cuMemcpyHtoD(b_d, b_h.^?*void, size_b)
+
+    stride_am: i32 = K
+    stride_ak: i32 = 1
+    stride_bk: i32 = N
+    stride_bn: i32 = 1
+    stride_cm: i32 = N
+    stride_cn: i32 = 1
+
+    block_size: i32 = 128
+    grid_size: i32 = M
+
+    scratch := triton.alloc_scratch(0, 0)
+
+    base_params: [12]?*void = [
+        (&a_d).^?*void,
+        (&b_d).^?*void,
+        (&c_d).^?*void,
+        (&M).^?*void,
+        (&N).^?*void,
+        (&K).^?*void,
+        (&stride_am).^?*void,
+        (&stride_ak).^?*void,
+        (&stride_bk).^?*void,
+        (&stride_bn).^?*void,
+        (&stride_cm).^?*void,
+        (&stride_cn).^?*void,
+    ]
+
+    params := triton.make_params(12.(usize), base_params, &scratch)
+
+    res = cuda.cuLaunchKernel(
+        kernel,
+        grid_size,
+        1,
+        1,
+        block_size,
+        1,
+        1,
+        0,
+        null,
+        (&params).^(?**void),
+        null,
+    )
+
+    if res != cuda.SUCCESS {
+        io.println("Kernel launch failed: %d", res)
+        return
+    }
+
+    _ = cuda.cuMemcpyDtoH(c_h.^?*void, c_d, size_c)
+
+    success := true
+    epsilon: f32 = 0.01.(f32)
+    row: i32 = 0
+    while row < M and success {
+        col: i32 = 0
+        while col < N {
+            sum: f32 = 0
+            k2: i32 = 0
+            while k2 < K {
+                a_val := a_h[row * K + k2]
+                b_val := b_h[k2 * N + col]
+                sum = sum + a_val * b_val
+                k2 = k2 + 1
+            }
+            actual := c_h[row * N + col]
+            diff := actual - sum
+            if diff < 0 { diff = -diff }
+            if diff > epsilon {
+                io.println("Mismatch at row %d col %d: expected %f got %f", row, col, sum, actual)
+                success = false
+                break
+            }
+            col = col + 1
+        }
+        row = row + 1
+    }
+    if success { io.println("Matmul verification passed", ()) }
+
+    _ = cuda.cuMemFree(a_d)
+    _ = cuda.cuMemFree(b_d)
+    _ = cuda.cuMemFree(c_d)
+    triton.free_scratch(&scratch)
+}

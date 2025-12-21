@@ -83,3 +83,23 @@ test "generics: nested method specialization per owner" {
     y := TI64.init(7)
     if !testing.expect_equal_i64(7, y.item) { return Error.Fail }
 }
+
+// Functions that take comptime parameters should be specialized and callable at runtime.
+with_comptime_value :: proc(comptime K: i32, x: i32) i32 {
+    return x + K
+}
+
+with_only_comptime :: proc(comptime Offset: i32) i32 {
+    // No runtime params: specialization must still materialize a body.
+    return Offset + 1
+}
+
+test "generics: comptime value params are specialized" {
+    if !testing.expect_equal_i64(15, with_comptime_value(5, 10).(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(42, with_comptime_value(40, 2).(i64)) { return Error.Fail }
+}
+
+test "generics: comptime-only params still emit a callable body" {
+    if !testing.expect_equal_i64(6, with_only_comptime(5).(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(11, with_only_comptime(10).(i64)) { return Error.Fail }
+}

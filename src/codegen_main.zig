@@ -132,6 +132,9 @@ mlir_ctx: mlir.Context,
 loc: mlir.Location,
 /// MLIR module under construction.
 module: mlir.Module,
+/// When true, emit only triton kernels and skip other functions.
+emit_only_triton: bool,
+has_triton_fns: bool = false,
 
 /// Cached mapping from SR location IDs to MLIR location objects.
 loc_cache: std.AutoHashMap(cst.LocId, mlir.Location),
@@ -193,6 +196,8 @@ cur_region: ?mlir.Region = null,
 cur_block: ?mlir.Block = null,
 /// Entry block for the active function.
 func_entry_block: ?mlir.Block = null,
+/// Symbol ID for the function currently being emitted.
+current_func_sym: ?tir.StrId = null,
 /// Cached constant `1` used when constructing branch arguments.
 i64_one_in_entry: ?mlir.Value = null,
 /// Join block that receives the control flow when returning from multiple sites.
@@ -410,10 +415,30 @@ fn appendMlirSpliceValue(
     self: *Codegen,
     buf: *ArrayList(u8),
     value: comp.ComptimeValue,
+    ty: ?types.TypeId,
 ) !void {
     switch (value) {
         .Void => return error.MlirSpliceMissingValue,
         .Int => |v| {
+            if (ty) |tid| {
+                const k = self.context.type_store.getKind(tid);
+                const maybe_width: u32 = switch (k) {
+                    .I8 => 8,
+                    .I16 => 16,
+                    .I32 => 32,
+                    .I64 => 64,
+                    .U8 => 8,
+                    .U16 => 16,
+                    .U32 => 32,
+                    .U64 => 64,
+                    else => unreachable,
+                };
+                if (maybe_width != 0) {
+                    var writer = buf.writer();
+                    try writer.print("{d} : i{d}", .{ v, maybe_width });
+                    return;
+                }
+            }
             var writer = buf.writer();
             try writer.print("{}", .{v});
         },
@@ -443,11 +468,19 @@ fn appendMlirSpliceValue(
             var writer = buf.writer();
             try writer.print("range({d}..{d}{s})", .{ rg.start, rg.end, if (rg.inclusive) "=" else "" });
         },
-        .Type => |ty| {
-            const writer = buf.writer();
-            try self.context.type_store.fmt(ty, writer);
+        .Type => |type_val| {
+            const normalized = if (self.context.type_store.getKind(type_val) == .TypeType)
+                self.context.type_store.get(.TypeType, type_val).of
+            else
+                type_val;
+            const mlir_ty = self.llvmTypeOf(normalized) catch {
+                const writer = buf.writer();
+                try self.context.type_store.formatTypeForDiagnostic(type_val, types.FormatOptions{}, writer);
+                return;
+            };
+            try self.appendMlirTypeText(buf, mlir_ty);
         },
-        .MlirType => |ty| try self.appendMlirTypeText(buf, ty),
+        .MlirType => |mlir_ty| try self.appendMlirTypeText(buf, mlir_ty),
         .MlirAttribute => |attr| try self.appendMlirAttributeText(buf, attr),
         .MlirModule => |module| try self.appendMlirModuleText(buf, module),
         .Pointer => |_| try buf.appendSlice("<pointer>"),
@@ -471,7 +504,7 @@ fn renderMlirTemplate(
                 const text = t.instrs.strs.get(piece.text);
                 try buf.appendSlice(text);
             },
-            .splice => try self.appendMlirSpliceValue(&buf, piece.value),
+            .splice => try self.appendMlirSpliceValue(&buf, piece.value, piece.ty),
         }
     }
 
@@ -496,6 +529,7 @@ fn diagnosticHandler(diag: mlir.c.MlirDiagnostic, userdata: ?*anyopaque) callcon
     var had_error = false;
     var sink = PrintBuffer{ .list = &buf, .had_error = &had_error };
     mlir.c.mlirDiagnosticPrint(diag, printCallback, &sink);
+    std.debug.print("MLIR Diagnostic Raw: {s}\n", .{buf.items});
     const loc = mlir.c.mlirDiagnosticGetLocation(diag);
     var start = mlir.c.mlirLocationFileLineColRangeGetStartColumn(loc);
     var end = mlir.c.mlirLocationFileLineColRangeGetEndColumn(loc);
@@ -511,7 +545,9 @@ fn diagnosticHandler(diag: mlir.c.MlirDiagnostic, userdata: ?*anyopaque) callcon
 // Init / Deinit
 // ----------------------------------------------------------------
 /// Create a fresh `Codegen` driver with initialized caches and DI metadata.
-pub fn init(gpa: Allocator, context: *compile.Context, ctx: mlir.Context) Codegen {
+pub fn init(gpa: Allocator, context: *compile.Context, mlir_ctx: *mlir.Context, emit_only_triton: bool) Codegen {
+    const ctx = mlir_ctx.*;
+    mlir_ctx.setAllowUnregisteredDialects(true);
     const loc = mlir.Location.unknownGet(ctx);
     const module = mlir.Module.createEmpty(loc);
     const void_ty = mlir.Type{ .handle = mlir.c.mlirLLVMVoidTypeGet(ctx.handle) };
@@ -523,6 +559,7 @@ pub fn init(gpa: Allocator, context: *compile.Context, ctx: mlir.Context) Codege
         .mlir_ctx = ctx,
         .loc = loc,
         .module = module,
+        .emit_only_triton = emit_only_triton,
         .loc_cache = .init(gpa),
         .file_cache = .init(gpa),
         .line_index_cache = .init(gpa),
@@ -587,7 +624,7 @@ pub fn deinit(self: *Codegen) void {
     self.global_addr_cache.deinit();
     self.force_llvm_func_syms.deinit();
     var li_it = self.line_index_cache.valueIterator();
-    while (li_it.next()) |lines| self.gpa.free(lines);
+    while (li_it.next()) |lines| self.gpa.free(lines.*);
     self.line_index_cache.deinit();
     var it = self.file_cache.valueIterator();
     while (it.next()) |src| {
@@ -711,6 +748,129 @@ pub fn emit(self: *Codegen, levels: *const compile.DependencyLevels) !mlir.Modul
     return self.module;
 }
 
+pub fn emitTritonModule(self: *Codegen, levels: *const compile.DependencyLevels) !mlir.Module {
+    self.emit_only_triton = true;
+    var unit_by_file: std.AutoHashMap(u32, *package.FileUnit) = .init(self.gpa);
+    defer unit_by_file.deinit();
+
+    var pkg_iter = self.context.compilation_unit.packages.iterator();
+    while (pkg_iter.next()) |pkg| {
+        var source_iter = pkg.value_ptr.sources.iterator();
+        while (source_iter.next()) |unit| {
+            try unit_by_file.put(unit.value_ptr.file_id, unit.value_ptr);
+        }
+    }
+
+    var ttg_target: ?[]const u8 = null;
+    var ttg_num_warps: ?i32 = null;
+    var ttg_threads_per_warp: ?i32 = null;
+    var ttg_ptx_version: ?i32 = null;
+
+    for (levels.levels.items) |level| {
+        if (level.items.len == 0) continue;
+
+        for (level.items) |file_id| {
+            const unit = unit_by_file.get(file_id) orelse continue;
+            if (unit.tir == null) continue;
+            for (unit.tir.?.funcs.func_pool.data.items) |fid| {
+                const f = unit.tir.?.funcs.Function.get(fid);
+                if (!f.is_triton_fn) continue;
+
+                // Check attributes
+                const attrs = unit.tir.?.instrs.attribute_pool.slice(f.attrs);
+                for (attrs) |aid| {
+                    const attr = unit.tir.?.instrs.Attribute.get(aid);
+                    const name = unit.tir.?.instrs.strs.get(attr.name);
+                    if (!attr.value.isNone()) {
+                        const vid = attr.value.unwrap();
+                        if (vid.toRaw() < unit.tir.?.value_defs.items.len) {
+                            const instr_id = unit.tir.?.value_defs.items[vid.toRaw()];
+                            if (instr_id.toRaw() != std.math.maxInt(u32)) {
+                                const okind = unit.tir.?.instrs.index.kinds.items[instr_id.toRaw()];
+                                const row_idx = unit.tir.?.instrs.index.rows.items[instr_id.toRaw()];
+
+                                if (std.mem.eql(u8, name, "triton_target")) {
+                                    if (okind == .ConstString) {
+                                        const row = unit.tir.?.instrs.ConstString.get(cst.Index(tir.Rows.ConstString).fromRaw(row_idx));
+                                        ttg_target = unit.tir.?.instrs.strs.get(row.text);
+                                    }
+                                } else if (std.mem.eql(u8, name, "triton_num_warps")) {
+                                    if (okind == .ConstInt) {
+                                        const row = unit.tir.?.instrs.ConstInt.get(cst.Index(tir.Rows.ConstInt).fromRaw(row_idx));
+                                        ttg_num_warps = @intCast(row.value);
+                                    }
+                                } else if (std.mem.eql(u8, name, "triton_threads_per_warp")) {
+                                    if (okind == .ConstInt) {
+                                        const row = unit.tir.?.instrs.ConstInt.get(cst.Index(tir.Rows.ConstInt).fromRaw(row_idx));
+                                        ttg_threads_per_warp = @intCast(row.value);
+                                    }
+                                } else if (std.mem.eql(u8, name, "triton_ptx_version")) {
+                                    if (okind == .ConstInt) {
+                                        const row = unit.tir.?.instrs.ConstInt.get(cst.Index(tir.Rows.ConstInt).fromRaw(row_idx));
+                                        ttg_ptx_version = @intCast(row.value);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                const params = unit.tir.?.funcs.param_pool.slice(f.params);
+                var has_any = self.context.type_store.getKind(f.result) == .Any;
+                for (params) |pid| {
+                    const p = unit.tir.?.funcs.Param.get(pid);
+                    if (self.context.type_store.getKind(p.ty) == .Any) {
+                        has_any = true;
+                        break;
+                    }
+                }
+                if (has_any) continue;
+                try self.emitTritonFunction(fid, unit.tir.?);
+            }
+        }
+    }
+
+    var mod_op = self.module.getOperation();
+    if (ttg_target) |t| {
+        mod_op.setDiscardableAttributeByName(mlir.StringRef.from("ttg.target"), self.strAttr(t));
+    }
+    if (ttg_num_warps) |n| {
+        mod_op.setDiscardableAttributeByName(mlir.StringRef.from("ttg.num-warps"), mlir.Attribute.integerAttrGet(self.i32_ty, n));
+    }
+    if (ttg_threads_per_warp) |n| {
+        mod_op.setDiscardableAttributeByName(mlir.StringRef.from("ttg.threads-per-warp"), mlir.Attribute.integerAttrGet(self.i32_ty, n));
+    }
+    if (ttg_ptx_version) |n| {
+        mod_op.setDiscardableAttributeByName(mlir.StringRef.from("ttg.ptx-version"), mlir.Attribute.integerAttrGet(self.i32_ty, n));
+    }
+
+    for (levels.levels.items) |level| {
+        if (level.items.len == 0) continue;
+        for (level.items) |file_id| {
+            const unit = unit_by_file.get(file_id) orelse continue;
+            if (unit.tir == null) continue;
+            for (unit.tir.?.funcs.func_pool.data.items) |fid| {
+                const f = unit.tir.?.funcs.Function.get(fid);
+                if (!f.is_triton_fn) continue;
+                const params = unit.tir.?.funcs.param_pool.slice(f.params);
+                var has_any = self.context.type_store.getKind(f.result) == .Any;
+                for (params) |pid| {
+                    const p = unit.tir.?.funcs.Param.get(pid);
+                    if (self.context.type_store.getKind(p.ty) == .Any) {
+                        has_any = true;
+                        break;
+                    }
+                }
+                if (has_any) continue;
+                const blocks = unit.tir.?.funcs.block_pool.slice(f.blocks);
+                if (blocks.len > 0) try self.emitFunctionBody(fid, unit.tir.?);
+            }
+        }
+    }
+
+    return self.module;
+}
+
 /// Lower a single TIR unit into MLIR, emitting functions and debug info.
 pub fn emitModule(
     self: *Codegen,
@@ -718,10 +878,6 @@ pub fn emitModule(
 ) !mlir.Module {
     const prev_loc = self.loc;
     defer self.loc = prev_loc;
-
-    // const prev_type_info = self.active_type_info;
-    // self.active_type_info = type_info;
-    // defer self.active_type_info = prev_type_info;
 
     self.di_subprograms.clearRetainingCapacity();
     self.loc_cache.clearRetainingCapacity();
@@ -731,9 +887,18 @@ pub fn emitModule(
     try self.emitExternDecls(t);
 
     const func_ids = t.funcs.func_pool.data.items;
-    for (func_ids) |fid| try self.emitFunctionHeader(fid, t);
+
     for (func_ids) |fid| {
         const row = t.funcs.Function.get(fid);
+        if (row.is_triton_fn) continue;
+        try self.emitFunctionHeader(fid, t);
+    }
+    for (func_ids) |fid| {
+        const row = t.funcs.Function.get(fid);
+        if (row.is_triton_fn) {
+            self.has_triton_fns = true;
+            continue;
+        }
         const blocks = t.funcs.block_pool.slice(row.blocks);
         if (blocks.len > 0) try self.emitFunctionBody(fid, t);
     }
@@ -1010,6 +1175,85 @@ fn emitExternDecls(self: *Codegen, t: *tir.TIR) !void {
     }
 }
 
+/// Emit a Triton kernel declaration (`tt.func`) for `f_id`. Body is filled later.
+fn emitTritonFunction(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
+    const f = t.funcs.Function.get(f_id);
+    const func_name = t.instrs.strs.get(f.name);
+    const func_name_id = f.name;
+
+    if (self.func_syms.contains(func_name_id)) return;
+
+    const params = t.funcs.param_pool.slice(f.params);
+
+    var param_tys = try self.gpa.alloc(mlir.Type, params.len);
+    defer self.gpa.free(param_tys);
+    for (params, 0..) |p_id, i| {
+        const p = t.funcs.Param.get(p_id);
+        param_tys[i] = try self.llvmTypeOf(p.ty);
+    }
+
+    const ret_kind = self.context.type_store.getKind(f.result);
+    const ret_no_result = switch (ret_kind) {
+        .Void, .Noreturn => true,
+        else => false,
+    };
+    const ret_ty = if (ret_no_result) self.void_ty else try self.llvmTypeOf(f.result);
+    const results: []const mlir.Type = if (ret_no_result) &.{} else &.{ret_ty};
+    const fty = mlir.Type.getFunctionType(
+        self.mlir_ctx,
+        @intCast(param_tys.len),
+        param_tys,
+        @intCast(results.len),
+        results,
+    );
+
+    var attrs: std.ArrayList(mlir.NamedAttribute) = .empty;
+    defer attrs.deinit(self.gpa);
+
+    const attr_ids = t.instrs.attribute_pool.slice(f.attrs);
+    var is_kernel = false;
+    for (attr_ids) |aid| {
+        const arow = t.instrs.Attribute.get(aid);
+        const name = t.instrs.strs.get(arow.name);
+        if (std.mem.eql(u8, name, "kernel") or std.mem.eql(u8, name, "triton_kernel")) {
+            is_kernel = true;
+            break;
+        }
+    }
+
+    try attrs.append(self.gpa, self.named("sym_name", self.strAttr(func_name)));
+    try attrs.append(self.gpa, self.named("function_type", mlir.Attribute.typeAttrGet(fty)));
+    try attrs.append(self.gpa, self.named("sym_visibility", self.strAttr(if (is_kernel) "public" else "private")));
+
+    const region = mlir.Region.create();
+
+    const fnop = self.buildOp("tt.func", EmitOpArgs{
+        .attributes = attrs.items,
+        .regions = &.{region},
+    });
+
+    var body = self.module.getBody();
+    body.appendOwnedOperation(fnop);
+
+    // Record minimal FuncInfo to avoid re-emission.
+    const copied_param_tys = blk: {
+        const copy = try self.gpa.alloc(mlir.Type, param_tys.len);
+        std.mem.copyForwards(mlir.Type, copy, param_tys);
+        break :blk copy;
+    };
+
+    const finfo: FuncInfo = .{
+        .op = fnop,
+        .is_variadic = false,
+        .n_formals = params.len,
+        .ret_type = ret_ty,
+        .param_types = copied_param_tys,
+        .owns_param_types = true,
+        .dbg_subprogram = null,
+    };
+    _ = try self.func_syms.put(func_name_id, finfo);
+}
+
 /// Prepare the MLIR function declaration/operator for `f_id` before emitting its body.
 fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
     const f = t.funcs.Function.get(f_id);
@@ -1181,6 +1425,9 @@ fn emitFunctionBody(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
     const finfo = self.func_syms.get(f.name).?;
     self.current_scope = finfo.dbg_subprogram;
     defer self.current_scope = null;
+    self.current_func_sym = f.name;
+    defer self.current_func_sym = null;
+    self.ret_type_cache = finfo.ret_type;
     var func_op = finfo.op;
     var region = func_op.getRegion(0);
 
@@ -1262,11 +1509,12 @@ fn emitFunctionBody(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
     }
 
     // Create a dedicated return-join block at end of region for func.func
-    const is_llvm_func = std.mem.eql(u8, func_op.getName().str().toSlice(), "llvm.func");
-    if (!is_llvm_func) {
+    const op_name = func_op.getName().str().toSlice();
+    const is_llvm_func = std.mem.eql(u8, op_name, "llvm.func");
+    const is_tt_func = std.mem.eql(u8, op_name, "tt.func");
+    if (!is_llvm_func and !is_tt_func) {
         const has_res = !finfo.ret_type.equal(self.void_ty);
         self.ret_has_value = has_res;
-        self.ret_type_cache = finfo.ret_type;
         const arg_ty_slice: []const mlir.Type = if (has_res) &.{finfo.ret_type} else &.{};
         const arg_loc_slice: []const mlir.Location = if (has_res) &.{entry_mlir_loc} else &.{};
         const ret_blk = mlir.Block.create(arg_ty_slice, arg_loc_slice);
@@ -1392,6 +1640,63 @@ fn ensureFuncDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !FuncIn
     }
     params_sr = params_sr_list.items;
 
+    const ret_no_result = switch (self.context.type_store.getKind(ret_sr)) {
+        .Void, .Noreturn => true,
+        else => false,
+    };
+
+    if (self.emit_only_triton) {
+        var param_tys = try self.gpa.alloc(mlir.Type, params_sr.len);
+        defer self.gpa.free(param_tys);
+        for (params_sr, 0..) |psr, idx| {
+            param_tys[idx] = try self.llvmTypeOf(psr);
+        }
+
+        var res_buf: [1]mlir.Type = undefined;
+        const n_res: usize = if (ret_no_result) 0 else blk: {
+            res_buf[0] = try self.llvmTypeOf(ret_sr);
+            break :blk 1;
+        };
+        const res_slice = res_buf[0..n_res];
+        const fty = mlir.Type.getFunctionType(
+            self.mlir_ctx,
+            @intCast(param_tys.len),
+            param_tys,
+            @intCast(n_res),
+            res_slice,
+        );
+
+        const attrs = [_]mlir.NamedAttribute{
+            self.named("sym_name", self.strAttr(name)),
+            self.named("function_type", mlir.Attribute.typeAttrGet(fty)),
+            self.named("sym_visibility", self.strAttr("private")),
+        };
+
+        const prev_loc = self.pushLocation(p.loc);
+        const region = mlir.Region.create();
+        const fnop = self.buildOp("tt.func", EmitOpArgs{
+            .attributes = &attrs,
+            .regions = &.{region},
+        });
+        var body = self.module.getBody();
+        body.appendOwnedOperation(fnop);
+        self.loc = prev_loc;
+
+        const param_types_copy = try self.gpa.alloc(mlir.Type, param_tys.len);
+        std.mem.copyForwards(mlir.Type, param_types_copy, param_tys);
+        const info: FuncInfo = .{
+            .op = fnop,
+            .is_variadic = is_var,
+            .n_formals = params_sr.len,
+            .ret_type = if (ret_no_result) self.void_ty else res_slice[0],
+            .param_types = param_types_copy,
+            .owns_param_types = true,
+            .dbg_subprogram = null,
+        };
+        try self.func_syms.put(callee_id, info);
+        return info;
+    }
+
     // Lower with classifier: same logic as emitExternDecls
     // Worst case: sret slot (+1) and each param expands to two scalars.
     var lowered_params = try self.gpa.alloc(mlir.Type, params_sr.len * 2 + 2);
@@ -1400,11 +1705,6 @@ fn ensureFuncDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !FuncIn
     defer self.gpa.free(argAttrs);
     var n_args: usize = 0;
 
-    const ret_kind = self.context.type_store.getKind(ret_sr);
-    const ret_no_result = switch (ret_kind) {
-        .Void, .Noreturn => true,
-        else => false,
-    };
     var ret_type: mlir.Type = self.void_ty;
     var retClass: abi.AbiClass = undefined;
 
@@ -1662,6 +1962,47 @@ fn emitBinArithWithComplex(
 
 /// Emit the MLIR representation of integer/floating point addition.
 fn emitAdd(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
+    var in_triton_ctx = self.emit_only_triton;
+    if (!in_triton_ctx) {
+        if (self.current_func_sym) |sym| {
+            if (self.func_syms.get(sym)) |cinfo| {
+                in_triton_ctx = std.mem.eql(u8, cinfo.op.getName().str().toSlice(), "tt.func");
+            }
+        }
+    }
+
+    if (in_triton_ctx) {
+        const res_kind = self.srKind(p.ty);
+        const res_is_ptr_tensor = res_kind == .Tensor and blk: {
+            const tinfo = self.context.type_store.get(.Tensor, p.ty);
+            const ek = self.context.type_store.getKind(tinfo.elem);
+            break :blk ek == .Ptr or ek == .MlirType;
+        };
+        const lhs_ty = self.srTypeOfValue(p.lhs);
+        const rhs_ty = self.srTypeOfValue(p.rhs);
+        const lhs_ptr_like = self.srKind(lhs_ty) == .Ptr or self.srKind(lhs_ty) == .MlirType;
+        const rhs_ptr_like = self.srKind(rhs_ty) == .Ptr or self.srKind(rhs_ty) == .MlirType;
+
+        if (res_kind == .Ptr or res_kind == .MlirType or res_is_ptr_tensor or (lhs_ptr_like and self.srKind(p.ty) == .Tensor) or (rhs_ptr_like and self.srKind(p.ty) == .Tensor)) {
+            const lhs = self.getVal(p.lhs);
+            const rhs = self.getVal(p.rhs);
+            const ptr_first = if (lhs_ptr_like) lhs else rhs;
+            const off_first = if (lhs_ptr_like) rhs else lhs;
+            const res_mlir = try self.llvmTypeOf(p.ty);
+            var ptr_arg = ptr_first;
+            if (res_kind == .Tensor and !ptr_arg.getType().equal(res_mlir)) {
+                // Broadcast the base pointer to match the tensor shape expected by tt.addptr.
+                ptr_arg = self.emitOp("tt.splat", EmitOpArgs{
+                    .operands = &.{ptr_first},
+                    .results = &.{res_mlir},
+                });
+            }
+            return self.emitOp("tt.addptr", EmitOpArgs{
+                .operands = &.{ ptr_arg, off_first },
+                .results = &.{res_mlir},
+            });
+        }
+    }
     return self.emitBinArithWithComplex(p, .add, "complex.add");
 }
 
@@ -2014,11 +2355,41 @@ fn emitRangeMake(self: *Codegen, p: tir.Rows.RangeMake) !mlir.Value {
 fn emitBroadcast(self: *Codegen, p: tir.Rows.Broadcast) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
-    const vector_ty = try self.llvmTypeOf(p.ty);
-    const scalar_val = self.getVal(p.value);
+    const target_ty = try self.llvmTypeOf(p.ty);
+    const sr_kind = self.context.type_store.getKind(p.ty);
+
+    var scalar_val = self.getVal(p.value);
+    const elem_ty = switch (sr_kind) {
+        .Tensor => blk: {
+            const info = self.context.type_store.get(.Tensor, p.ty);
+            const elem_mlir = try self.llvmTypeOf(info.elem);
+            if (!scalar_val.getType().equal(elem_mlir)) {
+                scalar_val = try self.coerceOnBranch(scalar_val, elem_mlir, info.elem, self.srTypeOfValue(p.value));
+            }
+            break :blk elem_mlir;
+        },
+        else => blk: {
+            const info = self.context.type_store.get(.Simd, p.ty);
+            const elem_mlir = try self.llvmTypeOf(info.elem);
+            if (!scalar_val.getType().equal(elem_mlir)) {
+                scalar_val = try self.coerceOnBranch(scalar_val, elem_mlir, info.elem, self.srTypeOfValue(p.value));
+            }
+            break :blk elem_mlir;
+        },
+    };
+    _ = elem_ty; // unused when already coerced
+
+    if (sr_kind == .Tensor) {
+        const op_name = if (self.emit_only_triton) "tt.splat" else "tensor.splat";
+        return self.emitOp(op_name, EmitOpArgs{
+            .operands = &.{scalar_val},
+            .results = &.{target_ty},
+        });
+    }
+
     return self.emitOp("vector.broadcast", EmitOpArgs{
         .operands = &.{scalar_val},
-        .results = &.{vector_ty},
+        .results = &.{target_ty},
     });
 }
 
@@ -2493,7 +2864,9 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
         }
     }
 
-    const isExternLL = std.mem.eql(u8, finfo.?.op.getName().str().toSlice(), "llvm.func");
+    const callee_op_name = finfo.?.op.getName().str().toSlice();
+    const isExternLL = std.mem.eql(u8, callee_op_name, "llvm.func");
+    const callee_is_tt = std.mem.eql(u8, callee_op_name, "tt.func");
 
     // Gather SR arg types and MLIR values
     const args_slice = t.instrs.val_list_pool.slice(p.args);
@@ -2556,6 +2929,30 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
     };
     const want_res_mlir = try self.llvmTypeOf(want_res_sr);
     const want_has_res = !want_no_result and !self.void_ty.equal(want_res_mlir);
+
+    const caller_is_tt = blk: {
+        if (self.current_func_sym) |sym| {
+            if (self.func_syms.get(sym)) |cinfo| {
+                break :blk std.mem.eql(u8, cinfo.op.getName().str().toSlice(), "tt.func");
+            }
+        }
+        break :blk false;
+    };
+    const use_tt_call = self.emit_only_triton or callee_is_tt or caller_is_tt;
+
+    if (use_tt_call) {
+        const call_args = try self.prepareInternalCallArgs(src_vals, src_sr, finfo.?);
+        defer self.gpa.free(call_args);
+        const attrs = [_]mlir.NamedAttribute{
+            self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(callee_name))),
+        };
+        const call = self.appendOp("tt.call", EmitOpArgs{
+            .operands = call_args,
+            .results = if (want_has_res) &.{want_res_mlir} else &.{},
+            .attributes = &attrs,
+        });
+        return if (want_has_res) call.getResult(0) else .empty();
+    }
 
     if (!isExternLL) {
         // Internal call: unchanged (func.call)
@@ -3493,6 +3890,8 @@ fn emitInlineMlirOperation(
     }
     try writer.writeAll("}\n}"); // close func and module
 
+    // std.debug.print("Parsing inline MLIR:\n{s}\n", .{func_str.items});
+
     // 3. Parse the module containing the function
     var parsed_module = mlir.Module.createParse(
         self.mlir_ctx,
@@ -3511,24 +3910,42 @@ fn emitInlineMlirOperation(
     defer parsed_module.destroy();
 
     var func_op = parsed_module.getBody().getFirstOperation();
-    func_op.removeFromParent();
+    var region = func_op.getRegion(0);
+    var entry = region.getFirstBlock();
 
-    // 4. Add the function to the current module
-    var body = self.module.getBody();
-    body.appendOwnedOperation(func_op);
+    // Remap block arguments to the provided SSA values.
+    for (arg_values.items, 0..) |av, i| {
+        const barg = entry.getArgument(i);
+        mlir.Value.replaceAllUsesOfWith(barg, av);
+    }
 
-    // 5. Create a call to this new function
-    const attrs = [_]mlir.NamedAttribute{
-        self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(func_name_buf))),
-    };
-    const call = self.appendOp("func.call", EmitOpArgs{
-        .operands = arg_values.items,
-        .results = if (has_result) &.{result_ty} else &.{},
-        .attributes = &attrs,
-    });
-
+    // Capture return value (if any) and drop the terminator.
+    var ret_val: ?mlir.Value = null;
     if (has_result) {
-        return call.getResult(0);
+        var term = entry.getTerminator();
+        if (term.getNumOperands() > 0) {
+            ret_val = term.getOperand(0);
+        }
+        term.removeFromParent();
+        term.destroy();
+    } else {
+        var term = entry.getTerminator();
+        term.removeFromParent();
+        term.destroy();
+    }
+
+    // Move all operations from the parsed entry block into the current block.
+    var op = entry.getFirstOperation();
+    while (!op.isNull()) {
+        const next = op.getNextInBlock();
+        op.removeFromParent();
+        self.cur_block.?.appendOwnedOperation(op);
+        op = next;
+    }
+
+    // Return the inlined value (if any).
+    if (has_result) {
+        return ret_val orelse mlir.Value.empty();
     } else {
         return mlir.Value.empty();
     }
@@ -3546,6 +3963,7 @@ fn emitCmp(
     defer self.loc = prev_loc;
     var lhs = self.getVal(p.lhs);
     var rhs = self.getVal(p.rhs);
+    const result_ty = try self.llvmTypeOf(p.ty);
 
     if (mlir.LLVM.isLLVMPointerType(lhs.getType())) {
         lhs = self.emitUnaryValueOp("llvm.ptrtoint", lhs, self.i64_ty);
@@ -3555,7 +3973,7 @@ fn emitCmp(
     }
 
     if (lhs.getType().isAFloat()) {
-        return self.emitBinaryValueOp("arith.cmpf", lhs, rhs, self.i1_ty, &.{
+        return self.emitBinaryValueOp("arith.cmpf", lhs, rhs, result_ty, &.{
             self.named("predicate", self.arithCmpFPredAttr(pred_f)),
         });
     } else {
@@ -3565,7 +3983,7 @@ fn emitCmp(
         else
             self.arithCmpIPredAttr(pred_s);
 
-        return self.emitBinaryValueOp("arith.cmpi", lhs, rhs, self.i1_ty, &.{
+        return self.emitBinaryValueOp("arith.cmpi", lhs, rhs, result_ty, &.{
             self.named("predicate", pred),
         });
     }
@@ -3578,13 +3996,13 @@ fn emitTerminator(self: *Codegen, term_id: tir.TermId, t: *tir.TIR) !void {
             const p = t.terms.get(.Return, term_id);
             const prev_loc = self.pushLocation(p.loc);
             defer self.loc = prev_loc;
-            var func_op = self.cur_block.?.getParentOperation();
-            var name_attr = func_op.getInherentAttributeByName(mlir.StringRef.from("sym_name"));
-            const name_attr_value = name_attr.stringAttrGetValue().toSlice();
-            const sym_name_id = self.context.interner.intern(name_attr_value);
-            const finfo = self.func_syms.get(sym_name_id).?;
+            const sym_name_id = self.current_func_sym orelse return error.MlirMissingCurrentFunction;
+            const finfo = self.func_syms.get(sym_name_id) orelse return error.MlirMissingFunctionInfo;
+            const func_op = finfo.op;
             const ret_ty = finfo.ret_type;
-            const in_llvm_func = std.mem.eql(u8, func_op.getName().str().toSlice(), "llvm.func");
+            const name_ref = func_op.getName().str().toSlice();
+            const in_llvm_func = std.mem.eql(u8, name_ref, "llvm.func");
+            const in_tt_func = std.mem.eql(u8, name_ref, "tt.func");
             if (in_llvm_func) {
                 // LLVM functions still return directly
                 if (!p.value.isNone()) {
@@ -3601,6 +4019,13 @@ fn emitTerminator(self: *Codegen, term_id: tir.TermId, t: *tir.TIR) !void {
                     } else {
                         _ = self.appendOp("llvm.return", EmitOpArgs{});
                     }
+                }
+            } else if (in_tt_func) {
+                if (!p.value.isNone()) {
+                    const v = self.getVal(p.value.unwrap());
+                    _ = self.appendOp("tt.return", EmitOpArgs{ .operands = &.{v} });
+                } else {
+                    _ = self.appendOp("tt.return", EmitOpArgs{});
                 }
             } else {
                 // For func.func: branch to the join-return block with optional value.
@@ -4073,7 +4498,7 @@ fn srKind(self: *Codegen, ty: types.TypeId) types.TypeKind {
 
 /// Emit a zero constant for `ty`, using splat for vectors and `llvm.mlir.zero` otherwise.
 pub fn zeroOf(self: *Codegen, ty: mlir.Type) mlir.Value {
-    if (ty.isAVector()) {
+    if (ty.isAVector() or ty.isATensor()) {
         const elem_ty = ty.getShapedElementType();
         var elem_zero: mlir.Attribute = undefined;
         if (elem_ty.isAFloat()) {
@@ -4219,6 +4644,15 @@ pub fn storeAt(self: *Codegen, base: mlir.Value, val: mlir.Value, offset: usize)
 
 /// Emit a constant integer `v` of MLIR type `ty`.
 pub fn constInt(self: *Codegen, ty: mlir.Type, v: i128) mlir.Value {
+    if (ty.isAVector() or ty.isATensor()) {
+        const elem_ty = ty.getShapedElementType();
+        const attr = mlir.Attribute.integerAttrGet(elem_ty, @intCast(v));
+        const dense = mlir.Attribute.denseElementsAttrSplatGet(ty, attr);
+        return self.emitOp("arith.constant", EmitOpArgs{
+            .results = &.{ty},
+            .attributes = &.{self.named("value", dense)},
+        });
+    }
     return self.emitOp("llvm.mlir.constant", EmitOpArgs{
         .results = &.{ty},
         .attributes = &.{self.named("value", mlir.Attribute.integerAttrGet(ty, @intCast(v)))},
@@ -4227,6 +4661,15 @@ pub fn constInt(self: *Codegen, ty: mlir.Type, v: i128) mlir.Value {
 
 /// Emit a constant floating-point value `v` of MLIR type `ty`.
 pub fn constFloat(self: *Codegen, ty: mlir.Type, v: f64) mlir.Value {
+    if (ty.isAVector() or ty.isATensor()) {
+        const elem_ty = ty.getShapedElementType();
+        const attr = mlir.Attribute.floatAttrDoubleGet(self.mlir_ctx, elem_ty, v);
+        const dense = mlir.Attribute.denseElementsAttrSplatGet(ty, attr);
+        return self.emitOp("arith.constant", EmitOpArgs{
+            .results = &.{ty},
+            .attributes = &.{self.named("value", dense)},
+        });
+    }
     const attr = mlir.Attribute.floatAttrDoubleGet(self.mlir_ctx, ty, v);
     return self.emitOp("llvm.mlir.constant", EmitOpArgs{
         .results = &.{ty},
@@ -4264,7 +4707,7 @@ fn binArith(
     p: tir.Rows.Bin2,
 ) !mlir.Value {
     const ty = try self.llvmTypeOf(p.ty);
-    const elem_ty = if (ty.isAVector()) ty.getShapedElementType() else ty;
+    const elem_ty = if (ty.isAShaped()) ty.getShapedElementType() else ty;
 
     const op_name = if (elem_ty.isAFloat())
         switch (op_kind) {
@@ -4344,14 +4787,14 @@ fn binBit(
 
 /// Emit division operations (signed or unsigned) for the arithmetic lowerings.
 fn arithDiv(self: *Codegen, lhs: mlir.Value, rhs: mlir.Value, res_ty: mlir.Type, signed: bool) mlir.Value {
-    const elem_ty = if (res_ty.isAVector()) res_ty.getShapedElementType() else res_ty;
+    const elem_ty = if (res_ty.isAShaped()) res_ty.getShapedElementType() else res_ty;
     const op_name = if (elem_ty.isAFloat()) "arith.divf" else (if (signed) "arith.divsi" else "arith.divui");
     return self.emitBinaryValueOp(op_name, lhs, rhs, res_ty, null);
 }
 
 /// Emit remainder operations for signed/unsigned integers.
 fn arithRem(self: *Codegen, lhs: mlir.Value, rhs: mlir.Value, res_ty: mlir.Type, signed: bool) mlir.Value {
-    const elem_ty = if (res_ty.isAVector()) res_ty.getShapedElementType() else res_ty;
+    const elem_ty = if (res_ty.isAShaped()) res_ty.getShapedElementType() else res_ty;
     const op_name = if (elem_ty.isAFloat()) "arith.remf" else (if (signed) "arith.remsi" else "arith.remui");
     return self.emitBinaryValueOp(op_name, lhs, rhs, res_ty, null);
 }
@@ -4402,6 +4845,45 @@ fn ensureDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !Func
             .owns_param_types = false,
             .dbg_subprogram = null,
         };
+    }
+
+    if (self.emit_only_triton) {
+        const n_res: usize = if (ret_ty.equal(self.void_ty)) 0 else 1;
+        var res_buf: [1]mlir.Type = undefined;
+        if (n_res == 1) res_buf[0] = ret_ty;
+        const func_type = mlir.Type.getFunctionType(
+            self.mlir_ctx,
+            @intCast(arg_tys.len),
+            arg_tys,
+            @intCast(n_res),
+            res_buf[0..n_res],
+        );
+        const attrs = [_]mlir.NamedAttribute{
+            self.named("sym_name", self.strAttr(name)),
+            self.named("function_type", mlir.Attribute.typeAttrGet(func_type)),
+            self.named("sym_visibility", self.strAttr("private")),
+        };
+        const region = mlir.Region.create();
+        const func_op = self.buildOp("tt.func", EmitOpArgs{
+            .attributes = &attrs,
+            .regions = &.{region},
+        });
+        var body = self.module.getBody();
+        body.appendOwnedOperation(func_op);
+
+        const param_types_copy = try self.gpa.alloc(mlir.Type, arg_tys.len);
+        std.mem.copyForwards(mlir.Type, param_types_copy, arg_tys);
+        const info: FuncInfo = .{
+            .op = func_op,
+            .is_variadic = false,
+            .n_formals = arg_tys.len,
+            .ret_type = ret_ty,
+            .param_types = param_types_copy,
+            .owns_param_types = true,
+            .dbg_subprogram = null,
+        };
+        _ = try self.func_syms.put(p.callee, info);
+        return info;
     }
 
     // Create a plain func.func declaration so internal functions remain in the
@@ -5148,7 +5630,18 @@ pub fn llvmTypeOf(self: *Codegen, ty: types.TypeId) !mlir.Type {
         .F64 => self.f64_ty,
         .Usize => self.i64_ty,
 
-        .Function, .Ptr, .MlirModule, .MlirAttribute, .MlirType => self.llvm_ptr_ty,
+        .Function, .Ptr, .MlirModule, .MlirAttribute => self.llvm_ptr_ty,
+
+        .MlirType => blk: {
+            const mt = self.context.type_store.get(.MlirType, ty);
+            const src = self.context.type_store.strs.get(mt.src);
+            const sref = mlir.StringRef.from(src);
+            const parsed = mlir.Type.parseGet(self.mlir_ctx, sref);
+            if (parsed.isNull()) {
+                break :blk self.llvm_ptr_ty;
+            }
+            break :blk parsed;
+        },
 
         .String, .Slice => blk: {
             // { ptr, len } (opaque ptr for data)

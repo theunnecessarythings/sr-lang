@@ -9,6 +9,7 @@ sin :: extern proc(x: f64) f64
 tan :: extern proc(x: f64) f64
 sqrt :: extern proc(x: f64) f64
 pow :: extern proc(x: f64, y: f64) f64
+expf :: extern proc(x: f32) f32
 
 rand :: extern proc() i64
 

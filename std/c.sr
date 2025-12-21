@@ -1,0 +1,895 @@
+package c
+
+// Basic C aliases and constants
+ptrdiff_t :: isize
+size_t :: usize
+clock_t :: i64
+time_t :: i64
+max_align_t :: usize
+NULL :: ?*u8 = null
+
+// ---------------------------------------------------------------------------
+// limits.h
+// ---------------------------------------------------------------------------
+CHAR_BIT :: 8
+SCHAR_MIN :: -128
+SCHAR_MAX :: 127
+UCHAR_MAX :: 0xff
+CHAR_MIN :: -128
+CHAR_MAX :: 127
+MB_LEN_MAX :: 16
+SHRT_MIN :: -32768
+SHRT_MAX :: 32767
+USHRT_MAX :: 0xffff
+INT_MIN :: -2147483648
+INT_MAX :: 2147483647
+UINT_MAX :: 0xffffffff
+LONG_MIN :: -0x8000000000000000
+LONG_MAX :: 0x7fffffffffffffff
+ULONG_MAX :: 0xffffffffffffffffu64
+LLONG_MIN :: -0x8000000000000000
+LLONG_MAX :: 0x7fffffffffffffff
+ULLONG_MAX :: 0xffffffffffffffffu64
+
+// ---------------------------------------------------------------------------
+// stdarg.h (C varargs are represented as opaque structs; macros are not exposed)
+// ---------------------------------------------------------------------------
+va_list :: struct #align(16) {
+    data: [4096]u8,
+}
+
+// ---------------------------------------------------------------------------
+// string.h
+// ---------------------------------------------------------------------------
+memcpy :: extern proc(dest: *void, src: *const void, n: usize) *void
+memmove :: extern proc(dest: *void, src: *const void, n: usize) *void
+memset :: extern proc(dest: *void, c: i32, n: usize) *void
+memcmp :: extern proc(lhs: *const void, rhs: *const void, n: usize) i32
+
+strcpy :: extern proc(dest: *u8, src: *const u8) *u8
+strncpy :: extern proc(dest: *u8, src: *const u8, n: usize) *u8
+strcat :: extern proc(dest: *u8, src: *const u8) *u8
+strncat :: extern proc(dest: *u8, src: *const u8, n: usize) *u8
+
+strcmp :: extern proc(lhs: *const u8, rhs: *const u8) i32
+strcoll :: extern proc(lhs: *const u8, rhs: *const u8) i32
+strncmp :: extern proc(lhs: *const u8, rhs: *const u8, n: usize) i32
+strxfrm :: extern proc(dest: *u8, src: *const u8, n: usize) usize
+
+memchr :: extern proc(buf: *const u8, c: i32, n: usize) ?*const u8
+memchr_mut :: extern proc(buf: *u8, c: i32, n: usize) ?*u8
+strchr :: extern proc(s: *const u8, c: i32) ?*const u8
+strchr_mut :: extern proc(s: *u8, c: i32) ?*u8
+strcspn :: extern proc(s: *const u8, reject: *const u8) usize
+strpbrk :: extern proc(s: *const u8, accept: *const u8) ?*const u8
+strpbrk_mut :: extern proc(s: *u8, accept: *const u8) ?*u8
+strrchr :: extern proc(s: *const u8, c: i32) ?*const u8
+strrchr_mut :: extern proc(s: *u8, c: i32) ?*u8
+strspn :: extern proc(s: *const u8, accept: *const u8) usize
+strstr :: extern proc(haystack: *const u8, needle: *const u8) ?*const u8
+strstr_mut :: extern proc(haystack: *u8, needle: *const u8) ?*u8
+strtok :: extern proc(s: *u8, delim: *const u8) ?*u8
+strerror :: extern proc(errnum: i32) *const u8
+strlen :: extern proc(s: *const u8) usize
+
+// ---------------------------------------------------------------------------
+// ctype.h
+// ---------------------------------------------------------------------------
+isalnum :: extern proc(c: i32) i32
+isalpha :: extern proc(c: i32) i32
+isblank :: extern proc(c: i32) i32
+iscntrl :: extern proc(c: i32) i32
+isdigit :: extern proc(c: i32) i32
+isgraph :: extern proc(c: i32) i32
+islower :: extern proc(c: i32) i32
+isprint :: extern proc(c: i32) i32
+ispunct :: extern proc(c: i32) i32
+isspace :: extern proc(c: i32) i32
+isupper :: extern proc(c: i32) i32
+isxdigit :: extern proc(c: i32) i32
+tolower :: extern proc(c: i32) i32
+toupper :: extern proc(c: i32) i32
+
+// ---------------------------------------------------------------------------
+// locale.h
+// ---------------------------------------------------------------------------
+LC_CTYPE :: 0
+LC_NUMERIC :: 1
+LC_TIME :: 2
+LC_COLLATE :: 3
+LC_MONETARY :: 4
+LC_MESSAGES :: 5
+LC_ALL :: 6
+
+lconv :: struct {
+    decimal_point:       *const u8,
+    thousand_sep:        *const u8,
+    grouping:            *const u8,
+    int_curr_symbol:     *const u8,
+    currency_symbol:     *const u8,
+    mon_decimal_points:  *const u8,
+    mon_thousands_sep:   *const u8,
+    mon_grouping:        *const u8,
+    positive_sign:       *const u8,
+    negative_sign:       *const u8,
+    int_frac_digits:     i8,
+    frac_digits:         i8,
+    p_cs_precedes:       i8,
+    p_sep_by_space:      i8,
+    n_cs_precedes:       i8,
+    n_sep_by_space:      i8,
+    p_sign_posn:         i8,
+    n_sign_posn:         i8,
+    _int_p_cs_precedes:  i8,
+    _int_n_cs_precedes:  i8,
+    _int_p_sep_by_space: i8,
+    _int_n_sep_by_space: i8,
+    _int_p_sign_posn:    i8,
+    _int_n_sign_posn:    i8,
+}
+
+setlocale :: extern proc(category: i32, locale: *const u8) *const u8
+localeconv :: extern proc() *const lconv
+
+// ---------------------------------------------------------------------------
+// stddef.h
+// ---------------------------------------------------------------------------
+byte :: u8
+
+// ---------------------------------------------------------------------------
+// time.h
+// ---------------------------------------------------------------------------
+CLOCKS_PER_SEC :: 1000000
+TIME_UTC :: 1
+
+struct timespec {
+    tv_sec: time_t,
+    tv_nsec: i64,
+}
+
+struct tm {
+    tm_sec: i32,
+    tm_min: i32,
+    tm_hour: i32,
+    tm_mday: i32,
+    tm_mon: i32,
+    tm_year: i32,
+    tm_wday: i32,
+    tm_yday: i32,
+    tm_isdst: i32,
+}
+
+clock :: extern proc() clock_t
+difftime :: extern proc(time1: time_t, time0: time_t) f64
+mktime :: extern proc(timeptr: *tm) time_t
+time :: extern proc(timer: *time_t) time_t
+timespec_get :: extern proc(ts: *timespec, base: i32) i32
+asctime :: extern proc(timeptr: *const tm) *const u8
+ctime :: extern proc(timer: *const time_t) *const u8
+gmtime :: extern proc(timer: *const time_t) *tm
+localtime :: extern proc(timer: *const time_t) *tm
+strftime :: extern proc(s: *mut u8, maxsize: usize, format: *const u8, timeptr: *const tm) usize
+
+// ---------------------------------------------------------------------------
+// errno.h
+// ---------------------------------------------------------------------------
+errno :: extern proc() *i32
+
+E2BIG :: 7
+EACCES :: 13
+EADDRINUSE :: 98
+EADDRNOTAVAIL :: 99
+EAFNOSUPPORT :: 97
+EAGAIN :: 11
+EALREADY :: 114
+EBADF :: 9
+EBADMSG :: 74
+EBUSY :: 16
+ECANCELED :: 125
+ECHILD :: 10
+ECONNABORTED :: 103
+ECONNREFUSED :: 111
+ECONNRESET :: 104
+EDEADLK :: 35
+EDESTADDRREQ :: 89
+EDOM :: 33
+EEXIST :: 17
+EFAULT :: 14
+EFBIG :: 27
+EHOSTUNREACH :: 113
+EIDRM :: 43
+EILSEQ :: 84
+EINPROGRESS :: 115
+EINTR :: 4
+EINVAL :: 22
+EIO :: 5
+EISCONN :: 106
+EISDIR :: 21
+ELOOP :: 40
+EMFILE :: 24
+EMLINK :: 31
+EMSGSIZE :: 90
+ENAMETOOLONG :: 36
+ENETDOWN :: 100
+ENETRESET :: 102
+ENETUNREACH :: 101
+ENFILE :: 23
+ENOBUFS :: 105
+ENODEV :: 19
+ENOENT :: 2
+ENOEXEC :: 8
+ENOLCK :: 37
+ENOLINK :: 67
+ENOMEM :: 12
+ENOMSG :: 42
+ENOPROTOOPT :: 92
+ENOSPC :: 28
+ENOSYS :: 38
+ENOTCONN :: 107
+ENOTDIR :: 20
+ENOTEMPTY :: 39
+ENOTRECOVERABLE :: 131
+ENOTSOCK :: 88
+ENOTSUP :: 95
+ENOTTY :: 25
+ENXIO :: 6
+EOPNOTSUPP :: 95
+EOVERFLOW :: 75
+EOWNERDEAD :: 130
+EPERM :: 1
+EPIPE :: 32
+EPROTO :: 71
+EPROTONOSUPPORT :: 93
+EPROTOTYPE :: 91
+ERANGE :: 34
+EROFS :: 30
+ESPIPE :: 29
+ESRCH :: 3
+ETIMEDOUT :: 110
+ETXTBSY :: 26
+EWOULDBLOCK :: 11
+EXDEV :: 18
+
+// ---------------------------------------------------------------------------
+// math.h
+// ---------------------------------------------------------------------------
+float_t :: f32
+double_t :: f64
+
+HUGE_VAL :: 1.0 / 0.0
+HUGE_VALF :: 1.0f / 0.0f
+HUGE_VALL :: 1.0 / 0.0
+INFINITY :: 1.0 / 0.0
+NAN :: 0.0 / 0.0
+FP_INFINITE :: 1
+FP_NAN :: 2
+FP_NORMAL :: 3
+FP_SUBNORMAL :: 4
+FP_ZERO :: 5
+FP_FAST_FMA :: 1
+FP_FAST_FMAF :: 1
+FP_FAST_FMAL :: 1
+FP_ILOGB0 :: -2147483648
+FP_ILOGBNAN :: -2147483648
+MATH_ERRNO :: 1
+MATH_ERREXCEPT :: 2
+math_errhandling :: MATH_ERRNO | MATH_ERREXCEPT
+
+acos :: extern proc(x: f64) f64
+asin :: extern proc(x: f64) f64
+atan :: extern proc(x: f64) f64
+atan2 :: extern proc(y: f64, x: f64) f64
+cos :: extern proc(x: f64) f64
+sin :: extern proc(x: f64) f64
+tan :: extern proc(x: f64) f64
+acosh :: extern proc(x: f64) f64
+asinh :: extern proc(x: f64) f64
+atanh :: extern proc(x: f64) f64
+cosh :: extern proc(x: f64) f64
+sinh :: extern proc(x: f64) f64
+tanh :: extern proc(x: f64) f64
+exp :: extern proc(x: f64) f64
+exp2 :: extern proc(x: f64) f64
+expm1 :: extern proc(x: f64) f64
+log :: extern proc(x: f64) f64
+log10 :: extern proc(x: f64) f64
+log1p :: extern proc(x: f64) f64
+log2 :: extern proc(x: f64) f64
+sqrt :: extern proc(x: f64) f64
+cbrt :: extern proc(x: f64) f64
+hypot :: extern proc(x: f64, y: f64) f64
+pow :: extern proc(x: f64, y: f64) f64
+erf :: extern proc(x: f64) f64
+erfc :: extern proc(x: f64) f64
+lgamma :: extern proc(x: f64) f64
+tgamma :: extern proc(x: f64) f64
+ceil :: extern proc(x: f64) f64
+floor :: extern proc(x: f64) f64
+nearbyint :: extern proc(x: f64) f64
+rint :: extern proc(x: f64) f64
+lrint :: extern proc(x: f64) i64
+llrint :: extern proc(x: f64) i64
+round :: extern proc(x: f64) f64
+lround :: extern proc(x: f64) i64
+llround :: extern proc(x: f64) i64
+trunc :: extern proc(x: f64) f64
+fmod :: extern proc(x: f64, y: f64) f64
+remainder :: extern proc(x: f64, y: f64) f64
+copysign :: extern proc(x: f64, y: f64) f64
+nan :: extern proc(tagp: *const u8) f64
+nextafter :: extern proc(x: f64, y: f64) f64
+nexttoward :: extern proc(x: f64, y: f64) f64
+fdim :: extern proc(x: f64, y: f64) f64
+fmax :: extern proc(x: f64, y: f64) f64
+fmin :: extern proc(x: f64, y: f64) f64
+fma :: extern proc(x: f64, y: f64, z: f64) f64
+fpclassify :: extern proc(x: f64) i32
+isfinite :: extern proc(x: f64) i32
+isinf :: extern proc(x: f64) i32
+isnan :: extern proc(x: f64) i32
+isnormal :: extern proc(x: f64) i32
+signbit :: extern proc(x: f64) i32
+isgreater :: extern proc(x: f64, y: f64) i32
+isgreaterequal :: extern proc(x: f64, y: f64) i32
+isless :: extern proc(x: f64, y: f64) i32
+islessequal :: extern proc(x: f64, y: f64) i32
+islessgreater :: extern proc(x: f64, y: f64) i32
+isunordered :: extern proc(x: f64, y: f64) i32
+lerp :: extern proc(a: f64, b: f64, t: f64) f64
+
+acosf :: extern proc(x: f32) f32
+asinf :: extern proc(x: f32) f32
+atanf :: extern proc(x: f32) f32
+atan2f :: extern proc(y: f32, x: f32) f32
+cosf :: extern proc(x: f32) f32
+sinf :: extern proc(x: f32) f32
+tanf :: extern proc(x: f32) f32
+acoshf :: extern proc(x: f32) f32
+asinhf :: extern proc(x: f32) f32
+atanhf :: extern proc(x: f32) f32
+coshf :: extern proc(x: f32) f32
+sinhf :: extern proc(x: f32) f32
+tanhf :: extern proc(x: f32) f32
+expf :: extern proc(x: f32) f32
+exp2f :: extern proc(x: f32) f32
+expm1f :: extern proc(x: f32) f32
+logf :: extern proc(x: f32) f32
+log10f :: extern proc(x: f32) f32
+log1pf :: extern proc(x: f32) f32
+log2f :: extern proc(x: f32) f32
+sqrtf :: extern proc(x: f32) f32
+cbrtf :: extern proc(x: f32) f32
+hypotf :: extern proc(x: f32, y: f32) f32
+powf :: extern proc(x: f32, y: f32) f32
+erff :: extern proc(x: f32) f32
+erfcf :: extern proc(x: f32) f32
+lgammaf :: extern proc(x: f32) f32
+tgammaf :: extern proc(x: f32) f32
+ceilf :: extern proc(x: f32) f32
+floorf :: extern proc(x: f32) f32
+nearbyintf :: extern proc(x: f32) f32
+rintf :: extern proc(x: f32) f32
+lrintf :: extern proc(x: f32) i32
+llrintf :: extern proc(x: f32) i64
+roundf :: extern proc(x: f32) f32
+lroundf :: extern proc(x: f32) i32
+llroundf :: extern proc(x: f32) i64
+truncf :: extern proc(x: f32) f32
+fmodf :: extern proc(x: f32, y: f32) f32
+remainderf :: extern proc(x: f32, y: f32) f32
+copysignf :: extern proc(x: f32, y: f32) f32
+nanf :: extern proc(tagp: *const u8) f32
+nextafterf :: extern proc(x: f32, y: f32) f32
+nexttowardf :: extern proc(x: f32, y: f32) f32
+fdimf :: extern proc(x: f32, y: f32) f32
+fmaxf :: extern proc(x: f32, y: f32) f32
+fminf :: extern proc(x: f32, y: f32) f32
+fmaf :: extern proc(x: f32, y: f32, z: f32) f32
+lerpf :: extern proc(a: f32, b: f32, t: f32) f32
+
+// ---------------------------------------------------------------------------
+// stdio.h
+// ---------------------------------------------------------------------------
+
+FILE :: struct {}
+fpos_t :: struct { data: [16]u8 }
+
+_IOFBF :: 0
+_IOLBF :: 1
+_IONBF :: 2
+BUFSIZ :: 8192
+EOF :: -1
+FOPEN_MAX :: 20
+FILENAME_MAX :: 4096
+L_tmpnam :: 20
+SEEK_SET :: 0
+SEEK_CUR :: 1
+SEEK_END :: 2
+TMP_MAX :: 238328
+
+stdin :: extern var(*FILE)
+stdout :: extern var(*FILE)
+stderr :: extern var(*FILE)
+
+remove :: extern proc(filename: *const u8) i32
+rename :: extern proc(old_p: *const u8, new_p: *const u8) i32
+tmpfile :: extern proc() *FILE
+tmpnam :: extern proc(s: *mut u8) *u8
+fclose :: extern proc(stream: *FILE) i32
+fflush :: extern proc(stream: *FILE) i32
+fopen :: extern proc(filename: *const u8, mode: *const u8) *FILE
+freopen :: extern proc(filename: *const u8, mode: *const u8, stream: *FILE) *FILE
+setbuf :: extern proc(stream: *FILE, buf: *mut u8)
+setvbuf :: extern proc(stream: *FILE, buf: *mut u8, mode: i32, size: usize) i32
+fprintf :: extern proc(stream: *FILE, fmt: *const u8, args: any) i32
+fscanf :: extern proc(stream: *FILE, fmt: *const u8, args: any) i32
+printf :: extern proc(fmt: *const u8, args: any) i32
+scanf :: extern proc(fmt: *const u8, args: any) i32
+snprintf :: extern proc(s: *mut u8, n: usize, fmt: *const u8, args: any) i32
+sprintf :: extern proc(s: *mut u8, fmt: *const u8, args: any) i32
+sscanf :: extern proc(s: *const u8, fmt: *const u8, args: any) i32
+vfprintf :: extern proc(stream: *FILE, fmt: *const u8, arg: va_list) i32
+vfscanf :: extern proc(stream: *FILE, fmt: *const u8, arg: va_list) i32
+vprintf :: extern proc(fmt: *const u8, arg: va_list) i32
+vscanf :: extern proc(fmt: *const u8, arg: va_list) i32
+vsnprintf :: extern proc(s: *mut u8, n: usize, fmt: *const u8, arg: va_list) i32
+vsprintf :: extern proc(s: *mut u8, fmt: *const u8, arg: va_list) i32
+vsscanf :: extern proc(s: *const u8, fmt: *const u8, arg: va_list) i32
+fgetc :: extern proc(stream: *FILE) i32
+fgets :: extern proc(s: *mut u8, n: i32, stream: *FILE) *u8
+fputc :: extern proc(c: i32, stream: *FILE) i32
+fputs :: extern proc(s: *const u8, stream: *FILE) i32
+getc :: extern proc(stream: *FILE) i32
+getchar :: extern proc() i32
+putc :: extern proc(c: i32, stream: *FILE) i32
+putchar :: extern proc(c: i32) i32
+puts :: extern proc(s: *const u8) i32
+ungetc :: extern proc(c: i32, stream: *FILE) i32
+fread :: extern proc(ptr: *mut void, size: usize, nmemb: usize, stream: *FILE) usize
+fwrite :: extern proc(ptr: *const void, size: usize, nmemb: usize, stream: *FILE) usize
+fgetpos :: extern proc(stream: *FILE, pos: *mut fpos_t) i32
+fseek :: extern proc(stream: *FILE, offset: i64, whence: i32) i32
+fsetpos :: extern proc(stream: *FILE, pos: *const fpos_t) i32
+ftell :: extern proc(stream: *FILE) i64
+rewind :: extern proc(stream: *FILE)
+clearerr :: extern proc(stream: *FILE)
+feof :: extern proc(stream: *FILE) i32
+ferror :: extern proc(stream: *FILE) i32
+perror :: extern proc(s: *const u8)
+
+// ---------------------------------------------------------------------------
+// wchar.h
+// ---------------------------------------------------------------------------
+wchar_t :: i32
+wint_t :: i32
+mbstate_t :: struct { data: [16]u8 }
+
+fwprintf :: extern proc(stream: *FILE, fmt: *const u16, args: any) i32
+fwscanf :: extern proc(stream: *FILE, fmt: *const u16, args: any) i32
+swprintf :: extern proc(s: *mut u16, n: usize, fmt: *const u16, args: any) i32
+swscanf :: extern proc(s: *const u16, fmt: *const u16, args: any) i32
+vfwprintf :: extern proc(stream: *FILE, fmt: *const u16, arg: va_list) i32
+vfwscanf :: extern proc(stream: *FILE, fmt: *const u16, arg: va_list) i32
+vswprintf :: extern proc(s: *mut u16, n: usize, fmt: *const u16, arg: va_list) i32
+vswscanf :: extern proc(s: *const u16, fmt: *const u16, arg: va_list) i32
+vwprintf :: extern proc(fmt: *const u16, arg: va_list) i32
+vwscanf :: extern proc(fmt: *const u16, arg: va_list) i32
+wprintf :: extern proc(fmt: *const u16, args: any) i32
+wscanf :: extern proc(fmt: *const u16, args: any) i32
+fgetwc :: extern proc(stream: *FILE) wint_t
+fgetws :: extern proc(s: *mut u16, n: i32, stream: *FILE) *u16
+fputwc :: extern proc(c: wchar_t, stream: *FILE) wint_t
+fputws :: extern proc(s: *const u16, stream: *FILE) i32
+fwide :: extern proc(stream: *FILE, mode: i32) i32
+getwc :: extern proc(stream: *FILE) wint_t
+getwchar :: extern proc() wint_t
+putwc :: extern proc(c: wchar_t, stream: *FILE) wint_t
+putwchar :: extern proc(c: wchar_t) wint_t
+ungetwc :: extern proc(c: wint_t, stream: *FILE) wint_t
+wcstod :: extern proc(nptr: *const u16, endptr: *mut *mut u16) f64
+wcstof :: extern proc(nptr: *const u16, endptr: *mut *mut u16) f32
+wcstold :: extern proc(nptr: *const u16, endptr: *mut *mut u16) f64
+wcstol :: extern proc(nptr: *const u16, endptr: *mut *mut u16, base: i32) i64
+wcstoll :: extern proc(nptr: *const u16, endptr: *mut *mut u16, base: i32) i64
+wcstoul :: extern proc(nptr: *const u16, endptr: *mut *mut u16, base: i32) usize
+wcstoull :: extern proc(nptr: *const u16, endptr: *mut *mut u16, base: i32) u64
+wcscpy :: extern proc(dest: *mut u16, src: *const u16) *u16
+wcsncpy :: extern proc(dest: *mut u16, src: *const u16, n: usize) *u16
+wmemcpy :: extern proc(dest: *mut u16, src: *const u16, n: usize) *u16
+wmemmove :: extern proc(dest: *mut u16, src: *const u16, n: usize) *u16
+wcscat :: extern proc(dest: *mut u16, src: *const u16) *u16
+wcsncat :: extern proc(dest: *mut u16, src: *const u16, n: usize) *u16
+wcscmp :: extern proc(lhs: *const u16, rhs: *const u16) i32
+wcscoll :: extern proc(lhs: *const u16, rhs: *const u16) i32
+wcsncmp :: extern proc(lhs: *const u16, rhs: *const u16, n: usize) i32
+wcsxfrm :: extern proc(dest: *mut u16, src: *const u16, n: usize) usize
+wmemcmp :: extern proc(lhs: *const u16, rhs: *const u16, n: usize) i32
+wcschr :: extern proc(s: *const u16, c: wchar_t) ?*const u16
+wcschr_mut :: extern proc(s: *mut u16, c: wchar_t) ?*mut u16
+wcscspn :: extern proc(s: *const u16, reject: *const u16) usize
+wcspbrk :: extern proc(s: *const u16, accept: *const u16) ?*const u16
+wcspbrk_mut :: extern proc(s: *mut u16, accept: *const u16) ?*mut u16
+wcsrchr :: extern proc(s: *const u16, c: wchar_t) ?*const u16
+wcsrchr_mut :: extern proc(s: *mut u16, c: wchar_t) ?*mut u16
+wcsspn :: extern proc(s: *const u16, accept: *const u16) usize
+wcsstr :: extern proc(haystack: *const u16, needle: *const u16) ?*const u16
+wcsstr_mut :: extern proc(haystack: *mut u16, needle: *const u16) ?*mut u16
+wcstok :: extern proc(s: *mut u16, delim: *const u16, ptr: *mut *mut u16) ?*mut u16
+wmemchr :: extern proc(s: *const u16, c: wchar_t, n: usize) ?*const u16
+wmemchr_mut :: extern proc(s: *mut u16, c: wchar_t, n: usize) ?*mut u16
+wcslen :: extern proc(s: *const u16) usize
+wmemset :: extern proc(dest: *mut u16, c: wchar_t, n: usize) *u16
+wcsftime :: extern proc(s: *mut u16, maxsize: usize, format: *const u16, timeptr: *const tm) usize
+btowc :: extern proc(c: i32) wint_t
+wctob :: extern proc(c: wint_t) i32
+mbsinit :: extern proc(ps: *const mbstate_t) i32
+mbrlen :: extern proc(s: *const u8, n: usize, ps: *mut mbstate_t) usize
+mbrtowc :: extern proc(pwc: *mut u16, s: *const u8, n: usize, ps: *mut mbstate_t) usize
+wcrtomb :: extern proc(s: *mut u8, wc: wchar_t, ps: *mut mbstate_t) usize
+mbsrtowcs :: extern proc(dst: *mut u16, src: *const *const u8, len: usize, ps: *mut mbstate_t) usize
+wcsrtombs :: extern proc(dst: *mut u8, src: *const *const u16, len: usize, ps: *mut mbstate_t) usize
+
+// ---------------------------------------------------------------------------
+// float.h
+// ---------------------------------------------------------------------------
+FLT_RADIX :: 2
+FLT_MANT_DIG :: 24
+DBL_MANT_DIG :: 53
+LDBL_MANT_DIG :: 53
+FLT_DIG :: 6
+DBL_DIG :: 15
+LDBL_DIG :: 15
+FLT_MIN_EXP :: -125
+DBL_MIN_EXP :: -1021
+LDBL_MIN_EXP :: -1021
+FLT_MAX_EXP :: 128
+DBL_MAX_EXP :: 1024
+LDBL_MAX_EXP :: 1024
+FLT_MIN :: 1.17549435e-38
+DBL_MIN :: 2.2250738585072014e-308
+LDBL_MIN :: 2.2250738585072014e-308
+FLT_MAX :: 3.40282347e+38
+DBL_MAX :: 1.7976931348623157e+308
+LDBL_MAX :: 1.7976931348623157e+308
+FLT_EPSILON :: 1.1920929e-07
+DBL_EPSILON :: 2.220446049250313e-16
+LDBL_EPSILON :: 2.220446049250313e-16
+FLT_TRUE_MIN :: 1.401298e-45
+DBL_TRUE_MIN :: 4.9406564584124654e-324
+LDBL_TRUE_MIN :: 4.9406564584124654e-324
+FLT_MAX_10_EXP :: 38
+DBL_MAX_10_EXP :: 308
+LDBL_MAX_10_EXP :: 308
+FLT_MIN_10_EXP :: -37
+DBL_MIN_10_EXP :: -307
+LDBL_MIN_10_EXP :: -307
+DECIMAL_DIG :: 21
+FLT_EVAL_METHOD :: 0
+FLT_HAS_SUBNORM :: 1
+DBL_HAS_SUBNORM :: 1
+LDBL_HAS_SUBNORM :: 1
+
+// ---------------------------------------------------------------------------
+// setjmp.h
+// ---------------------------------------------------------------------------
+jmp_buf :: struct #align(16) {
+    data: [4096]u8,
+}
+
+setjmp :: extern proc(env: *jmp_buf) i32
+longjmp :: extern proc(env: *jmp_buf, val: i32)
+
+// ---------------------------------------------------------------------------
+// stdlib.h
+// ---------------------------------------------------------------------------
+div_t :: struct { quot: i32, rem: i32 }
+ldiv_t :: struct { quot: i64, rem: i64 }
+lldiv_t :: struct { quot: i64, rem: i64 }
+
+EXIT_FAILURE :: 1
+EXIT_SUCCESS :: 0
+RAND_MAX :: 2147483647
+MB_CUR_MAX :: 16
+
+atexit :: extern proc(func: proc()) i32
+at_quick_exit :: extern proc(func: proc()) i32
+abort :: extern proc() noreturn
+exit :: extern proc(status: i32) noreturn
+_Exit :: extern proc(status: i32) noreturn
+quick_exit :: extern proc(status: i32) noreturn
+getenv :: extern proc(name: *const u8) *const u8
+system :: extern proc(string: *const u8) i32
+aligned_alloc :: extern proc(alignment: usize, size: usize) *void
+calloc :: extern proc(nmemb: usize, size: usize) *void
+free :: extern proc(ptr: *mut void)
+malloc :: extern proc(size: usize) *void
+realloc :: extern proc(ptr: *mut void, size: usize) *void
+atof :: extern proc(nptr: *const u8) f64
+atoi :: extern proc(nptr: *const u8) i32
+atol :: extern proc(nptr: *const u8) i64
+atoll :: extern proc(nptr: *const u8) i64
+strtod :: extern proc(nptr: *const u8, endptr: *mut *mut u8) f64
+strtof :: extern proc(nptr: *const u8, endptr: *mut *mut u8) f32
+strtold :: extern proc(nptr: *const u8, endptr: *mut *mut u8) f64
+strtol :: extern proc(nptr: *const u8, endptr: *mut *mut u8, base: i32) i64
+strtoll :: extern proc(nptr: *const u8, endptr: *mut *mut u8, base: i32) i64
+strtoul :: extern proc(nptr: *const u8, endptr: *mut *mut u8, base: i32) usize
+strtoull :: extern proc(nptr: *const u8, endptr: *mut *mut u8, base: i32) u64
+mblen :: extern proc(s: *const u8, n: usize) i32
+mbtowc :: extern proc(pwc: *mut u16, s: *const u8, n: usize) i32
+wctomb :: extern proc(s: *mut u8, wc: wchar_t) i32
+mbstowcs :: extern proc(pwcs: *mut u16, s: *const u8, n: usize) usize
+wcstombs :: extern proc(pwcs: *const u16, s: *const u8, n: usize) usize
+bsearch :: extern proc(key: *const void, base: *mut void, nmemb: usize, size: usize, compar: proc(*const void, *const void) i32) *void
+qsort :: extern proc(base: *mut void, nmemb: usize, size: usize, compar: proc(*const void, *const void) i32)
+rand :: extern proc() i32
+srand :: extern proc(seed: u32)
+abs :: extern proc(j: i32) i32
+labs :: extern proc(j: i64) i64
+llabs :: extern proc(j: i64) i64
+div :: extern proc(numer: i32, denom: i32) div_t
+ldiv :: extern proc(numer: i64, denom: i64) ldiv_t
+lldiv :: extern proc(numer: i64, denom: i64) lldiv_t
+
+// ---------------------------------------------------------------------------
+// wctype.h
+// ---------------------------------------------------------------------------
+iswalnum :: extern proc(c: wchar_t) i32
+iswalpha :: extern proc(c: wchar_t) i32
+iswlower :: extern proc(c: wchar_t) i32
+iswupper :: extern proc(c: wchar_t) i32
+iswdigit :: extern proc(c: wchar_t) i32
+iswxdigit :: extern proc(c: wchar_t) i32
+iswcntrl :: extern proc(c: wchar_t) i32
+iswgraph :: extern proc(c: wchar_t) i32
+iswspace :: extern proc(c: wchar_t) i32
+iswblank :: extern proc(c: wchar_t) i32
+iswprint :: extern proc(c: wchar_t) i32
+iswpunct :: extern proc(c: wchar_t) i32
+iswctype :: extern proc(c: wchar_t, desc: i32) i32
+wctype :: extern proc(name: *const u8) i32
+towlower :: extern proc(c: wchar_t) wchar_t
+towupper :: extern proc(c: wchar_t) wchar_t
+towctrans :: extern proc(c: wchar_t, desc: i32) wchar_t
+wctrans :: extern proc(name: *const u8) i32
+
+// ---------------------------------------------------------------------------
+// signal.h
+// ---------------------------------------------------------------------------
+sig_atomic_t :: i32
+SIG_DFL :: 0
+SIG_ERR :: -1
+SIG_IGN :: 1
+SIGABRT :: 6
+SIGFPE :: 8
+SIGILL :: 4
+SIGINT :: 2
+SIGSEGV :: 11
+SIGTERM :: 15
+
+signal_handler :: proc(sig: i32)
+signal :: extern proc(sig: i32, func: signal_handler) signal_handler
+
+// ---------------------------------------------------------------------------
+// complex.h
+// ---------------------------------------------------------------------------
+double_complex :: struct { real: f64, imag: f64 }
+float_complex :: struct { real: f32, imag: f32 }
+long_double_complex :: struct { real: f64, imag: f64 }
+
+cacos :: extern proc(z: double_complex) double_complex
+cacosf :: extern proc(z: float_complex) float_complex
+casin :: extern proc(z: double_complex) double_complex
+catan :: extern proc(z: double_complex) double_complex
+ccos :: extern proc(z: double_complex) double_complex
+csin :: extern proc(z: double_complex) double_complex
+ctan :: extern proc(z: double_complex) double_complex
+cabs :: extern proc(z: double_complex) f64
+cproj :: extern proc(z: double_complex) double_complex
+conj :: extern proc(z: double_complex) double_complex
+creal :: extern proc(z: double_complex) f64
+cimag :: extern proc(z: double_complex) f64
+
+// ---------------------------------------------------------------------------
+// cinttypes.h
+// ---------------------------------------------------------------------------
+imaxdiv_t :: struct { quot: i64, rem: i64 }
+
+imaxabs :: extern proc(j: i64) i64
+imaxdiv :: extern proc(numer: i64, denom: i64) imaxdiv_t
+strtoimax :: extern proc(nptr: *const u8, endptr: *mut *mut u8, base: i32) i64
+strtoumax :: extern proc(nptr: *const u8, endptr: *mut *mut u8, base: i32) u64
+wcstoimax :: extern proc(nptr: *const u16, endptr: *mut *mut u16, base: i32) i64
+wcstoumax :: extern proc(nptr: *const u16, endptr: *mut *mut u16, base: i32) u64
+
+INTMAX_MIN :: -9223372036854775808
+INTMAX_MAX :: 9223372036854775807
+UINTMAX_MAX :: 18446744073709551615u64
+
+// ---------------------------------------------------------------------------
+// tgmath.h
+// ---------------------------------------------------------------------------
+// Macros from tgmath.h map to the functions already defined above.
+
+// ---------------------------------------------------------------------------
+// fenv.h
+// ---------------------------------------------------------------------------
+FE_ALL_EXCEPT :: 0x3f
+FE_DIVBYZERO :: 0x04
+FE_INEXACT :: 0x20
+FE_INVALID :: 0x01
+FE_OVERFLOW :: 0x08
+FE_UNDERFLOW :: 0x10
+FE_DOWNWARD :: 0
+FE_TONEAREST :: 3
+FE_TOWARDZERO :: 1
+FE_UPWARD :: 2
+FE_DFL_ENV :: 0
+
+fenv_t :: struct { data: [64]u8 }
+fexcept_t :: struct { flags: i32 }
+
+feclearexcept :: extern proc(except: i32) i32
+fegetexceptflag :: extern proc(pflag: *mut fexcept_t, except: i32) i32
+feraiseexcept :: extern proc(except: i32) i32
+fesetexceptflag :: extern proc(pflag: *const fexcept_t, except: i32) i32
+fetestexcept :: extern proc(except: i32) i32
+fegetround :: extern proc() i32
+fesetround :: extern proc(mode: i32) i32
+fegetenv :: extern proc(penv: *mut fenv_t) i32
+feholdexcept :: extern proc(penv: *mut fenv_t) i32
+fesetenv :: extern proc(penv: *const fenv_t) i32
+feupdateenv :: extern proc(penv: *const fenv_t) i32
+
+// ---------------------------------------------------------------------------
+// align.h
+// ---------------------------------------------------------------------------
+// `alignas`/`alignof` are provided by the SR compiler when targeting C-style ABI.
+
+// ---------------------------------------------------------------------------
+// stdint.h
+// ---------------------------------------------------------------------------
+int8_t :: i8
+int16_t :: i16
+int32_t :: i32
+int64_t :: i64
+int_fast8_t :: i8
+int_fast16_t :: i16
+int_fast32_t :: i32
+int_fast64_t :: i64
+int_least8_t :: i8
+int_least16_t :: i16
+int_least32_t :: i32
+int_least64_t :: i64
+intmax_t :: i64
+intptr_t :: isize
+uint8_t :: u8
+uint16_t :: u16
+uint32_t :: u32
+uint64_t :: u64
+uint_fast8_t :: u8
+uint_fast16_t :: u16
+uint_fast32_t :: u32
+uint_fast64_t :: u64
+uint_least8_t :: u8
+uint_least16_t :: u16
+uint_least32_t :: u32
+uint_least64_t :: u64
+uintmax_t :: u64
+uintptr_t :: usize
+
+INT8_MIN :: -128
+INT8_MAX :: 127
+INT16_MIN :: -32768
+INT16_MAX :: 32767
+INT32_MIN :: -2147483648
+INT32_MAX :: 2147483647
+INT64_MIN :: -9223372036854775808
+INT64_MAX :: 9223372036854775807
+UINT8_MAX :: 255
+UINT16_MAX :: 65535
+UINT32_MAX :: 4294967295u32
+UINT64_MAX :: 18446744073709551615u64
+PTRDIFF_MAX :: max(ptrdiff_t)
+PTRDIFF_MIN :: min(ptrdiff_t)
+SIZE_MAX :: max(size_t)
+UINTPTR_MAX :: max(uintptr_t)
+
+// ---------------------------------------------------------------------------
+// cuchar.h
+// ---------------------------------------------------------------------------
+mbstate_t_cuchar :: mbstate_t
+
+mbrtoc8 :: extern proc(pc8: *mut u8, s: *const u8, n: usize, ps: *mut mbstate_t) usize
+c8rtomb :: extern proc(s: *mut u8, c8: u8, ps: *mut mbstate_t) usize
+mbrtoc16 :: extern proc(pc16: *mut u16, s: *const u8, n: usize, ps: *mut mbstate_t) usize
+c16rtomb :: extern proc(s: *mut u8, c16: u16, ps: *mut mbstate_t) usize
+mbrtoc32 :: extern proc(pc32: *mut u32, s: *const u8, n: usize, ps: *mut mbstate_t) usize
+c32rtomb :: extern proc(s: *mut u8, c32: u32, ps: *mut mbstate_t) usize
+
+// ---------------------------------------------------------------------------
+// stdatomic.h
+// ---------------------------------------------------------------------------
+atomic_flag :: struct { value: i32 }
+memory_order :: enum {
+    memory_order_relaxed,
+    memory_order_acquire,
+    memory_order_release,
+    memory_order_acq_rel,
+    memory_order_seq_cst,
+}
+
+atomic_init :: extern proc(obj: *volatile atomic_flag, value: i32)
+atomic_thread_fence :: extern proc(order: memory_order)
+atomic_signal_fence :: extern proc(order: memory_order)
+atomic_is_lock_free :: extern proc(obj: *const volatile atomic_flag) bool
+atomic_store :: extern proc(object: *volatile atomic_flag, desired: i32)
+atomic_store_explicit :: extern proc(object: *volatile atomic_flag, desired: i32, order: memory_order)
+atomic_load :: extern proc(object: *const volatile atomic_flag) i32
+atomic_load_explicit :: extern proc(object: *const volatile atomic_flag, order: memory_order) i32
+atomic_exchange :: extern proc(object: *volatile atomic_flag, desired: i32) i32
+atomic_exchange_explicit :: extern proc(object: *volatile atomic_flag, desired: i32, order: memory_order) i32
+atomic_compare_exchange_strong :: extern proc(object: *volatile atomic_flag, expected: *mut i32, desired: i32) bool
+atomic_compare_exchange_strong_explicit :: extern proc(object: *volatile atomic_flag, expected: *mut i32, desired: i32, success: memory_order, failure: memory_order) bool
+atomic_compare_exchange_weak :: extern proc(object: *volatile atomic_flag, expected: *mut i32, desired: i32) bool
+atomic_compare_exchange_weak_explicit :: extern proc(object: *volatile atomic_flag, expected: *mut i32, desired: i32, success: memory_order, failure: memory_order) bool
+atomic_flag_test_and_set :: extern proc(object: *volatile atomic_flag) bool
+atomic_flag_test_and_set_explicit :: extern proc(object: *volatile atomic_flag, order: memory_order) bool
+atomic_flag_clear :: extern proc(object: *volatile atomic_flag)
+atomic_flag_clear_explicit :: extern proc(object: *volatile atomic_flag, order: memory_order)
+// Mathematical special functions ------------------------------------------------
+assoc_laguerre :: extern proc(n: u32, m: u32, x: f64) f64
+assoc_laguerref :: extern proc(n: u32, m: u32, x: f32) f32
+
+assoc_legendre :: extern proc(l: u32, m: u32, x: f64) f64
+assoc_legendref :: extern proc(l: u32, m: u32, x: f32) f32
+
+beta :: extern proc(x: f64, y: f64) f64
+betaf :: extern proc(x: f32, y: f32) f32
+
+comp_ellint_1 :: extern proc(k: f64) f64
+comp_ellint_1f :: extern proc(k: f32) f32
+comp_ellint_2 :: extern proc(k: f64) f64
+comp_ellint_2f :: extern proc(k: f32) f32
+comp_ellint_3 :: extern proc(k: f64, nu: f64) f64
+comp_ellint_3f :: extern proc(k: f32, nu: f32) f32
+
+cyl_bessel_i :: extern proc(nu: f64, x: f64) f64
+cyl_bessel_if :: extern proc(nu: f32, x: f32) f32
+cyl_bessel_j :: extern proc(nu: f64, x: f64) f64
+cyl_bessel_jf :: extern proc(nu: f32, x: f32) f32
+cyl_bessel_k :: extern proc(nu: f64, x: f64) f64
+cyl_bessel_kf :: extern proc(nu: f32, x: f32) f32
+cyl_neumann :: extern proc(nu: f64, x: f64) f64
+cyl_neumannf :: extern proc(nu: f32, x: f32) f32
+
+ellint_1 :: extern proc(k: f64, phi: f64) f64
+ellint_1f :: extern proc(k: f32, phi: f32) f32
+ellint_2 :: extern proc(k: f64, phi: f64) f64
+ellint_2f :: extern proc(k: f32, phi: f32) f32
+ellint_3 :: extern proc(k: f64, nu: f64, phi: f64) f64
+ellint_3f :: extern proc(k: f32, nu: f32, phi: f32) f32
+
+expint :: extern proc(x: f64) f64
+expintf :: extern proc(x: f32) f32
+
+hermite :: extern proc(n: u32, x: f64) f64
+hermitef :: extern proc(n: u32, x: f32) f32
+
+laguerre :: extern proc(n: u32, x: f64) f64
+laguerref :: extern proc(n: u32, x: f32) f32
+
+legendre :: extern proc(l: u32, x: f64) f64
+legendref :: extern proc(l: u32, x: f32) f32
+
+riemann_zeta :: extern proc(x: f64) f64
+riemann_zetaf :: extern proc(x: f32) f32
+
+sph_bessel :: extern proc(n: u32, x: f64) f64
+sph_besself :: extern proc(n: u32, x: f32) f32
+
+sph_legendre :: extern proc(l: u32, m: u32, theta: f64) f64
+sph_legendref :: extern proc(l: u32, m: u32, theta: f32) f32
+
+sph_neumann :: extern proc(n: u32, x: f64) f64
+sph_neumannf :: extern proc(n: u32, x: f32) f32

@@ -4,3 +4,6 @@
 [submodule "tools/astexplorer"]
 	path = tools/astexplorer
 	url = https://github.com/theunnecessarythings/astexplorer
+[submodule "third-party/triton"]
+	path = third-party/triton
+	url = https://github.com/theunnecessarythings/triton.git

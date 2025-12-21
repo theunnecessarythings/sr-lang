@@ -1021,7 +1021,7 @@ const PatternBindingDeclarer = struct {
                 const decl = ast_unit.exprs.Decl.get(did);
                 const rhs_kind = ast_unit.kind(decl.value);
                 const is_comptime_val = switch (rhs_kind) {
-                    .Literal, .MlirBlock, .TupleType, .ArrayType, .DynArrayType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType, .MapType, .ComptimeBlock => true,
+                    .Literal, .MlirBlock, .TupleType, .ArrayType, .DynArrayType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType, .MapType, .ComptimeBlock, .TypeOf => true,
                     else => false,
                 };
                 break :blk .{

@@ -2807,6 +2807,7 @@ fn parseInsert(self: *Parser) !cst.ExprId {
 fn parseMlir(self: *Parser) !cst.ExprId {
     self.advance(); // "mlir"
 
+    var result_ty: cst.OptExprId = .none();
     var kind: cst.MlirKind = .Module;
     switch (self.cur.tag) {
         .identifier => {
@@ -2832,11 +2833,16 @@ fn parseMlir(self: *Parser) !cst.ExprId {
         args_range = .some((try self.parseCommaExprListUntil(.rparen)).range);
     }
 
-    if (self.cur.tag != .lcurly) {
-        try self.expect(.lcurly);
-    }
     const lcurly_tok = self.cur;
     const file_id = lcurly_tok.loc.file_id;
+
+    if (kind == .Operation and self.cur.tag == .colon) {
+        self.advance();
+        const t = try self.parseExpr(0, .type);
+        result_ty = .some(t);
+    }
+
+    if (self.cur.tag != .lcurly) try self.expect(.lcurly);
     self.advance(); // consume '{'
     const start_index = self.cur.loc.start;
     var depth: usize = 1;
@@ -2949,6 +2955,7 @@ fn parseMlir(self: *Parser) !cst.ExprId {
         .text = text,
         .pieces = pieces_range,
         .args = args_range,
+        .result_ty = result_ty,
         .loc = self.toLocId(mlir_loc),
     });
 }

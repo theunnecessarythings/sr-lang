@@ -769,11 +769,14 @@ fn lowerExpr(self: *Lower, id: cst.ExprId) anyerror!ast.ExprId {
             }
             const piece_range = self.ast_unit.exprs.mlir_piece_pool.pushMany(self.gpa, piece_ids.items);
 
+            const result_ty = if (r.result_ty.isNone()) ast.OptExprId.none() else ast.OptExprId.some(try self.lowerExpr(r.result_ty.unwrap()));
+
             break :blk self.ast_unit.exprs.add(.MlirBlock, .{
                 .kind = r.kind,
                 .text = r.text,
                 .pieces = piece_range,
                 .args = args_range,
+                .result_ty = result_ty,
                 .loc = r.loc,
             });
         },

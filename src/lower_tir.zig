@@ -560,7 +560,7 @@ fn lowerGlobalMlir(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder
     if (global_mlir_decls.items.len == 0) return;
 
     const name = b.intern("__sr_global_mlir_init");
-    var f = try b.beginFunction(self.context, name, self.context.type_store.tVoid(), false, false, .empty());
+    var f = try b.beginFunction(self.context, name, self.context.type_store.tVoid(), false, false, .empty(), false);
     var blk = try b.beginBlock(&f);
     var env = cf.Env{};
     defer env.deinit(self.gpa);
@@ -596,8 +596,8 @@ fn lowerMlirBlock(
     if (self.isType(ty0, .Any)) {
         ty0 = switch (row.kind) {
             .Module => self.context.type_store.tMlirModule(),
-            .Attribute => self.context.type_store.tMlirAttribute(),
-            .Type => self.context.type_store.tMlirType(),
+            .Attribute => self.context.type_store.mkMlirAttribute(row.text),
+            .Type => self.context.type_store.mkTypeType(self.context.type_store.mkMlirType(row.text)),
             .Operation => ty0,
         };
     }
@@ -614,15 +614,28 @@ fn lowerMlirBlock(
     for (ast_piece_ids) |pid| {
         const piece = a.exprs.MlirPiece.get(pid);
         var splice_value: comp.ComptimeValue = .Void;
+        var splice_ty: ?types.TypeId = null;
         if (piece.kind == .splice) {
-            if (a.type_info.getMlirSpliceValue(pid)) |cached| {
-                splice_value = try comp.cloneComptimeValue(self.gpa, cached.*);
+            const allow_cached = ctx.expr_type_override_stack.items.len == 0;
+            if (allow_cached) {
+                if (a.type_info.getMlirSpliceValue(pid)) |cached| {
+                    splice_value = try comp.cloneComptimeValue(self.gpa, cached.*);
+                } else {
+                    splice_value = try self.resolveMlirSpliceValue(ctx, a, pid, piece.text, row.loc);
+                }
             } else {
-                splice_value = try self.resolveMlirSpliceValue(a, pid, piece.text, row.loc);
+                splice_value = try self.resolveMlirSpliceValue(ctx, a, pid, piece.text, row.loc);
+            }
+            if (a.type_info.getMlirSpliceInfo(pid)) |info| {
+                switch (info) {
+                    .value_param => |vp| splice_ty = vp.ty,
+                    .type_param => splice_ty = info.type_param.ty,
+                    .decl => {},
+                }
             }
         }
         const new_id = blk.builder.t.instrs.addMlirPieceRow(
-            .{ .kind = piece.kind, .text = piece.text, .value = splice_value },
+            .{ .kind = piece.kind, .text = piece.text, .value = splice_value, .ty = splice_ty },
         );
         tir_piece_ids.append(self.gpa, new_id) catch @panic("OOM");
     }
@@ -659,6 +672,7 @@ fn lowerMlirBlock(
 /// Resolve the `ComptimeValue` that a splice `piece_id` should inject into the MLIR block.
 fn resolveMlirSpliceValue(
     self: *LowerTir,
+    ctx: *LowerContext,
     a: *ast.Ast,
     piece_id: ast.MlirPieceId,
     name: StrId,
@@ -670,6 +684,11 @@ fn resolveMlirSpliceValue(
     switch (info) {
         .decl => |decl_info| {
             const decl = a.exprs.Decl.get(decl_info.decl_id);
+            const decl_value_ty = self.getExprType(ctx, a, decl.value);
+            if (self.context.type_store.getKind(decl_value_ty) == .TypeType) {
+                const type_value = self.context.type_store.get(.TypeType, decl_value_ty).of;
+                return comp.ComptimeValue{ .Type = type_value };
+            }
             if (try self.getCachedComptimeValue(a, decl.value)) |value| {
                 return value;
             }
@@ -1148,6 +1167,44 @@ fn lowerSyntheticDecls(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Bui
             }
         }
 
+        var applied_comptime_snapshot = false;
+        var comptime_backups: List(struct { name: StrId, prev_ty: ?types.TypeId, prev_val: ?comp.ComptimeValue }) = .{};
+        if (a.type_info.getSpecializationComptimeSnapshot(syn_did)) |snapshot| {
+            applied_comptime_snapshot = true;
+            const names = snapshot.names;
+            const tys = snapshot.types;
+            const vals = snapshot.values;
+            var idx: usize = 0;
+            while (idx < names.len) : (idx += 1) {
+                const name = names[idx];
+                const ty = tys[idx];
+                const val = vals[idx];
+                const prev_ty = a.type_info.lookupComptimeBindingType(name);
+                const prev_val = a.type_info.cloneComptimeBindingValue(self.gpa, name) catch null;
+                comptime_backups.append(self.gpa, .{ .name = name, .prev_ty = prev_ty, .prev_val = prev_val }) catch @panic("OOM");
+                const cloned_val = comp.cloneComptimeValue(self.gpa, val) catch @panic("OOM");
+                a.type_info.setComptimeBinding(name, ty, cloned_val) catch @panic("OOM");
+            }
+        }
+        defer {
+            if (applied_comptime_snapshot) {
+                for (comptime_backups.items) |backup| {
+                    a.type_info.removeComptimeBinding(backup.name);
+                    if (backup.prev_ty) |pty| {
+                        if (backup.prev_val) |*pval| {
+                            const cloned = comp.cloneComptimeValue(self.gpa, pval.*) catch @panic("OOM");
+                            a.type_info.setComptimeBinding(backup.name, pty, cloned) catch @panic("OOM");
+                        }
+                    }
+                    if (backup.prev_val) |*pval| {
+                        var mv = pval.*;
+                        mv.destroy(self.gpa);
+                    }
+                }
+                comptime_backups.deinit(self.gpa);
+            }
+        }
+
         try self.lowerFunction(ctx, a, b, qualified_name, decl.value, spec_sig);
     }
 }
@@ -1161,7 +1218,7 @@ fn emitTestHarness(self: *LowerTir, _: *LowerContext, _: *ast.Ast, b: *Builder) 
     const attrs = tir.RangeAttribute.empty();
     const name = self.context.type_store.strs.intern("main");
 
-    var f = try b.beginFunction(self.context, name, i32_ty, false, false, attrs);
+    var f = try b.beginFunction(self.context, name, i32_ty, false, false, attrs, false);
     var blk = try b.beginBlock(&f);
 
     const zero = b.tirValue(.ConstInt, &blk, i32_ty, .none(), .{ .value = 0 });
@@ -1439,8 +1496,30 @@ fn lowerAttrs(
 
     for (attrs) |aid| {
         const arow = a.exprs.Attribute.get(aid);
-        // const value = try self.lowerExpr(ctx, a, env, f, blk, arow.value, null, .rvalue);
-        try attr_list.append(self.gpa, b.t.instrs.Attribute.add(self.gpa, .{ .name = arow.name, .value = .none() }));
+        var val_id = tir.OptValueId.none();
+        if (!arow.value.isNone()) {
+            const val_expr = arow.value.unwrap();
+            if (try self.getCachedComptimeValue(a, val_expr)) |cv| {
+                var owned_cv = cv;
+                defer owned_cv.destroy(self.gpa);
+                const vid = b.freshValue();
+                var iid: tir.InstrId = undefined;
+                switch (owned_cv) {
+                    .Int => |v| iid = b.t.instrs.add(.ConstInt, .{ .result = vid, .ty = self.context.type_store.tI64(), .value = v, .loc = .none() }),
+                    .Float => |v| iid = b.t.instrs.add(.ConstFloat, .{ .result = vid, .ty = self.context.type_store.tF64(), .value = v, .loc = .none() }),
+                    .Bool => |v| iid = b.t.instrs.add(.ConstBool, .{ .result = vid, .ty = self.context.type_store.tBool(), .value = v, .loc = .none() }),
+                    .String => |s| iid = b.t.instrs.add(.ConstString, .{ .result = vid, .ty = self.context.type_store.tString(), .text = b.intern(s), .loc = .none() }),
+                    else => {},
+                }
+                b.t.value_defs.ensureTotalCapacity(b.gpa, vid.toRaw() + 1) catch @panic("OOM");
+                if (b.t.value_defs.items.len <= vid.toRaw()) {
+                    b.t.value_defs.appendNTimes(b.gpa, tir.InstrId.fromRaw(std.math.maxInt(u32)), vid.toRaw() + 1 - b.t.value_defs.items.len) catch @panic("OOM");
+                }
+                b.t.value_defs.items[vid.toRaw()] = iid;
+                val_id = .some(vid);
+            }
+        }
+        try attr_list.append(self.gpa, b.t.instrs.Attribute.add(self.gpa, .{ .name = arow.name, .value = val_id }));
     }
     return b.t.instrs.attribute_pool.pushMany(self.gpa, attr_list.items);
 }
@@ -1465,6 +1544,9 @@ pub fn lowerFunction(
     try self.pushExprTypeOverrideFrame(lower_ctx);
     defer self.popExprTypeOverrideFrame(lower_ctx);
 
+    const triton_fn_sid = a.exprs.strs.intern("triton");
+    const triton_kernel_sid = a.exprs.strs.intern("triton_kernel");
+    var is_triton_fn = false;
     if (!fnr.attrs.isNone()) {
         const attrs = a.exprs.attr_pool.slice(fnr.attrs.asRange());
         const mlir_fn_str = a.exprs.strs.intern("mlir_fn");
@@ -1473,11 +1555,24 @@ pub fn lowerFunction(
             if (arow.name.eq(mlir_fn_str)) {
                 return; // skip lowering this function
             }
+            if (arow.name.eq(triton_fn_sid) or arow.name.eq(triton_kernel_sid)) {
+                is_triton_fn = true;
+            }
+        }
+    }
+
+    if (!fnr.body.isNone()) {
+        const body_id = fnr.body.unwrap();
+        const has_override = self.lookupExprTypeOverride(lower_ctx, body_id) != null;
+        const raw = body_id.toRaw();
+        const has_direct = raw < a.type_info.expr_types.items.len and a.type_info.expr_types.items[raw] != null;
+        if (!has_override and !has_direct) {
+            return;
         }
     }
 
     const attrs = try self.lowerAttrs(a, b, fnr.attrs);
-    var f = try b.beginFunction(self.context, name, fnty.result, fnty.is_variadic, fnty.is_extern, attrs);
+    var f = try b.beginFunction(self.context, name, fnty.result, fnty.is_variadic, fnty.is_extern, attrs, is_triton_fn);
 
     // Params
     const params = a.exprs.param_pool.slice(fnr.params);
@@ -2056,7 +2151,7 @@ fn buildVariantItem(
         defer buf.deinit(self.gpa);
         const w = buf.writer(self.gpa);
         try w.print("tag '{s}' in ", .{a.exprs.strs.get(lname)});
-        try self.context.type_store.fmt(ety, w);
+        try self.context.type_store.formatTypeForDiagnostic(ety, types.FormatOptions{}, w);
         const sid = self.context.interner.intern(buf.items);
         _ = self.context.diags.addError(where, .tir_variant_tag_not_found, .{self.context.interner.get(sid)}) catch {};
         return error.LoweringBug;
@@ -3771,7 +3866,10 @@ fn lowerIndexAccess(
             return blk.builder.gep(blk, ptr_elem_ty, data_ptr, &.{idx}, loc);
         }
 
-        const base_ptr = try self.lowerExpr(ctx, a, env, f, blk, row.collection, null, .lvalue_addr);
+        const base_ptr = if (base_kind == .Ptr)
+            try self.lowerExpr(ctx, a, env, f, blk, row.collection, null, .rvalue)
+        else
+            try self.lowerExpr(ctx, a, env, f, blk, row.collection, null, .lvalue_addr);
         const is_array = base_kind == .Array or
             (base_kind == .Ptr and self.context.type_store.getKind(self.context.type_store.get(.Ptr, base_ty).elem) == .Array);
 
@@ -4396,14 +4494,50 @@ fn lowerBinary(
             // Decide the operation type first: prefer the stamped/checker type when meaningful,
             // otherwise fall back to a common numeric type (or expected type / i64).
             const chosen: types.TypeId = blk: {
+                // Pointer arithmetic with tensor offsets (Triton-style addptr).
+                const lh_kind = self.context.type_store.getKind(lhs_hint orelse lhs_stamped);
+                const rh_kind = self.context.type_store.getKind(rhs_hint orelse rhs_stamped);
+                const lhs_ptr_like = lh_kind == .Ptr or lh_kind == .MlirType;
+                const rhs_ptr_like = rh_kind == .Ptr or rh_kind == .MlirType;
+                if ((row.op == .add or row.op == .sub) and ((lhs_ptr_like and rh_kind == .Tensor) or (rhs_ptr_like and lh_kind == .Tensor))) {
+                    if (op_ty) |t| break :blk t;
+                    break :blk if (lhs_ptr_like) lhs_hint orelse lhs_stamped else rhs_hint orelse rhs_stamped;
+                }
                 if (op_ty) |t| {
                     if (!self.isVoid(t) and !self.isType(t, .Any)) break :blk t;
                 }
                 break :blk (self.commonNumeric(lhs_hint, rhs_hint) orelse (expected_ty orelse self.context.type_store.tI64()));
             };
 
-            // If Complex, both operands must be Complex of the same element type.
-            if (self.context.type_store.getKind(chosen) == .Complex) {
+            const chosen_kind = self.context.type_store.getKind(chosen);
+            const is_ptr_tensor = (row.op == .add or row.op == .sub) and chosen_kind == .Tensor and blk: {
+                const tinfo = self.context.type_store.get(.Tensor, chosen);
+                const ek = self.context.type_store.getKind(tinfo.elem);
+                break :blk ek == .Ptr or ek == .MlirType;
+            };
+            if (is_ptr_tensor) {
+                op_ty = chosen;
+                const lhs_kind = self.context.type_store.getKind(lhs_hint orelse lhs_stamped);
+                const rhs_kind = self.context.type_store.getKind(rhs_hint orelse rhs_stamped);
+                const lhs_ptr_like = lhs_kind == .Ptr or lhs_kind == .MlirType;
+                const rhs_ptr_like = rhs_kind == .Ptr or rhs_kind == .MlirType;
+                lhs_expect = if (lhs_ptr_like) lhs_hint orelse lhs_stamped else null;
+                rhs_expect = if (rhs_ptr_like) rhs_hint orelse rhs_stamped else null;
+                if (rhs_expect == null and !rhs_ptr_like) rhs_expect = rhs_hint orelse rhs_stamped;
+                if (lhs_expect == null and !lhs_ptr_like) lhs_expect = lhs_hint orelse lhs_stamped;
+            } else if (chosen_kind == .Tensor) {
+                op_ty = chosen;
+                const lhs_kind = self.context.type_store.getKind(lhs_hint orelse lhs_stamped);
+                const rhs_kind = self.context.type_store.getKind(rhs_hint orelse rhs_stamped);
+                lhs_expect = if (lhs_kind == .Tensor) chosen else null;
+                rhs_expect = if (rhs_kind == .Tensor) chosen else null;
+            } else if (chosen_kind == .Ptr or chosen_kind == .MlirType) {
+                op_ty = chosen;
+                const lhs_kind = self.context.type_store.getKind(lhs_hint orelse lhs_stamped);
+                const rhs_kind = self.context.type_store.getKind(rhs_hint orelse rhs_stamped);
+                lhs_expect = if (lhs_kind == .Ptr or lhs_kind == .MlirType) chosen else null;
+                rhs_expect = if (rhs_kind == .Ptr or rhs_kind == .MlirType) chosen else null;
+            } else if (chosen_kind == .Complex) {
                 lhs_expect = chosen;
                 rhs_expect = chosen;
             } else {
@@ -4436,10 +4570,25 @@ fn lowerBinary(
             op_ty = chosen;
         },
         .eq, .neq, .lt, .lte, .gt, .gte => {
-            const want = self.commonNumeric(lhs_hint, rhs_hint) orelse lhs_hint orelse rhs_hint;
-            lhs_expect = want;
-            rhs_expect = want;
-            op_ty = self.context.type_store.tBool();
+            var handled_tensor_cmp = false;
+            if (op_ty) |t| {
+                if (self.context.type_store.getKind(t) == .Tensor) {
+                    const lh = lhs_hint orelse lhs_stamped;
+                    const rh = rhs_hint orelse rhs_stamped;
+                    const lk = self.context.type_store.getKind(lh);
+                    const rk = self.context.type_store.getKind(rh);
+                    lhs_expect = if (lk == .Tensor) lh else null;
+                    rhs_expect = if (rk == .Tensor) rh else null;
+                    op_ty = t;
+                    handled_tensor_cmp = true;
+                }
+            }
+            if (!handled_tensor_cmp) {
+                const want = self.commonNumeric(lhs_hint, rhs_hint) orelse lhs_hint orelse rhs_hint;
+                lhs_expect = want;
+                rhs_expect = want;
+                op_ty = self.context.type_store.tBool();
+            }
             if (row.op == .eq or row.op == .neq) {
                 const ts = self.context.type_store;
                 const lh = lhs_hint orelse lhs_stamped;
@@ -4514,9 +4663,35 @@ fn lowerBinary(
         l = blk.builder.tirValue(.Broadcast, blk, r_ty_promo, loc, .{ .value = coerced_l });
     }
 
+    // --- Handle tensor-scalar promotion ---
+    const tensor_broadcast = struct {
+        fn isScalarNumeric(kind: types.TypeKind) bool {
+            return switch (kind) {
+                .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Usize, .F32, .F64 => true,
+                else => false,
+            };
+        }
+    };
+    if (self.context.type_store.getKind(l_ty_promo) == .Tensor and tensor_broadcast.isScalarNumeric(rk_promo)) {
+        const tinfo = self.context.type_store.get(.Tensor, l_ty_promo);
+        const coerced_r = self.emitCoerce(blk, r, r_ty_promo, tinfo.elem, loc);
+        r = blk.builder.tirValue(.Broadcast, blk, l_ty_promo, loc, .{ .value = coerced_r });
+    } else if (self.context.type_store.getKind(r_ty_promo) == .Tensor and tensor_broadcast.isScalarNumeric(lk_promo)) {
+        const tinfo = self.context.type_store.get(.Tensor, r_ty_promo);
+        const coerced_l = self.emitCoerce(blk, l, l_ty_promo, tinfo.elem, loc);
+        l = blk.builder.tirValue(.Broadcast, blk, r_ty_promo, loc, .{ .value = coerced_l });
+    }
+
     // --- Handle Optional(T) equality/inequality cases ---
     const l_ty = self.getExprType(ctx, a, row.left);
     const r_ty = self.getExprType(ctx, a, row.right);
+    if (op_ty == null) {
+        const lk_kind = self.context.type_store.getKind(l_ty);
+        const rk_kind = self.context.type_store.getKind(r_ty);
+        if (lk_kind == .Tensor or rk_kind == .Tensor) {
+            op_ty = if (lk_kind == .Tensor) l_ty else r_ty;
+        }
+    }
 
     const l_is_optional = self.context.type_store.getKind(l_ty) == .Optional;
     const r_is_optional = self.context.type_store.getKind(r_ty) == .Optional;
@@ -4652,12 +4827,30 @@ fn lowerBinary(
         .bit_and => blk.builder.bin(blk, .BitAnd, ty0, l, r, loc),
         .bit_or => blk.builder.bin(blk, .BitOr, ty0, l, r, loc),
         .bit_xor => blk.builder.bin(blk, .BitXor, ty0, l, r, loc),
-        .eq => blk.builder.binBool(blk, .CmpEq, l, r, loc),
-        .neq => blk.builder.binBool(blk, .CmpNe, l, r, loc),
-        .lt => blk.builder.binBool(blk, .CmpLt, l, r, loc),
-        .lte => blk.builder.binBool(blk, .CmpLe, l, r, loc),
-        .gt => blk.builder.binBool(blk, .CmpGt, l, r, loc),
-        .gte => blk.builder.binBool(blk, .CmpGe, l, r, loc),
+        .eq => if (self.context.type_store.getKind(ty0) == .Tensor)
+            blk.builder.bin(blk, .CmpEq, ty0, l, r, loc)
+        else
+            blk.builder.binBool(blk, .CmpEq, l, r, loc),
+        .neq => if (self.context.type_store.getKind(ty0) == .Tensor)
+            blk.builder.bin(blk, .CmpNe, ty0, l, r, loc)
+        else
+            blk.builder.binBool(blk, .CmpNe, l, r, loc),
+        .lt => if (self.context.type_store.getKind(ty0) == .Tensor)
+            blk.builder.bin(blk, .CmpLt, ty0, l, r, loc)
+        else
+            blk.builder.binBool(blk, .CmpLt, l, r, loc),
+        .lte => if (self.context.type_store.getKind(ty0) == .Tensor)
+            blk.builder.bin(blk, .CmpLe, ty0, l, r, loc)
+        else
+            blk.builder.binBool(blk, .CmpLe, l, r, loc),
+        .gt => if (self.context.type_store.getKind(ty0) == .Tensor)
+            blk.builder.bin(blk, .CmpGt, ty0, l, r, loc)
+        else
+            blk.builder.binBool(blk, .CmpGt, l, r, loc),
+        .gte => if (self.context.type_store.getKind(ty0) == .Tensor)
+            blk.builder.bin(blk, .CmpGe, ty0, l, r, loc)
+        else
+            blk.builder.binBool(blk, .CmpGe, l, r, loc),
         .logical_and => blk.builder.binBool(blk, .LogicalAnd, l, r, loc),
         .logical_or => blk.builder.binBool(blk, .LogicalOr, l, r, loc),
         .@"orelse" => blk: {
