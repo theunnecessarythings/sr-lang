@@ -137,7 +137,7 @@ pub const LowerMlir = struct {
         self.noteGlobalInit(global_mlir_decls.items.len);
 
         const name = b.intern("__sr_global_mlir_init");
-        var f = try b.beginFunction(self.context, name, self.context.type_store.tVoid(), false, false, .empty(), false);
+        var f = try b.beginFunction(self.context, name, self.context.type_store.tVoid(), false, false, .empty(), false, false, .none());
         var blk = try b.beginBlock(&f);
         const env_ptr = try hooks.createEnv(hooks.host);
         defer hooks.destroyEnv(hooks.host, env_ptr);

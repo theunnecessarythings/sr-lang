@@ -3,14 +3,23 @@ package behavior_asm
 testing :: import "std/testing"
 
 add_asm :: fn(a: i64, b: i64) i64 asm {
-    mov rax, a
-    add rax, b
+    movq $1, $0
+    addq $2, $0
 }
 
 sub_asm :: fn(a: i64, b: i64) i64 asm {
-    mov rdx, a
-    sub rdx, b
-    mov rax, rdx
+    movq $1, $0
+    subq $2, $0
+}
+
+neg_asm :: fn(a: i64) i64 asm {
+    movq $1, $0
+    negq $0
+}
+
+zero_asm :: fn(a: i64) i64 asm {
+    xorq $1, $1
+    movq $1, $0
 }
 
 test "declarations: basic asm function" {
@@ -27,3 +36,16 @@ test "declarations: asm function with different registers" {
     }
 }
 
+test "declarations: asm function with unary op" {
+    r := neg_asm(12)
+    if !testing.expect_equal_i64(-12, r) {
+        return Error.Fail
+    }
+}
+
+test "declarations: asm function without inputs" {
+    r := zero_asm(123)
+    if !testing.expect_equal_i64(0, r) {
+        return Error.Fail
+    }
+}

@@ -1574,6 +1574,11 @@ fn emitFunctionBodyWith(
 
     const n_formals = finfo.n_formals;
     const params = t.funcs.param_pool.slice(f.params);
+
+    if (!f.raw_asm.isNone()) {
+        try self.emitInlineAsmBody(f_id, t, func_sym);
+        return;
+    }
     const blocks = t.funcs.block_pool.slice(f.blocks);
 
     // entry block arg types
@@ -1777,6 +1782,161 @@ fn emitFunctionBodyWith(
     self.func_entry_block = null;
     self.ret_join_block = null;
     self.ret_type_cache = null;
+}
+
+fn isIdentStart(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_';
+}
+
+fn isIdentChar(c: u8) bool {
+    return isIdentStart(c) or (c >= '0' and c <= '9');
+}
+
+fn stripAsmBraces(raw: []const u8) []const u8 {
+    var trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len >= 2 and trimmed[0] == '{' and trimmed[trimmed.len - 1] == '}') {
+        trimmed = std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t\r\n");
+    }
+    return trimmed;
+}
+
+fn rewriteAsmParams(
+    self: *Codegen,
+    text: []const u8,
+    params: []const tir.ParamId,
+    t: *tir.TIR,
+    has_res: bool,
+) ![]u8 {
+    var out = ArrayList(u8).init(self.gpa);
+    defer out.deinit();
+
+    var i: usize = 0;
+    while (i < text.len) {
+        const c = text[i];
+        if (isIdentStart(c)) {
+            var j = i + 1;
+            while (j < text.len and isIdentChar(text[j])) : (j += 1) {}
+            const tok = text[i..j];
+
+            var replaced = false;
+            var p_index: usize = 0;
+            while (p_index < params.len) : (p_index += 1) {
+                const p = t.funcs.Param.get(params[p_index]);
+                if (p.name.isNone()) continue;
+                const pname = t.instrs.strs.get(p.name.unwrap());
+                if (std.mem.eql(u8, tok, pname)) {
+                    try out.append('$');
+                    const idx = if (has_res) p_index + 1 else p_index;
+                    try out.writer().print("{d}", .{idx});
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced and has_res) {
+                if (std.mem.eql(u8, tok, "rax") or std.mem.eql(u8, tok, "rdx") or std.mem.eql(u8, tok, "eax") or std.mem.eql(u8, tok, "edx")) {
+                    try out.appendSlice("$0");
+                    replaced = true;
+                }
+            }
+            if (!replaced) try out.appendSlice(tok);
+            i = j;
+            continue;
+        }
+        try out.append(c);
+        i += 1;
+    }
+
+    return out.toOwnedSlice();
+}
+
+fn emitInlineAsmBody(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR, func_sym: tir.StrId) !void {
+    const f = t.funcs.Function.get(f_id);
+    const finfo = self.func_syms.get(func_sym).?;
+    const fn_opt_loc = self.functionOptLoc(f_id, t);
+
+    var func_op = finfo.op;
+    var region = func_op.getRegion(0);
+    const n_formals = finfo.n_formals;
+    const params = t.funcs.param_pool.slice(f.params);
+
+    var entry_arg_tys = try self.gpa.alloc(mlir.Type, n_formals);
+    defer self.gpa.free(entry_arg_tys);
+    for (params[0..n_formals], 0..) |p_id, i| {
+        const p = t.funcs.Param.get(p_id);
+        entry_arg_tys[i] = try self.llvmTypeOf(p.ty);
+    }
+    const entry_locs = try self.gpa.alloc(mlir.Location, n_formals);
+    defer self.gpa.free(entry_locs);
+
+    const entry_prev = self.pushLocation(fn_opt_loc);
+    const entry_mlir_loc = self.loc;
+    self.loc = entry_prev;
+    for (entry_locs) |*L| L.* = entry_mlir_loc;
+
+    var entry_block = mlir.Block.create(entry_arg_tys, entry_locs);
+    region.appendOwnedBlock(entry_block);
+    self.cur_region = region;
+    self.cur_block = entry_block;
+    self.func_entry_block = entry_block;
+
+    const raw = t.instrs.strs.get(f.raw_asm.unwrap());
+    const stripped = stripAsmBraces(raw);
+
+    const result_kind = self.context.type_store.getKind(f.result);
+    const has_res = result_kind != .Void and result_kind != .Noreturn;
+    const res_ty = if (has_res) try self.llvmTypeOf(f.result) else self.void_ty;
+
+    const asm_text = try self.rewriteAsmParams(stripped, params, t, has_res);
+    defer self.gpa.free(asm_text);
+
+    var constraint_list = ArrayList(u8).init(self.gpa);
+    defer constraint_list.deinit();
+
+    if (has_res) {
+        if (std.mem.indexOf(u8, asm_text, "rax") != null) {
+            try constraint_list.appendSlice("={rax}");
+        } else {
+            try constraint_list.appendSlice("=r");
+        }
+    }
+    for (params) |_| {
+        if (constraint_list.items.len > 0) try constraint_list.append(',');
+        try constraint_list.appendSlice("r");
+    }
+    const constraints = constraint_list.items;
+
+    var attrs: ArrayList(mlir.NamedAttribute) = .init(self.gpa);
+    defer attrs.deinit();
+    try attrs.append(self.named("asm_string", self.strAttr(asm_text)));
+    try attrs.append(self.named("constraints", self.strAttr(constraints)));
+    try attrs.append(self.named("has_side_effects", mlir.Attribute.unitAttrGet(self.mlir_ctx)));
+
+    var operand_vals = try self.gpa.alloc(mlir.Value, n_formals);
+    defer self.gpa.free(operand_vals);
+    for (params[0..n_formals], 0..) |_, i| {
+        operand_vals[i] = entry_block.getArgument(i);
+    }
+
+    const asm_op = self.appendOp("llvm.inline_asm", EmitOpArgs{
+        .operands = operand_vals,
+        .results = if (has_res) &.{res_ty} else &.{},
+        .attributes = attrs.items,
+    });
+
+    if (has_res) {
+        const rv = asm_op.getResult(0);
+        _ = self.appendOp("func.return", EmitOpArgs{
+            .operands = &.{rv},
+        });
+    } else {
+        _ = self.appendOp("func.return", EmitOpArgs{});
+    }
+
+    self.func_entry_block = null;
+    self.ret_join_block = null;
+    self.ret_type_cache = null;
+    self.cur_region = null;
+    self.cur_block = null;
 }
 
 /// Emit the wrapper body for an async function using async.execute and an outlined body call.

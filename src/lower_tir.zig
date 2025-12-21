@@ -560,7 +560,7 @@ fn lowerGlobalMlir(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder
     if (global_mlir_decls.items.len == 0) return;
 
     const name = b.intern("__sr_global_mlir_init");
-    var f = try b.beginFunction(self.context, name, self.context.type_store.tVoid(), false, false, .empty(), false, false);
+    var f = try b.beginFunction(self.context, name, self.context.type_store.tVoid(), false, false, .empty(), false, false, .none());
     var blk = try b.beginBlock(&f);
     var env = cf.Env{};
     defer env.deinit(self.gpa);
@@ -1218,7 +1218,7 @@ fn emitTestHarness(self: *LowerTir, _: *LowerContext, _: *ast.Ast, b: *Builder) 
     const attrs = tir.RangeAttribute.empty();
     const name = self.context.type_store.strs.intern("main");
 
-    var f = try b.beginFunction(self.context, name, i32_ty, false, false, attrs, false, false);
+    var f = try b.beginFunction(self.context, name, i32_ty, false, false, attrs, false, false, .none());
     var blk = try b.beginBlock(&f);
 
     const zero = b.tirValue(.ConstInt, &blk, i32_ty, .none(), .{ .value = 0 });
@@ -1572,7 +1572,23 @@ pub fn lowerFunction(
     }
 
     const attrs = try self.lowerAttrs(a, b, fnr.attrs);
-    var f = try b.beginFunction(self.context, name, fnty.result, fnty.is_variadic, fnty.is_extern, attrs, is_triton_fn, fnr.flags.is_async);
+    var raw_asm: cst.OptStrId = .none();
+    if (!fnr.raw_asm.isNone()) {
+        const asm_txt = a.exprs.strs.get(fnr.raw_asm.unwrap());
+        const asm_sid = b.intern(asm_txt);
+        raw_asm = .some(asm_sid);
+    }
+    var f = try b.beginFunction(
+        self.context,
+        name,
+        fnty.result,
+        fnty.is_variadic,
+        fnty.is_extern,
+        attrs,
+        is_triton_fn,
+        fnr.flags.is_async,
+        raw_asm,
+    );
 
     // Params
     const params = a.exprs.param_pool.slice(fnr.params);

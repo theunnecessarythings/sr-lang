@@ -548,6 +548,7 @@ pub const FuncRows = struct {
         attrs: RangeAttribute,
         is_triton_fn: bool,
         is_async: bool,
+        raw_asm: dod.OptStrId,
     };
     /// Global struct definition used by the compiler.
     pub const Global = struct { name: StrId, ty: types.TypeId, init: ConstInit };
@@ -686,6 +687,7 @@ pub const Builder = struct {
         attrs: RangeAttribute,
         is_triton_fn: bool,
         is_async: bool,
+        raw_asm: dod.OptStrId,
     ) !FunctionFrame {
         const idx = self.t.funcs.Function.add(self.gpa, .{
             .name = name,
@@ -697,6 +699,7 @@ pub const Builder = struct {
             .attrs = attrs,
             .is_triton_fn = is_triton_fn,
             .is_async = is_async,
+            .raw_asm = raw_asm,
         });
         // Add to global function map
         try context.global_func_map.put(name, .{ idx, &self.t.funcs });
