@@ -36,17 +36,25 @@ fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void 
     // Step 2: Lower to AST
     var lower = try Lower.init(gpa, &cst, &context, 0);
     defer lower.deinit();
-    const ast = try (&lower).run();
+    var result = try (&lower).run();
+    defer result.deinit(gpa);
+    const ast = result.ast_unit;
 
     // Step 3: Type Check
     var pipeline = compiler.pipeline.Pipeline.init(gpa, &context);
-    var ctx = Checker.CheckerContext{ .symtab = SymbolStore.init(gpa) };
-    defer ctx.deinit(gpa);
+    const ctx_ptr = try gpa.create(Checker.CheckerContext);
+    ctx_ptr.* = Checker.CheckerContext{
+        .symtab = SymbolStore.init(gpa),
+        .spec_arena = std.heap.ArenaAllocator.init(gpa),
+        .temp_arena = std.heap.ArenaAllocator.init(gpa),
+    };
+    // No defer ctx_ptr.deinit() or gpa.destroy(ctx_ptr) - Checker.deinit will handle it.
+
     var checker = Checker.init(gpa, &context, &pipeline);
     defer checker.deinit();
     try checker.checker_ctx.resize(gpa, ast.file_id + 1);
-    checker.checker_ctx.items[ast.file_id] = ctx;
-    try checker.runAst(ast, &ctx);
+    checker.checker_ctx.items[ast.file_id] = ctx_ptr;
+    try checker.runAst(ast, ctx_ptr);
 
     testing.expectEqual(expected.len, context.diags.count()) catch |err| {
         std.debug.print("Expected {} diagnostics, but got {}.\n", .{ expected.len, context.diags.count() });

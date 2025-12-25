@@ -29,19 +29,21 @@ fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !Lowered {
     var cst = try parser.parse();
     defer cst.deinit();
 
-    var lower1 = compiler.lower_to_ast.Lower.init(gpa, &cst, &context, 0); // Pass context
-    var hir = try lower1.run();
-    defer hir.deinit();
+    var lower1 = try compiler.lower_to_ast.Lower.init(gpa, &cst, &context, 0); // Pass context
+    defer lower1.deinit();
+    const result = try lower1.run();
+    defer result.deinit();
+    const hir = result.ast_unit;
 
     var pipeline = compiler.pipeline.Pipeline.init(gpa, &context); // Create pipeline
     var chk = compiler.checker.Checker.init(gpa, &context, &pipeline); // Pass context and pipeline
     defer chk.deinit();
-    try chk.runAst(&hir);
+    try chk.runAst(hir);
     if (context.diags.anyErrors()) return error.SemanticErrors; // Use context.diags
 
     var lt = compiler.lower_tir.LowerTir.init(gpa, &context, &pipeline, &chk);
     defer lt.deinit();
-    const tir_result = try lt.runAst(&hir);
+    const tir_result = try lt.runAst(hir);
     return .{ .tir = tir_result, .context = context };
 }
 
@@ -803,20 +805,22 @@ test "tir: runtime any specialization rejects mismatched numeric operands" {
     var cst = try parser.parse();
     defer cst.deinit();
 
-    var lower1 = compiler.lower_to_ast.Lower.init(gpa, &cst, &context, 0);
-    var hir = try lower1.run();
-    defer hir.deinit();
+    var lower1 = try compiler.lower_to_ast.Lower.init(gpa, &cst, &context, 0);
+    defer lower1.deinit();
+    const result = try lower1.run();
+    defer result.deinit();
+    const hir = result.ast_unit;
 
     var pipeline = compiler.pipeline.Pipeline.init(gpa, &context);
     var chk = compiler.checker.Checker.init(gpa, &context, &pipeline);
     defer chk.deinit();
-    try chk.runAst(&hir);
+    try chk.runAst(hir);
     try testing.expectEqual(@as(usize, 0), context.diags.count());
 
     var lt = compiler.lower_tir.LowerTir.init(gpa, &context, &pipeline, &chk);
     defer lt.deinit();
 
-    if (lt.runAst(&hir)) |tir_result| {
+    if (lt.runAst(hir)) |tir_result| {
         defer tir_result.deinit();
     } else |err| {
         switch (err) {

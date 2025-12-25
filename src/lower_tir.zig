@@ -1892,7 +1892,7 @@ fn methodSymbolShortName(
 /// Locate the original declaration that produced the synthetic specialization `syn_id`.
 fn findOriginalDeclForSynthetic(self: *LowerTir, a: *ast.Ast, syn_id: ast.DeclId) ?ast.DeclId {
     if (a.file_id >= self.chk.checker_ctx.items.len) return null;
-    const ctx = &self.chk.checker_ctx.items[a.file_id];
+    const ctx = self.chk.checker_ctx.items[a.file_id] orelse return null;
     var it = ctx.specialization_cache.iterator();
     while (it.next()) |entry| {
         if (entry.value_ptr.*.eq(syn_id)) {
@@ -2087,7 +2087,7 @@ fn resolveFieldAccessName(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, fiel
 
 /// Trace a call expression to identify the callee symbol plus qualified name if any.
 fn resolveCallee(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, f: *Builder.FunctionFrame, row: ast.Rows.Call) !CalleeInfo {
-    const cctx = &self.chk.checker_ctx.items[a.file_id];
+    const cctx = self.chk.checker_ctx.items[a.file_id] orelse unreachable;
     var current = row.callee;
     var depth: usize = 0;
 

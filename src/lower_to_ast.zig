@@ -16,6 +16,18 @@ ast_unit: *ast.Ast,
 context: *compile.Context,
 /// File id assigned by the source manager.
 file_id: u32,
+/// Dependencies discovered during lowering.
+dependencies: std.ArrayList(ast.StrId),
+
+/// Result of a lowering pass.
+pub const LowerResult = struct {
+    ast_unit: *ast.Ast,
+    dependencies: std.ArrayList(ast.StrId),
+
+    pub fn deinit(self: *LowerResult, gpa: std.mem.Allocator) void {
+        self.dependencies.deinit(gpa);
+    }
+};
 
 /// Create a lower-pass bound to `program`/`file_id` that emits AST nodes into `context`.
 pub fn init(
@@ -32,22 +44,26 @@ pub fn init(
         .ast_unit = ast_unit,
         .context = context,
         .file_id = file_id,
+        .dependencies = .empty,
     };
 }
 
 /// Release resources associated with `self`, including the owned AST unit.
 pub fn deinit(self: *Lower) void {
+    self.dependencies.deinit(self.gpa);
     self.ast_unit.deinit();
     self.gpa.destroy(self.ast_unit);
 }
 
 /// Run lowering and ignore the returned AST value.
 pub fn runLower(self: *Lower) !void {
-    _ = try self.run();
+    const result = try self.run();
+    self.dependencies = result.dependencies;
 }
 
 /// Lower the entire CST into an AST unit and return it.
-pub fn run(self: *Lower) !*ast.Ast {
+pub fn run(self: *Lower) !LowerResult {
+    self.dependencies.clearRetainingCapacity();
     var unit: ast.Unit = .empty();
 
     unit.package_name = self.cst_program.program.package_name;
@@ -57,142 +73,32 @@ pub fn run(self: *Lower) !*ast.Ast {
     unit.decls = try self.lowerTopDecls(self.cst_program.program.top_decls);
 
     self.ast_unit.unit = unit;
-    return self.ast_unit;
+    const deps = self.dependencies;
+    self.dependencies = .empty;
+    return .{ .ast_unit = self.ast_unit, .dependencies = deps };
 }
 
 /// Track that the currently lowered file references `dependency`.
 fn recordDependency(self: *Lower, dependency: ast.StrId) !void {
-    try self.context.compilation_unit.addDependency(self.file_id, dependency);
+    try self.dependencies.append(self.gpa, dependency);
 }
 
-/// Parse a string literal (raw or escaped) and intern the resulting text.
-fn unescapeString(self: *Lower, quoted_str: []const u8, raw: bool) !ast.StrId {
-    const inner_str = if (raw)
-        std.mem.trim(u8, quoted_str[1..], "\"#")
-    else
-        quoted_str[1 .. quoted_str.len - 1];
-
-    var unescaped_list: std.array_list.Managed(u8) = .init(self.gpa);
-    defer unescaped_list.deinit();
-
-    var i: usize = 0;
-    while (i < inner_str.len) : (i += 1) {
-        if (inner_str[i] == '\\') {
-            i += 1;
-            if (i >= inner_str.len) {
-                try unescaped_list.append('\\');
-                break;
-            }
-            switch (inner_str[i]) {
-                'n' => try unescaped_list.append('\n'),
-                't' => try unescaped_list.append('\t'),
-                'r' => try unescaped_list.append('\r'),
-                '\\' => try unescaped_list.append('\\'),
-                '"' => try unescaped_list.append('"'),
-                '\'' => try unescaped_list.append('\''),
-                '0' => try unescaped_list.append(0),
-                else => {
-                    try unescaped_list.append('\\');
-                    try unescaped_list.append(inner_str[i]);
-                },
-            }
-        } else {
-            try unescaped_list.append(inner_str[i]);
-        }
+/// Helper to map CST ids to AST ids and push them into an AST pool.
+inline fn mapRange(
+    self: *Lower,
+    comptime CstId: type,
+    comptime AstId: type,
+    items: []const CstId,
+    ast_pool: anytype,
+    lowerFn: anytype,
+) !ast.RangeOf(AstId) {
+    if (items.len == 0) return ast_pool.pushMany(self.gpa, &[_]AstId{});
+    var out_ids = try self.gpa.alloc(AstId, items.len);
+    defer self.gpa.free(out_ids);
+    for (items, 0..) |id, i| {
+        out_ids[i] = try lowerFn(self, id);
     }
-    return self.ast_unit.exprs.strs.intern(unescaped_list.items);
-}
-
-/// Interpret `quoted_char` as a Unicode scalar, handling escape sequences.
-fn unescapeChar(_: *Lower, quoted_char: []const u8) !u32 {
-    const inner_char_str = quoted_char[1 .. quoted_char.len - 1];
-
-    var char_val: u32 = undefined;
-    if (inner_char_str.len == 1) {
-        char_val = inner_char_str[0];
-    } else if (inner_char_str.len == 2 and inner_char_str[0] == '\\') {
-        switch (inner_char_str[1]) {
-            'n' => char_val = 10,
-            't' => char_val = 9,
-            'r' => char_val = 13,
-            '\\' => char_val = 92,
-            '"' => char_val = 34,
-            '\'' => char_val = 39,
-            '0' => char_val = 0,
-            else => {
-                char_val = inner_char_str[1];
-            },
-        }
-    } else {
-        char_val = '?'; // Indicate error or unhandled case
-    }
-    return char_val;
-}
-
-/// Parse integer literal text, returning numeric value, base, and validity.
-fn parseIntLiteralText(self: *Lower, text: []const u8) !struct { value: u128, base: u8, valid: bool } {
-    if (text.len == 0) return .{ .value = 0, .base = 10, .valid = false };
-
-    var base: u8 = 10;
-    var digits = text;
-    if (digits.len >= 2 and digits[0] == '0') {
-        const prefix = digits[1];
-        switch (prefix) {
-            'b', 'B' => {
-                base = 2;
-                digits = digits[2..];
-            },
-            'o', 'O' => {
-                base = 8;
-                digits = digits[2..];
-            },
-            'x', 'X' => {
-                base = 16;
-                digits = digits[2..];
-            },
-            else => {},
-        }
-    }
-
-    var valid = digits.len != 0;
-
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(self.gpa);
-    for (digits) |c| {
-        if (c == '_') continue;
-        try buf.append(self.gpa, c);
-    }
-    if (buf.items.len == 0) valid = false;
-
-    var value: u128 = 0;
-    if (valid) {
-        value = std.fmt.parseInt(u128, buf.items, base) catch blk: {
-            valid = false;
-            break :blk 0;
-        };
-    }
-
-    return .{ .value = value, .base = base, .valid = valid };
-}
-
-/// Parse floating-point literal text and report the parsed value plus validity.
-fn parseFloatLiteralText(self: *Lower, text: []const u8) !struct { value: f64, valid: bool } {
-    if (text.len == 0) return .{ .value = 0.0, .valid = false };
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(self.gpa);
-    for (text) |c| {
-        if (c == '_') continue;
-        try buf.append(self.gpa, c);
-    }
-    var valid = buf.items.len != 0;
-    var value: f64 = 0.0;
-    if (valid) {
-        value = std.fmt.parseFloat(f64, buf.items) catch blk: {
-            valid = false;
-            break :blk 0.0;
-        };
-    }
-    return .{ .value = value, .valid = valid };
+    return ast_pool.pushMany(self.gpa, out_ids);
 }
 
 /// Translate a CST attribute range (optional) into an AST attribute metadata range.
@@ -200,163 +106,142 @@ fn mapAttrRange(self: *Lower, r: cst.OptRangeAttr) !ast.OptRangeAttr {
     if (r.isNone()) return .none();
     const rr = r.asRange();
     const items = self.cst_program.exprs.attr_pool.slice(rr);
-    var out_ids = try self.gpa.alloc(ast.AttributeId, items.len);
-    defer self.gpa.free(out_ids);
-    var i: usize = 0;
-    while (i < items.len) : (i += 1) {
-        const row = self.cst_program.exprs.Attribute.get(items[i]);
-        const mapped: ast.Rows.Attribute = .{
-            .name = row.name,
-            .value = if (!row.value.isNone()) .some(try self.lowerExpr(row.value.unwrap())) else .none(),
-            .loc = row.loc,
-        };
-        out_ids[i] = self.ast_unit.exprs.Attribute.add(self.gpa, mapped);
-    }
-    return .some(self.ast_unit.exprs.attr_pool.pushMany(self.gpa, out_ids));
+    const range = try self.mapRange(cst.AttributeId, ast.AttributeId, items, &self.ast_unit.exprs.attr_pool, Lower.lowerAttribute);
+    return .some(range);
+}
+
+fn lowerAttribute(self: *Lower, id: cst.AttributeId) !ast.AttributeId {
+    const row = self.cst_program.exprs.Attribute.get(id);
+    const mapped: ast.Rows.Attribute = .{
+        .name = row.name,
+        .value = if (!row.value.isNone()) .some(try self.lowerExpr(row.value.unwrap())) else .none(),
+        .loc = row.loc,
+    };
+    return self.ast_unit.exprs.Attribute.add(self.gpa, mapped);
 }
 
 /// Lower a range of CST parameters to their AST equivalents.
 fn lowerParamRange(self: *Lower, r: cst.RangeOf(cst.ParamId)) !ast.RangeParam {
     const items = self.cst_program.exprs.param_pool.slice(r);
-    var out_ids = try self.gpa.alloc(ast.ParamId, items.len);
-    defer self.gpa.free(out_ids);
-    var i: usize = 0;
-    while (i < items.len) : (i += 1) {
-        const row = self.cst_program.exprs.Param.get(items[i]);
-        const mapped: ast.Rows.Param = .{
-            .pat = try self.lowerOptionalPatternFromExpr(row.pat),
-            .ty = if (!row.ty.isNone()) .some(try self.lowerExpr(row.ty.unwrap())) else .none(),
-            .value = if (!row.value.isNone()) .some(try self.lowerExpr(row.value.unwrap())) else .none(),
-            .attrs = try self.mapAttrRange(row.attrs),
-            .is_comptime = row.is_comptime,
-            .loc = row.loc,
-        };
-        out_ids[i] = self.ast_unit.exprs.Param.add(self.gpa, mapped);
-    }
-    return self.ast_unit.exprs.param_pool.pushMany(self.gpa, out_ids);
+    return self.mapRange(cst.ParamId, ast.ParamId, items, &self.ast_unit.exprs.param_pool, Lower.lowerParam);
+}
+
+fn lowerParam(self: *Lower, id: cst.ParamId) !ast.ParamId {
+    const row = self.cst_program.exprs.Param.get(id);
+    const mapped: ast.Rows.Param = .{
+        .pat = try self.lowerOptionalPatternFromExpr(row.pat),
+        .ty = if (!row.ty.isNone()) .some(try self.lowerExpr(row.ty.unwrap())) else .none(),
+        .value = if (!row.value.isNone()) .some(try self.lowerExpr(row.value.unwrap())) else .none(),
+        .attrs = try self.mapAttrRange(row.attrs),
+        .is_comptime = row.is_comptime,
+        .loc = row.loc,
+    };
+    return self.ast_unit.exprs.Param.add(self.gpa, mapped);
 }
 
 /// Lower a range of CST key-value pairs (e.g., map entries, attributes).
 fn lowerKeyValues(self: *Lower, r: cst.RangeOf(cst.KeyValueId)) !ast.RangeKeyValue {
     const items = self.cst_program.exprs.kv_pool.slice(r);
-    var out_ids = try self.gpa.alloc(ast.KeyValueId, items.len);
-    defer self.gpa.free(out_ids);
-    var i: usize = 0;
-    while (i < items.len) : (i += 1) {
-        const kv = self.cst_program.exprs.KeyValue.get(items[i]);
-        const mapped: ast.Rows.KeyValue = .{
-            .key = try self.lowerExpr(kv.key),
-            .value = try self.lowerExpr(kv.value),
-            .loc = kv.loc,
-        };
-        out_ids[i] = self.ast_unit.exprs.KeyValue.add(self.gpa, mapped);
-    }
-    return self.ast_unit.exprs.kv_pool.pushMany(self.gpa, out_ids);
+    return self.mapRange(cst.KeyValueId, ast.KeyValueId, items, &self.ast_unit.exprs.kv_pool, Lower.lowerKeyValue);
+}
+
+fn lowerKeyValue(self: *Lower, id: cst.KeyValueId) !ast.KeyValueId {
+    const kv = self.cst_program.exprs.KeyValue.get(id);
+    const mapped: ast.Rows.KeyValue = .{
+        .key = try self.lowerExpr(kv.key),
+        .value = try self.lowerExpr(kv.value),
+        .loc = kv.loc,
+    };
+    return self.ast_unit.exprs.KeyValue.add(self.gpa, mapped);
 }
 
 /// Lower struct literal field values from CST to AST storage.
 fn lowerStructFieldValues(self: *Lower, r: cst.RangeOf(cst.StructFieldValueId)) !ast.RangeStructFieldValue {
     const items = self.cst_program.exprs.sfv_pool.slice(r);
-    var out_ids = try self.gpa.alloc(ast.StructFieldValueId, items.len);
-    defer self.gpa.free(out_ids);
-    var i: usize = 0;
-    while (i < items.len) : (i += 1) {
-        const f = self.cst_program.exprs.StructFieldValue.get(items[i]);
-        const mapped: ast.Rows.StructFieldValue = .{
-            .name = if (!f.name.isNone()) .some(f.name.unwrap()) else .none(),
-            .value = try self.lowerExpr(f.value),
-            .loc = f.loc,
-        };
-        out_ids[i] = self.ast_unit.exprs.StructFieldValue.add(self.gpa, mapped);
-    }
-    return self.ast_unit.exprs.sfv_pool.pushMany(self.gpa, out_ids);
+    return self.mapRange(cst.StructFieldValueId, ast.StructFieldValueId, items, &self.ast_unit.exprs.sfv_pool, Lower.lowerStructFieldValue);
+}
+
+fn lowerStructFieldValue(self: *Lower, id: cst.StructFieldValueId) !ast.StructFieldValueId {
+    const f = self.cst_program.exprs.StructFieldValue.get(id);
+    const mapped: ast.Rows.StructFieldValue = .{
+        .name = if (!f.name.isNone()) .some(f.name.unwrap()) else .none(),
+        .value = try self.lowerExpr(f.value),
+        .loc = f.loc,
+    };
+    return self.ast_unit.exprs.StructFieldValue.add(self.gpa, mapped);
 }
 
 /// Lower declared struct fields in CST into AST field entries.
 fn lowerStructFields(self: *Lower, r: cst.RangeOf(cst.StructFieldId)) !ast.RangeField {
     const items = self.cst_program.exprs.sfield_pool.slice(r);
-    var out_ids = try self.gpa.alloc(ast.StructFieldId, items.len);
-    defer self.gpa.free(out_ids);
-    var i: usize = 0;
-    while (i < items.len) : (i += 1) {
-        const f = self.cst_program.exprs.StructField.get(items[i]);
-        const mapped: ast.Rows.StructField = .{
-            .name = f.name,
-            .ty = try self.lowerExpr(f.ty),
-            .value = if (!f.value.isNone()) .some(try self.lowerExpr(f.value.unwrap())) else .none(),
-            .attrs = try self.mapAttrRange(f.attrs),
-            .loc = f.loc,
-        };
-        out_ids[i] = self.ast_unit.exprs.StructField.add(self.gpa, mapped);
-    }
-    return self.ast_unit.exprs.sfield_pool.pushMany(self.gpa, out_ids);
+    return self.mapRange(cst.StructFieldId, ast.StructFieldId, items, &self.ast_unit.exprs.sfield_pool, Lower.lowerStructField);
+}
+
+fn lowerStructField(self: *Lower, id: cst.StructFieldId) !ast.StructFieldId {
+    const f = self.cst_program.exprs.StructField.get(id);
+    const mapped: ast.Rows.StructField = .{
+        .name = f.name,
+        .ty = try self.lowerExpr(f.ty),
+        .value = if (!f.value.isNone()) .some(try self.lowerExpr(f.value.unwrap())) else .none(),
+        .attrs = try self.mapAttrRange(f.attrs),
+        .loc = f.loc,
+    };
+    return self.ast_unit.exprs.StructField.add(self.gpa, mapped);
 }
 
 /// Transform enum field declarations from CST into AST enum members.
 fn lowerEnumFields(self: *Lower, r: cst.RangeOf(cst.EnumFieldId)) !ast.RangeEnumField {
     const items = self.cst_program.exprs.efield_pool.slice(r);
-    var out_ids = try self.gpa.alloc(ast.EnumFieldId, items.len);
-    defer self.gpa.free(out_ids);
-    var i: usize = 0;
-    while (i < items.len) : (i += 1) {
-        const f = self.cst_program.exprs.EnumField.get(items[i]);
-        const mapped: ast.Rows.EnumField = .{
-            .name = f.name,
-            .value = if (!f.value.isNone()) .some(try self.lowerExpr(f.value.unwrap())) else .none(),
-            .attrs = try self.mapAttrRange(f.attrs),
-            .loc = f.loc,
-        };
-        out_ids[i] = self.ast_unit.exprs.EnumField.add(self.gpa, mapped);
-    }
-    return self.ast_unit.exprs.efield_pool.pushMany(self.gpa, out_ids);
+    return self.mapRange(cst.EnumFieldId, ast.EnumFieldId, items, &self.ast_unit.exprs.efield_pool, Lower.lowerEnumField);
+}
+
+fn lowerEnumField(self: *Lower, id: cst.EnumFieldId) !ast.EnumFieldId {
+    const f = self.cst_program.exprs.EnumField.get(id);
+    const mapped: ast.Rows.EnumField = .{
+        .name = f.name,
+        .value = if (!f.value.isNone()) .some(try self.lowerExpr(f.value.unwrap())) else .none(),
+        .attrs = try self.mapAttrRange(f.attrs),
+        .loc = f.loc,
+    };
+    return self.ast_unit.exprs.EnumField.add(self.gpa, mapped);
 }
 
 /// Lower variant field metadata for AST variant type definitions.
 fn lowerVariantFields(self: *Lower, r: cst.RangeOf(cst.VariantFieldId)) !ast.RangeVariantField {
     const items = self.cst_program.exprs.vfield_pool.slice(r);
-    var out_ids = try self.gpa.alloc(ast.VariantFieldId, items.len);
-    defer self.gpa.free(out_ids);
-    var i: usize = 0;
-    while (i < items.len) : (i += 1) {
-        const f = self.cst_program.exprs.VariantField.get(items[i]);
-        const pk: ast.VariantPayloadKind = switch (f.ty_tag) {
-            .none => .none,
-            .Tuple => .tuple,
-            .Struct => .@"struct",
-        };
-        const mapped: ast.Rows.VariantField = .{
-            .name = f.name,
-            .payload_kind = pk,
-            .payload_elems = if (f.ty_tag == .Tuple) .some(try self.lowerExprRange(f.tuple_elems)) else .none(),
-            .payload_fields = if (f.ty_tag == .Struct) .some(try self.lowerStructFields(f.struct_fields)) else .none(),
-            .value = if (!f.value.isNone()) .some(try self.lowerExpr(f.value.unwrap())) else .none(),
-            .attrs = try self.mapAttrRange(f.attrs),
-            .loc = f.loc,
-        };
-        out_ids[i] = self.ast_unit.exprs.VariantField.add(self.gpa, mapped);
-    }
-    return self.ast_unit.exprs.vfield_pool.pushMany(self.gpa, out_ids);
+    return self.mapRange(cst.VariantFieldId, ast.VariantFieldId, items, &self.ast_unit.exprs.vfield_pool, Lower.lowerVariantField);
+}
+
+fn lowerVariantField(self: *Lower, id: cst.VariantFieldId) !ast.VariantFieldId {
+    const f = self.cst_program.exprs.VariantField.get(id);
+    const pk: ast.VariantPayloadKind = switch (f.ty_tag) {
+        .none => .none,
+        .Tuple => .tuple,
+        .Struct => .@"struct",
+    };
+    const mapped: ast.Rows.VariantField = .{
+        .name = f.name,
+        .payload_kind = pk,
+        .payload_elems = if (f.ty_tag == .Tuple) .some(try self.lowerExprRange(f.tuple_elems)) else .none(),
+        .payload_fields = if (f.ty_tag == .Struct) .some(try self.lowerStructFields(f.struct_fields)) else .none(),
+        .value = if (!f.value.isNone()) .some(try self.lowerExpr(f.value.unwrap())) else .none(),
+        .attrs = try self.mapAttrRange(f.attrs),
+        .loc = f.loc,
+    };
+    return self.ast_unit.exprs.VariantField.add(self.gpa, mapped);
 }
 
 /// Lower a continuous range of expressions from CST to AST.
 fn lowerExprRange(self: *Lower, r: cst.RangeOf(cst.ExprId)) !ast.RangeExpr {
     const items = self.cst_program.exprs.expr_pool.slice(r);
-    var out_ids = try self.gpa.alloc(ast.ExprId, items.len);
-    defer self.gpa.free(out_ids);
-    var i: usize = 0;
-    while (i < items.len) : (i += 1) out_ids[i] = try self.lowerExpr(items[i]);
-    return self.ast_unit.exprs.expr_pool.pushMany(self.gpa, out_ids);
+    return self.mapRange(cst.ExprId, ast.ExprId, items, &self.ast_unit.exprs.expr_pool, Lower.lowerExpr);
 }
 
 // ---------------- Top-level decls ----------------
 /// Lower the top-level declarations for this file.
 fn lowerTopDecls(self: *Lower, r: cst.RangeOf(cst.DeclId)) !ast.RangeDecl {
     const items = self.cst_program.exprs.decl_pool.slice(r);
-    var out_ids = try self.gpa.alloc(ast.DeclId, items.len);
-    defer self.gpa.free(out_ids);
-    var i: usize = 0;
-    while (i < items.len) : (i += 1) out_ids[i] = try self.lowerTopDecl(items[i]);
-    return self.ast_unit.exprs.decl_pool.pushMany(self.gpa, out_ids);
+    return self.mapRange(cst.DeclId, ast.DeclId, items, &self.ast_unit.exprs.decl_pool, Lower.lowerTopDecl);
 }
 
 /// Lower a single top-level declaration from CST to AST.
@@ -406,11 +291,7 @@ fn lowerBlockExpr(self: *Lower, id: cst.ExprId) !ast.ExprId {
 /// Lower a range of declaration-based statements into AST statements.
 fn lowerStmtRangeFromDecls(self: *Lower, r: cst.RangeOf(cst.DeclId)) !ast.RangeStmt {
     const decls = self.cst_program.exprs.decl_pool.slice(r);
-    var out_ids = try self.gpa.alloc(ast.StmtId, decls.len);
-    defer self.gpa.free(out_ids);
-    var i: usize = 0;
-    while (i < decls.len) : (i += 1) out_ids[i] = try self.lowerStmtFromDecl(decls[i]);
-    return self.ast_unit.stmts.stmt_pool.pushMany(self.gpa, out_ids);
+    return self.mapRange(cst.DeclId, ast.StmtId, decls, &self.ast_unit.stmts.stmt_pool, Lower.lowerStmtFromDecl);
 }
 
 /// Convert a declaration into a statement when lowering block bodies.
@@ -1082,7 +963,7 @@ fn lowerLiteral(self: *Lower, id: cst.ExprId) !ast.ExprId {
     return switch (lit.tag_small) {
         .int => blk: {
             const text = self.cst_program.exprs.strs.get(lit.value);
-            const parsed = try self.parseIntLiteralText(text);
+            const parsed = try LiteralScanner.parseIntLiteralText(self.gpa, text);
             break :blk self.ast_unit.exprs.add(.Literal, .{
                 .kind = .int,
                 .data = .{ .int = .{
@@ -1096,7 +977,7 @@ fn lowerLiteral(self: *Lower, id: cst.ExprId) !ast.ExprId {
         },
         .float => blk_float: {
             const text = self.cst_program.exprs.strs.get(lit.value);
-            const parsed = try self.parseFloatLiteralText(text);
+            const parsed = try LiteralScanner.parseFloatLiteralText(self.gpa, text);
             break :blk_float self.ast_unit.exprs.add(.Literal, .{
                 .kind = .float,
                 .data = .{ .float = .{ .text = lit.value, .value = parsed.value, .valid = parsed.valid } },
@@ -1104,7 +985,7 @@ fn lowerLiteral(self: *Lower, id: cst.ExprId) !ast.ExprId {
             });
         },
         .char => blk: {
-            const unescaped_char_val = try self.unescapeChar(self.cst_program.exprs.strs.get(lit.value));
+            const unescaped_char_val = try LiteralScanner.unescapeChar(self.cst_program.exprs.strs.get(lit.value));
             break :blk self.ast_unit.exprs.add(.Literal, .{
                 .kind = .char,
                 .data = .{ .char = unescaped_char_val },
@@ -1114,7 +995,7 @@ fn lowerLiteral(self: *Lower, id: cst.ExprId) !ast.ExprId {
         .imaginary => blk_im: {
             const s = self.cst_program.exprs.strs.get(lit.value);
             const trimmed: []const u8 = if (s.len > 0 and s[s.len - 1] == 'i') s[0 .. s.len - 1] else s;
-            const parsed = try self.parseFloatLiteralText(trimmed);
+            const parsed = try LiteralScanner.parseFloatLiteralText(self.gpa, trimmed);
             const sid = self.ast_unit.exprs.strs.intern(trimmed);
             break :blk_im self.ast_unit.exprs.add(.Literal, .{
                 .kind = .imaginary,
@@ -1135,7 +1016,7 @@ fn lowerLiteral(self: *Lower, id: cst.ExprId) !ast.ExprId {
         else => blk: {
             // fallback: treat as string
             const str = self.cst_program.exprs.strs.get(lit.value);
-            const unescaped = try self.unescapeString(str, lit.tag_small == .raw_string);
+            const unescaped = try LiteralScanner.unescapeString(self.gpa, self.ast_unit.exprs.strs, str, lit.tag_small == .raw_string);
             break :blk self.ast_unit.exprs.add(.Literal, .{
                 .kind = .string,
                 .data = .{ .string = unescaped },
@@ -1259,20 +1140,18 @@ fn lowerInfix(self: *Lower, id: cst.ExprId) !ast.ExprId {
 /// Lower match arms (pattern + guard + body) for AST match expressions.
 fn lowerMatchArms(self: *Lower, r: cst.RangeOf(cst.MatchArmId)) !ast.RangeMatchArm {
     const items = self.cst_program.exprs.arm_pool.slice(r);
-    var out_ids = try self.gpa.alloc(ast.MatchArmId, items.len);
-    defer self.gpa.free(out_ids);
-    var i: usize = 0;
-    while (i < items.len) : (i += 1) {
-        const a = self.cst_program.exprs.MatchArm.get(items[i]);
-        const mapped: ast.Rows.MatchArm = .{
-            .pattern = try self.lowerPattern(a.pattern),
-            .guard = if (!a.guard.isNone()) .some(try self.lowerExpr(a.guard.unwrap())) else .none(),
-            .body = try self.lowerExpr(a.body),
-            .loc = a.loc,
-        };
-        out_ids[i] = self.ast_unit.exprs.MatchArm.add(self.gpa, mapped);
-    }
-    return self.ast_unit.exprs.arm_pool.pushMany(self.gpa, out_ids);
+    return self.mapRange(cst.MatchArmId, ast.MatchArmId, items, &self.ast_unit.exprs.arm_pool, Lower.lowerMatchArm);
+}
+
+fn lowerMatchArm(self: *Lower, id: cst.MatchArmId) !ast.MatchArmId {
+    const a = self.cst_program.exprs.MatchArm.get(id);
+    const mapped: ast.Rows.MatchArm = .{
+        .pattern = try self.lowerPattern(a.pattern),
+        .guard = if (!a.guard.isNone()) .some(try self.lowerExpr(a.guard.unwrap())) else .none(),
+        .body = try self.lowerExpr(a.body),
+        .loc = a.loc,
+    };
+    return self.ast_unit.exprs.MatchArm.add(self.gpa, mapped);
 }
 
 // ---------------- Patterns ----------------
@@ -1384,48 +1263,40 @@ fn lowerPattern(self: *Lower, id: cst.PatternId) !ast.PatternId {
 /// Lower a sequence of path segments into AST `PathSeg`s.
 fn lowerPathSegs(self: *Lower, r: cst.RangeOf(cst.PathSegId)) !ast.RangePathSeg {
     const items = self.cst_program.pats.seg_pool.slice(r);
-    var out_ids = try self.gpa.alloc(ast.PathSegId, items.len);
-    defer self.gpa.free(out_ids);
-    var i: usize = 0;
-    while (i < items.len) : (i += 1) {
-        const s = self.cst_program.pats.PathSeg.get(items[i]);
-        const mapped: ast.PatRows.PathSeg = .{
-            .name = s.name,
-            .by_ref = false,
-            .is_mut = false,
-            .loc = s.loc,
-        };
-        out_ids[i] = self.ast_unit.pats.PathSeg.add(self.gpa, mapped);
-    }
-    return self.ast_unit.pats.seg_pool.pushMany(self.gpa, out_ids);
+    return self.mapRange(cst.PathSegId, ast.PathSegId, items, &self.ast_unit.pats.seg_pool, Lower.lowerPathSeg);
+}
+
+fn lowerPathSeg(self: *Lower, id: cst.PathSegId) !ast.PathSegId {
+    const s = self.cst_program.pats.PathSeg.get(id);
+    const mapped: ast.PatRows.PathSeg = .{
+        .name = s.name,
+        .by_ref = false,
+        .is_mut = false,
+        .loc = s.loc,
+    };
+    return self.ast_unit.pats.PathSeg.add(self.gpa, mapped);
 }
 
 /// Lower struct pattern fields within a pattern clause.
 fn lowerPatFields(self: *Lower, r: cst.RangeOf(cst.PatFieldId)) anyerror!ast.RangePatField {
     const items = self.cst_program.pats.field_pool.slice(r);
-    var out_ids = try self.gpa.alloc(ast.PatFieldId, items.len);
-    defer self.gpa.free(out_ids);
-    var i: usize = 0;
-    while (i < items.len) : (i += 1) {
-        const f = self.cst_program.pats.StructField.get(items[i]);
-        const mapped: ast.PatRows.StructField = .{
-            .name = f.name,
-            .pattern = try self.lowerPattern(f.pattern),
-            .loc = f.loc,
-        };
-        out_ids[i] = self.ast_unit.pats.StructField.add(self.gpa, mapped);
-    }
-    return self.ast_unit.pats.field_pool.pushMany(self.gpa, out_ids);
+    return self.mapRange(cst.PatFieldId, ast.PatFieldId, items, &self.ast_unit.pats.field_pool, Lower.lowerPatField);
+}
+
+fn lowerPatField(self: *Lower, id: cst.PatFieldId) !ast.PatFieldId {
+    const f = self.cst_program.pats.StructField.get(id);
+    const mapped: ast.PatRows.StructField = .{
+        .name = f.name,
+        .pattern = try self.lowerPattern(f.pattern),
+        .loc = f.loc,
+    };
+    return self.ast_unit.pats.StructField.add(self.gpa, mapped);
 }
 
 /// Lower a range of pattern elements (e.g., tuple patterns).
 fn lowerPatRange(self: *Lower, r: cst.RangeOf(cst.PatternId)) anyerror!ast.RangePat {
     const items = self.cst_program.pats.pat_pool.slice(r);
-    var out_ids = try self.gpa.alloc(ast.PatternId, items.len);
-    defer self.gpa.free(out_ids);
-    var i: usize = 0;
-    while (i < items.len) : (i += 1) out_ids[i] = try self.lowerPattern(items[i]);
-    return self.ast_unit.pats.pat_pool.pushMany(self.gpa, out_ids);
+    return self.mapRange(cst.PatternId, ast.PatternId, items, &self.ast_unit.pats.pat_pool, Lower.lowerPattern);
 }
 
 /// Extract path segments from a type expression for matching/lookup.
@@ -1621,3 +1492,140 @@ fn patternFromExpr(self: *Lower, id: cst.ExprId) !?ast.PatternId {
         },
     };
 }
+
+const LiteralScanner = struct {
+    /// Parse a string literal (raw or escaped) and intern the resulting text.
+    fn unescapeString(
+        gpa: std.mem.Allocator,
+        strs: *ast.StringInterner,
+        quoted_str: []const u8,
+        raw: bool,
+    ) !ast.StrId {
+        const inner_str = if (raw)
+            std.mem.trim(u8, quoted_str[1..], "\"#")
+        else
+            quoted_str[1 .. quoted_str.len - 1];
+
+        var unescaped_list: std.array_list.Managed(u8) = .init(gpa);
+        defer unescaped_list.deinit();
+
+        var i: usize = 0;
+        while (i < inner_str.len) : (i += 1) {
+            if (inner_str[i] == '\\') {
+                i += 1;
+                if (i >= inner_str.len) {
+                    try unescaped_list.append('\\');
+                    break;
+                }
+                switch (inner_str[i]) {
+                    'n' => try unescaped_list.append('\n'),
+                    't' => try unescaped_list.append('\t'),
+                    'r' => try unescaped_list.append('\r'),
+                    '\\' => try unescaped_list.append('\\'),
+                    '"' => try unescaped_list.append('"'),
+                    '\'' => try unescaped_list.append('\''),
+                    '0' => try unescaped_list.append(0),
+                    else => {
+                        try unescaped_list.append('\\');
+                        try unescaped_list.append(inner_str[i]);
+                    },
+                }
+            } else {
+                try unescaped_list.append(inner_str[i]);
+            }
+        }
+        return strs.intern(unescaped_list.items);
+    }
+
+    /// Interpret `quoted_char` as a Unicode scalar, handling escape sequences.
+    fn unescapeChar(quoted_char: []const u8) !u32 {
+        const inner_char_str = quoted_char[1 .. quoted_char.len - 1];
+
+        var char_val: u32 = undefined;
+        if (inner_char_str.len == 1) {
+            char_val = inner_char_str[0];
+        } else if (inner_char_str.len == 2 and inner_char_str[0] == '\\') {
+            switch (inner_char_str[1]) {
+                'n' => char_val = 10,
+                't' => char_val = 9,
+                'r' => char_val = 13,
+                '\\' => char_val = 92,
+                '"' => char_val = 34,
+                '\'' => char_val = 39,
+                '0' => char_val = 0,
+                else => {
+                    char_val = inner_char_str[1];
+                },
+            }
+        } else {
+            char_val = '?'; // Indicate error or unhandled case
+        }
+        return char_val;
+    }
+
+    /// Parse integer literal text, returning numeric value, base, and validity.
+    fn parseIntLiteralText(gpa: std.mem.Allocator, text: []const u8) !struct { value: u128, base: u8, valid: bool } {
+        if (text.len == 0) return .{ .value = 0, .base = 10, .valid = false };
+
+        var base: u8 = 10;
+        var digits = text;
+        if (digits.len >= 2 and digits[0] == '0') {
+            const prefix = digits[1];
+            switch (prefix) {
+                'b', 'B' => {
+                    base = 2;
+                    digits = digits[2..];
+                },
+                'o', 'O' => {
+                    base = 8;
+                    digits = digits[2..];
+                },
+                'x', 'X' => {
+                    base = 16;
+                    digits = digits[2..];
+                },
+                else => {},
+            }
+        }
+
+        var valid = digits.len != 0;
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(gpa);
+        for (digits) |c| {
+            if (c == '_') continue;
+            try buf.append(gpa, c);
+        }
+        if (buf.items.len == 0) valid = false;
+
+        var value: u128 = 0;
+        if (valid) {
+            value = std.fmt.parseInt(u128, buf.items, base) catch blk: {
+                valid = false;
+                break :blk 0;
+            };
+        }
+
+        return .{ .value = value, .base = base, .valid = valid };
+    }
+
+    /// Parse floating-point literal text and report the parsed value plus validity.
+    fn parseFloatLiteralText(gpa: std.mem.Allocator, text: []const u8) !struct { value: f64, valid: bool } {
+        if (text.len == 0) return .{ .value = 0.0, .valid = false };
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(gpa);
+        for (text) |c| {
+            if (c == '_') continue;
+            try buf.append(gpa, c);
+        }
+        var valid = buf.items.len != 0;
+        var value: f64 = 0.0;
+        if (valid) {
+            value = std.fmt.parseFloat(f64, buf.items) catch blk: {
+                valid = false;
+                break :blk 0.0;
+            };
+        }
+        return .{ .value = value, .valid = valid };
+    }
+};

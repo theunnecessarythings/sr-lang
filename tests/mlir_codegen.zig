@@ -34,9 +34,11 @@ fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !Lowered {
     var cst = try parser.parse();
     defer cst.deinit();
 
-    var lower1 = compiler.lower_to_ast.Lower.init(gpa, &cst, context, 0); // Pass context
-    var hir = try lower1.run();
-    defer hir.deinit();
+    var lower1 = try compiler.lower_to_ast.Lower.init(gpa, &cst, context, 0); // Pass context
+    defer lower1.deinit();
+    const result = try lower1.run();
+    defer result.deinit();
+    const hir = result.ast_unit;
 
     var pipeline = compiler.pipeline.Pipeline.init(gpa, context); // Create pipeline
     const chk = try gpa.create(compiler.checker.Checker);
@@ -45,12 +47,12 @@ fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !Lowered {
         chk.deinit();
         gpa.destroy(chk);
     }
-    try chk.runAst(&hir);
+    try chk.runAst(hir);
     if (context.diags.anyErrors()) return error.SemanticErrors; // Use context.diags
 
     var lt = compiler.lower_tir.LowerTir.init(gpa, context, &pipeline, chk); // Pass context and pipeline
     defer lt.deinit();
-    const t = try lt.runAst(&hir);
+    const t = try lt.runAst(hir);
     return .{ .tir = t, .checker = chk, .type_info = &chk.type_info, .context = context };
 }
 

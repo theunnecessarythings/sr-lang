@@ -102,8 +102,23 @@ pub const CallSpecialization = struct {
     is_spread: bool = false,
 };
 
+/// Computes a hash for specialization parameters.
+pub fn hashSpecialization(original_decl_id: u32, param_types: []const TypeId, comptime_hashes: []const u64) u64 {
+    var hasher: std.hash.Fnv1a_64 = .init();
+    hasher.update(std.mem.asBytes(&original_decl_id));
+    for (param_types) |pt| {
+        const raw = pt.toRaw();
+        hasher.update(std.mem.asBytes(&raw));
+    }
+    for (comptime_hashes) |h| {
+        hasher.update(std.mem.asBytes(&h));
+    }
+    return hasher.final();
+}
+
 /// Key used to cache specializations so we don't generate the same function twice.
 pub const SpecializationKey = struct {
+    digest: u64,
     original_decl_id: u32,
     /// The concrete types mapped to the function's parameters for this specific call.
     param_types: []const TypeId,
@@ -111,28 +126,17 @@ pub const SpecializationKey = struct {
     comptime_hashes: []const u64,
 
     pub fn hash(self: SpecializationKey) u64 {
-        var hasher: std.hash.Fnv1a_64 = .init();
-        hasher.update(std.mem.asBytes(&self.original_decl_id));
-        for (self.param_types) |pt| {
-            const raw = pt.toRaw();
-            hasher.update(std.mem.asBytes(&raw));
-        }
-        for (self.comptime_hashes) |h| {
-            hasher.update(std.mem.asBytes(&h));
-        }
-        return hasher.final();
+        return self.digest;
     }
     pub fn eql(self: SpecializationKey, other: SpecializationKey) bool {
+        if (self.digest != other.digest) return false;
         if (self.original_decl_id != other.original_decl_id) return false;
         if (self.param_types.len != other.param_types.len) return false;
         if (self.comptime_hashes.len != other.comptime_hashes.len) return false;
         for (self.param_types, other.param_types) |a, b| {
             if (!a.eq(b)) return false;
         }
-        for (self.comptime_hashes, other.comptime_hashes) |a, b| {
-            if (a != b) return false;
-        }
-        return true;
+        return std.mem.eql(u64, self.comptime_hashes, other.comptime_hashes);
     }
 };
 

@@ -113,8 +113,10 @@ fn testLower(data: []const u8) !void {
     defer tree.deinit();
 
     var lower_mod = try lower.Lower.init(gpa, &tree, &context, 0); // Pass context
-    var a = try (&lower_mod).run();
-    defer a.deinit();
+    defer lower_mod.deinit();
+    var result = try (&lower_mod).run();
+    defer result.deinit(gpa);
+    const a = result.ast_unit;
 
     var buffer: [1024]u8 = undefined;
     var sink = std.fs.File.stdout().writer(&buffer);
@@ -153,10 +155,16 @@ fn testChecker(data: []const u8) !void {
     defer c.deinit();
 
     var lower_mod = try lower.Lower.init(gpa, &c, &context, 0); // Pass context
-    var a = try (&lower_mod).run();
-    defer a.deinit();
+    defer lower_mod.deinit();
+    var result = try (&lower_mod).run();
+    defer result.deinit(gpa);
+    const a = result.ast_unit;
 
-    var ctx = checker.Checker.CheckerContext{ .symtab = SymbolStore.init(gpa) };
+    var ctx = checker.Checker.CheckerContext{
+        .symtab = SymbolStore.init(gpa),
+        .spec_arena = std.heap.ArenaAllocator.init(gpa),
+        .temp_arena = std.heap.ArenaAllocator.init(gpa),
+    };
     var chk = checker.Checker.init(gpa, &context, &pipeline); // Pass context and pipeline
     defer chk.deinit();
     try chk.runAst(a, &ctx);

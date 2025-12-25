@@ -203,6 +203,83 @@ pub const Pipeline = struct {
             if (work.diags.anyErrors()) {
                 parse_failed = true;
             }
+            if (!parse_failed and self.context.load_imports) {
+                const program = work.parser.cst_u.program;
+                const decl_ids = work.parser.cst_u.exprs.decl_pool.slice(program.top_decls);
+                for (decl_ids) |decl_id| {
+                    const decl = work.parser.cst_u.exprs.Decl.get(decl_id);
+                    if (work.parser.cst_u.kind(decl.rhs) != .Import) continue;
+
+                    const imp = work.parser.cst_u.exprs.get(.Import, decl.rhs);
+                    const imp_name = work.parser.cst_u.exprs.strs.get(imp.path);
+                    const resolved_path = compile.resolveImportPath(
+                        self.allocator,
+                        self.context.source_manager,
+                        work.file_id,
+                        imp_name,
+                    ) catch {
+                        _ = self.context.diags.addError(
+                            work.parser.cst_u.exprs.locs.get(imp.loc),
+                            .import_not_found,
+                            .{},
+                        ) catch {};
+                        parse_failed = true;
+                        continue;
+                    };
+                    defer self.allocator.free(resolved_path);
+
+                    const import_file_id = try self.context.source_manager.add(resolved_path);
+                    const sm_path = self.context.source_manager.get(import_file_id).?;
+                    const resolved_id = self.context.interner.intern(sm_path);
+                    const import_row_idx = work.parser.cst_u.exprs.index.rows.items[decl.rhs.toRaw()];
+                    var import_row = work.parser.cst_u.exprs.table(.Import).get(import_row_idx);
+                    import_row.path = resolved_id;
+                    work.parser.cst_u.exprs.table(.Import).set(import_row_idx, import_row);
+
+                    self.context.compilation_unit.mutex.lock();
+                    var already_exists = false;
+                    var pkg_iter = self.context.compilation_unit.packages.iterator();
+                    while (pkg_iter.next()) |pkg| {
+                        if (pkg.value_ptr.sources.get(sm_path) != null) {
+                            already_exists = true;
+                            break;
+                        }
+                    }
+                    if (!already_exists) {
+                        for (self.context.parse_worklist.items) |item| {
+                            if (item.file_id == import_file_id) {
+                                already_exists = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!already_exists) {
+                        const import_source = try self.context.source_manager.read(import_file_id);
+                        const import_source0 = try self.allocator.dupeZ(u8, import_source);
+                        self.allocator.free(import_source);
+
+                        const child_diags = try self.allocator.create(Diagnostics);
+                        child_diags.* = Diagnostics.init(self.allocator, self.context.type_store, self.context.interner);
+
+                        const child_parser = try self.allocator.create(Parser);
+                        child_parser.* = Parser.init(self.allocator, import_source0, import_file_id, child_diags, self.context);
+
+                        const thread = try std.Thread.spawn(.{}, Parser.run, .{child_parser});
+                        try self.context.parse_worklist.append(self.allocator, .{
+                            .path = sm_path,
+                            .file_id = import_file_id,
+                            .thread = thread,
+                            .diags = child_diags,
+                            .parser = child_parser,
+                        });
+                    }
+                    self.context.compilation_unit.mutex.unlock();
+
+                    const dep_id = self.context.interner.intern(sm_path);
+                    try self.context.compilation_unit.addDependency(work.file_id, dep_id);
+                }
+            }
             if (!parse_failed) {
                 self.context.compilation_unit.mutex.lock();
                 const package_id = work.parser.cst_u.program.package_name.unwrap();
@@ -282,6 +359,10 @@ pub const Pipeline = struct {
             const pkg = self.context.compilation_unit.packages.getPtr(thread.@"2").?;
             pkg.sources.getPtr(thread.@"3").?.ast = thread.@"1".ast_unit;
             self.context.compilation_unit.mutex.unlock();
+            for (thread.@"1".dependencies.items) |dep| {
+                try self.context.compilation_unit.addDependency(thread.@"1".file_id, dep);
+            }
+            thread.@"1".dependencies.deinit(self.allocator);
             // Always destroy per-thread state.
             self.allocator.destroy(thread.@"1");
         }

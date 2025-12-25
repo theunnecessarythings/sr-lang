@@ -243,72 +243,85 @@ fn litTag(t: Token.Tag) cst.LiteralKind {
     };
 }
 
-/// Return the binding power (precedence) for prefix expressions with token `t`.
-fn prefixBp(_: *const Parser, t: Token.Tag) u8 {
-    return switch (t) {
-        .plus, .minus, .b_and, .bang, .dotdot, .dotdoteq => 90,
-        else => 0,
-    };
-}
-/// Return the binding power of postfix operators or `null` when none apply.
-fn postfixBp(_: *const Parser, t: Token.Tag) ?u8 {
-    return switch (t) {
-        .lparen,
-        .lsquare,
-        .lcurly,
-        .dot,
-        .dotlparen,
-        .dotdot,
-        .dotstar,
-        .dotdoteq,
-        .bang,
-        .question,
-        => 95,
-        // Make `catch` bind looser than `orelse` so `a orelse b catch c`
-        // parses as `(a orelse b) catch c` instead of `a orelse (b catch c)`.
-        .keyword_catch => 10,
-        else => null,
-    };
-}
-/// Return the left/right binding powers for infix token `tag`, enabling Pratt parsing.
-inline fn infixBp(_: *const Parser, tag: Token.Tag) ?struct { u8, u8 } {
-    return switch (tag) {
-        .star, .slash, .percent, .star_pipe, .star_percent => .{ 80, 81 },
-        .plus, .plus_pipe, .plus_percent, .minus, .minus_percent, .minus_pipe => .{ 70, 71 },
-        .ltlt, .gtgt, .shl_pipe => .{ 60, 61 },
-        .less_than, .less_equal, .greater_than, .greater_equal => .{ 50, 51 },
-        .equal_equal, .not_equal => .{ 45, 46 },
-        .keyword_in => .{ 42, 43 },
-        .b_and => .{ 40, 41 },
-        .caret => .{ 35, 36 },
-        .b_or => .{ 30, 31 },
-        .dotdot, .dotdoteq => .{ 27, 28 },
-        .keyword_and => .{ 25, 26 },
-        .keyword_or => .{ 20, 21 },
-        .bang => .{ 15, 16 }, // for error union
-        .keyword_orelse => .{ 12, 11 },
+const prefix_bp_table = std.enums.directEnumArrayDefault(Token.Tag, u8, 0, 0, .{
+    .plus = 90,
+    .minus = 90,
+    .b_and = 90,
+    .bang = 90,
+    .dotdot = 90,
+    .dotdoteq = 90,
+});
+const postfix_bp_table = std.enums.directEnumArrayDefault(Token.Tag, ?u8, @as(?u8, null), 0, .{
+    .lparen = 95,
+    .lsquare = 95,
+    .lcurly = 95,
+    .dot = 95,
+    .dotlparen = 95,
+    .dotdot = 95,
+    .dotstar = 95,
+    .dotdoteq = 95,
+    .bang = 95,
+    .question = 95,
+    // Make `catch` bind looser than `orelse` so `a orelse b catch c`
+    // parses as `(a orelse b) catch c` instead of `a orelse (b catch c)`.
+    .keyword_catch = 10,
+});
+const infix_bp_table = std.enums.directEnumArrayDefault(
+    Token.Tag,
+    ?struct { u8, u8 },
+    @as(?struct { u8, u8 }, null),
+    0,
+    .{
+        .star = .{ 80, 81 },
+        .slash = .{ 80, 81 },
+        .percent = .{ 80, 81 },
+        .star_pipe = .{ 80, 81 },
+        .star_percent = .{ 80, 81 },
+        .plus = .{ 70, 71 },
+        .plus_pipe = .{ 70, 71 },
+        .plus_percent = .{ 70, 71 },
+        .minus = .{ 70, 71 },
+        .minus_percent = .{ 70, 71 },
+        .minus_pipe = .{ 70, 71 },
+        .ltlt = .{ 60, 61 },
+        .gtgt = .{ 60, 61 },
+        .shl_pipe = .{ 60, 61 },
+        .less_than = .{ 50, 51 },
+        .less_equal = .{ 50, 51 },
+        .greater_than = .{ 50, 51 },
+        .greater_equal = .{ 50, 51 },
+        .equal_equal = .{ 45, 46 },
+        .not_equal = .{ 45, 46 },
+        .keyword_in = .{ 42, 43 },
+        .b_and = .{ 40, 41 },
+        .caret = .{ 35, 36 },
+        .b_or = .{ 30, 31 },
+        .dotdot = .{ 27, 28 },
+        .dotdoteq = .{ 27, 28 },
+        .keyword_and = .{ 25, 26 },
+        .keyword_or = .{ 20, 21 },
+        .bang = .{ 15, 16 }, // for error union
+        .keyword_orelse = .{ 12, 11 },
         // do not treat 'catch' as an infix operator; it's a postfix form with optional binder
-        .plus_equal,
-        .minus_equal,
-        .star_equal,
-        .slash_equal,
-        .percent_equal,
-        .shl_equal,
-        .shr_equal,
-        .and_equal,
-        .or_equal,
-        .caret_equal,
-        .star_pipe_equal,
-        .plus_pipe_equal,
-        .minus_pipe_equal,
-        .shl_pipe_equal,
-        .star_percent_equal,
-        .plus_percent_equal,
-        .minus_percent_equal,
-        => .{ 10, 9 },
-        else => null,
-    };
-}
+        .plus_equal = .{ 10, 9 },
+        .minus_equal = .{ 10, 9 },
+        .star_equal = .{ 10, 9 },
+        .slash_equal = .{ 10, 9 },
+        .percent_equal = .{ 10, 9 },
+        .shl_equal = .{ 10, 9 },
+        .shr_equal = .{ 10, 9 },
+        .and_equal = .{ 10, 9 },
+        .or_equal = .{ 10, 9 },
+        .caret_equal = .{ 10, 9 },
+        .star_pipe_equal = .{ 10, 9 },
+        .plus_pipe_equal = .{ 10, 9 },
+        .minus_pipe_equal = .{ 10, 9 },
+        .shl_pipe_equal = .{ 10, 9 },
+        .star_percent_equal = .{ 10, 9 },
+        .plus_percent_equal = .{ 10, 9 },
+        .minus_percent_equal = .{ 10, 9 },
+    },
+);
 
 /// Return true if `tag` can begin a type expression (generic, builtin, pointer, etc.).
 fn isTypeStart(_: *const Parser, tag: Token.Tag) bool {
@@ -727,7 +740,7 @@ fn nud(self: *Parser, tag: Token.Tag, comptime mode: ParseMode) anyerror!cst.Exp
             const loc = self.toLocId(self.cur.loc);
             const op = self.toPrefixOp(tag);
             self.advance();
-            const rhs = try self.parseExpr(self.prefixBp(tag), mode);
+            const rhs = try self.parseExpr(prefix_bp_table[@intFromEnum(tag)], mode);
             return self.addExpr(.Prefix, .{ .right = rhs, .op = op, .loc = loc });
         },
         .b_or => return try self.parseClosure(),
@@ -900,7 +913,7 @@ fn parseExpr(self: *Parser, min_bp: u8, comptime mode: ParseMode) anyerror!cst.E
         const tag = self.cur.tag;
 
         // ---------- Postfix ----------
-        if (self.postfixBp(tag)) |l_bp| {
+        if (postfix_bp_table[@intFromEnum(tag)]) |l_bp| {
             // never treat '!' as postfix in type context
             if (tag == .bang and mode == .type) {
                 // skip; might be infix type operator
@@ -956,7 +969,7 @@ fn parseExpr(self: *Parser, min_bp: u8, comptime mode: ParseMode) anyerror!cst.E
             }
         }
         // ---------- Infix ----------
-        if (self.infixBp(tag)) |bp| {
+        if (infix_bp_table[@intFromEnum(tag)]) |bp| {
             // Allow infix '!' as error-union in type mode,
             // or in expr mode when the next token begins a type.
             if (tag == .bang and !(mode == .type or self.isTypeStart(self.nxt.tag))) break;
@@ -1177,7 +1190,7 @@ fn parseCastSigil(self: *Parser, expr: cst.ExprId) anyerror!cst.ExprId {
         else => unreachable,
     };
     self.advance();
-    const ty = try self.parseExpr(self.postfixBp(.dot).?, .type);
+    const ty = try self.parseExpr(postfix_bp_table[@intFromEnum(Token.Tag.dot)].?, .type);
     return self.addExpr(.Cast, .{ .expr = expr, .ty = ty, .kind = kind, .loc = loc });
 }
 
@@ -1245,7 +1258,7 @@ fn parseClosure(self: *Parser) !cst.ExprId {
     defer param_ids.deinit(self.gpa);
 
     if (self.cur.tag != .b_or) {
-        const p = self.infixBp(.b_or).?; // { l_bp, r_bp }
+        const p = infix_bp_table[@intFromEnum(Token.Tag.b_or)].?; // { l_bp, r_bp }
         const r_bp: u8 = p[1];
         const barrier: u8 = r_bp + 1;
 
@@ -1353,105 +1366,8 @@ fn parseImport(self: *Parser) !cst.ExprId {
     const name_raw = std.mem.trim(u8, self.slice(self.cur), "\"");
     try self.expect(.string_literal);
 
-    if (!self.context.load_imports) {
-        const path_id = self.intern(name_raw);
-        return self.addExpr(.Import, .{ .path = path_id, .loc = loc });
-    }
-
-    // Normal pipeline-driven parsing: resolve and enqueue.
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const exe_dir = try std.fs.selfExeDirPath(&buf);
-
-    const ext = if (std.fs.path.extension(name_raw).len == 0) ".sr" else "";
-    const filename_ext = try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ name_raw, ext });
-    defer self.gpa.free(filename_ext);
-
-    const current_file_path = self.context.source_manager.get(self.lex.file_id) orelse {
-        try self.diags.addError(self.cur.loc, .import_not_found, .{});
-        self.sync(.eos);
-        return error.Unexpected;
-    };
-    const current_dir = std.fs.path.dirname(current_file_path) orelse ".";
-
-    // Try 1: relative to current file
-    var joined_path = try std.fs.path.join(self.gpa, &.{ current_dir, filename_ext });
-    var found = std.fs.cwd().statFile(joined_path) catch null != null;
-
-    // Try 2: current file's "imports" subdirectory
-    if (!found) {
-        self.gpa.free(joined_path);
-        joined_path = try std.fs.path.join(self.gpa, &.{ current_dir, "imports", filename_ext });
-        found = std.fs.cwd().statFile(joined_path) catch null != null;
-    }
-
-    // Fallback: relative to executable dir/.. (project root-ish)
-    if (!found) {
-        self.gpa.free(joined_path);
-        joined_path = try std.fs.path.join(self.gpa, &.{ exe_dir, "..", filename_ext });
-        found = std.fs.cwd().statFile(joined_path) catch null != null;
-    }
-
-    if (!found) {
-        self.gpa.free(joined_path);
-        try self.diags.addError(self.cur.loc, .import_not_found, .{});
-        self.sync(.eos);
-        return error.UnexpectedToken;
-    }
-
-    const filepath = try std.fs.realpathAlloc(self.gpa, joined_path);
-    self.gpa.free(joined_path);
-
-    const file_id = try self.context.source_manager.add(filepath);
-    // SourceManager duplicates the path; free our temporary buffer.
-    self.gpa.free(filepath);
-    const sm_path = self.context.source_manager.get(file_id).?;
-    const path = self.intern(sm_path);
-
-    // Check if this file is already parsed or is in the worklist to prevent circular import loops.
-    self.context.compilation_unit.mutex.lock();
-    var already_exists = false;
-    var pkg_iter = self.context.compilation_unit.packages.iterator();
-    while (pkg_iter.next()) |pkg| {
-        if (pkg.value_ptr.sources.get(sm_path) != null) {
-            already_exists = true;
-            break;
-        }
-    }
-    if (!already_exists) {
-        for (self.context.parse_worklist.items) |item| {
-            if (item.file_id == file_id) {
-                already_exists = true;
-                break;
-            }
-        }
-    }
-
-    if (already_exists) {
-        self.context.compilation_unit.mutex.unlock();
-        return self.addExpr(.Import, .{ .path = path, .loc = loc });
-    }
-
-    const source = try self.context.source_manager.read(file_id);
-    const source0 = try self.gpa.dupeZ(u8, source);
-    self.gpa.free(source); // Free the original buffer after duplication
-
-    // Use a separate diagnostics buffer for this imported file
-    const child_diags = try self.gpa.create(diag.Diagnostics);
-    child_diags.* = diag.Diagnostics.init(self.gpa, self.context.type_store, self.context.interner);
-
-    const parser = try self.gpa.create(Parser);
-    parser.* = Parser.init(self.gpa, source0, file_id, child_diags, self.context);
-
-    const thread = try std.Thread.spawn(.{}, run, .{parser});
-    try self.context.parse_worklist.append(self.gpa, .{
-        .path = sm_path,
-        .file_id = file_id,
-        .thread = thread,
-        .diags = child_diags,
-        .parser = parser,
-    });
-    self.context.compilation_unit.mutex.unlock();
-    return self.addExpr(.Import, .{ .path = path, .loc = loc });
+    const path_id = self.intern(name_raw);
+    return self.addExpr(.Import, .{ .path = path_id, .loc = loc });
 }
 
 /// Entry point invoked by worker threads to parse one CST unit.
@@ -2882,6 +2798,18 @@ fn parseMlir(self: *Parser) !cst.ExprId {
     const raw_text = self.slice(text_tok);
     const text = self.intern(raw_text);
 
+    const pieces_range = try self.buildMlirPieces(raw_text);
+    return self.addExpr(.Mlir, .{
+        .kind = kind,
+        .text = text,
+        .pieces = pieces_range,
+        .args = args_range,
+        .result_ty = result_ty,
+        .loc = self.toLocId(mlir_loc),
+    });
+}
+
+fn buildMlirPieces(self: *Parser, raw_text: []const u8) !cst.RangeOf(cst.MlirPieceId) {
     var piece_ids = std.ArrayListUnmanaged(cst.MlirPieceId){};
     defer piece_ids.deinit(self.gpa);
 
@@ -2954,15 +2882,7 @@ fn parseMlir(self: *Parser) !cst.ExprId {
         piece_ids.append(self.gpa, empty_id) catch @panic("OOM");
     }
 
-    const pieces_range = self.cst_u.exprs.mlir_piece_pool.pushMany(self.gpa, piece_ids.items);
-    return self.addExpr(.Mlir, .{
-        .kind = kind,
-        .text = text,
-        .pieces = pieces_range,
-        .args = args_range,
-        .result_ty = result_ty,
-        .loc = self.toLocId(mlir_loc),
-    });
+    return self.cst_u.exprs.mlir_piece_pool.pushMany(self.gpa, piece_ids.items);
 }
 
 /// Return true if `ch` is valid as the first character of an identifier.

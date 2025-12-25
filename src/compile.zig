@@ -122,6 +122,48 @@ pub const SourceManager = struct {
     }
 };
 
+/// Resolves a raw import string into an absolute path on disk.
+/// Searches: 1) relative to current file, 2) in 'imports/' subdir, 3) relative to exe root.
+pub fn resolveImportPath(
+    allocator: std.mem.Allocator,
+    source_manager: *SourceManager,
+    current_file_id: u32,
+    import_name: []const u8,
+) ![]const u8 {
+    const current_file_path = source_manager.get(current_file_id) orelse return error.FileNotFound;
+    const current_dir = std.fs.path.dirname(current_file_path) orelse ".";
+
+    const ext = if (std.fs.path.extension(import_name).len == 0) ".sr" else "";
+    const filename_ext = try std.fmt.allocPrint(allocator, "{s}{s}", .{ import_name, ext });
+    defer allocator.free(filename_ext);
+
+    var joined_path: []u8 = undefined;
+    var found = false;
+
+    joined_path = try std.fs.path.join(allocator, &.{ current_dir, filename_ext });
+    found = std.fs.cwd().statFile(joined_path) catch null != null;
+
+    if (!found) {
+        allocator.free(joined_path);
+        joined_path = try std.fs.path.join(allocator, &.{ current_dir, "imports", filename_ext });
+        found = std.fs.cwd().statFile(joined_path) catch null != null;
+    }
+
+    if (!found) {
+        allocator.free(joined_path);
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const exe_dir = try std.fs.selfExeDirPath(&buf);
+        joined_path = try std.fs.path.join(allocator, &.{ exe_dir, "..", filename_ext });
+        found = std.fs.cwd().statFile(joined_path) catch null != null;
+    }
+
+    if (!found) return error.ImportNotFound;
+
+    const real_path = try std.fs.realpathAlloc(allocator, joined_path);
+    allocator.free(joined_path);
+    return real_path;
+}
+
 /// Shared compilation context passed through parsing/checking/codegen stages.
 pub const Context = struct {
     /// Allocator for the context and derived storages.

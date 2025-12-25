@@ -46,7 +46,13 @@ fn runQualifiedNameDiagnostics(store: *types.TypeStore, interner: *cst.StringInt
     const other_name = interner.intern("main_pkg.module.BoolType.Old");
     try store.setQualifiedName(bool_ty, qualified_name);
     try store.setQualifiedName(bool_ty, other_name);
-    try std.testing.expectEqual(store.getQualifiedName(bool_ty).?, qualified_name);
+
+    if (store.getQualifiedName(bool_ty)) |got| {
+        try std.testing.expectEqual(got, qualified_name);
+    } else {
+        std.debug.print("FAILURE: getQualifiedName(bool_ty) returned null\n", .{});
+        return error.TestUnexpectedResult;
+    }
 
     try expectDiagnostic(store, bool_ty, types.FormatOptions{ .prefer_names = true }, "main_pkg.module.BoolType");
     try expectDiagnostic(store, bool_ty, types.FormatOptions{ .prefer_names = false }, "bool");
