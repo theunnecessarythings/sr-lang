@@ -18,23 +18,16 @@ const POINTER_SIZE_BITS: u64 = 64;
 
 /// Cache for the MLIR attributes describing a source file and its compile unit.
 pub const DebugFileInfo = struct {
-    /// `llvm.di.file` attribute that encodes basename/directory.
     file_attr: mlir.Attribute,
-    /// Compile unit attribute referencing the file-level metadata.
     compile_unit_attr: mlir.Attribute,
 };
 
 /// Represents the DWARF metadata attached to a function definition.
 pub const DebugSubprogramInfo = struct {
-    /// `llvm.disubprogram` attribute describing the function signature/scope.
     attr: mlir.Attribute,
-    /// Source file identifier for `attr`.
     file_id: u32,
-    /// Line number where the function begins.
     line: u32,
-    /// Line number where the lexical scope starts (usually same as `line`).
     scope_line: u32,
-    /// Optional location ID for the prologue.
     loc: tir.OptLocId,
 };
 
@@ -50,41 +43,38 @@ pub fn resetDebugCaches(self: *Codegen) void {
     self.di_recursive_ids.clearRetainingCapacity();
     self.next_di_id = 0;
     self.debug_module_attrs_initialized = false;
+
     var mod_op = self.module.getOperation();
-    _ = mod_op.removeDiscardableAttributeByName(mlir.StringRef.from("llvm.dbg.cu"));
-    _ = mod_op.removeDiscardableAttributeByName(mlir.StringRef.from("llvm.module.flags"));
-    _ = mod_op.removeDiscardableAttributeByName(mlir.StringRef.from("llvm.ident"));
+    const attrs_to_clear = [_][]const u8{ "llvm.dbg.cu", "llvm.module.flags", "llvm.ident" };
+    for (attrs_to_clear) |name| {
+        _ = mod_op.removeDiscardableAttributeByName(mlir.StringRef.from(name));
+    }
 }
 
 /// Generate a new monotonic ID for naming debug metadata nodes.
-fn nextDistinctId(self: *Codegen) usize {
-    const id = self.next_di_id;
-    self.next_di_id += 1;
-    return id;
+inline fn nextDistinctId(self: *Codegen) usize {
+    defer self.next_di_id += 1;
+    return self.next_di_id;
 }
 
-const MyPrintBuffer = struct {
-    list: *std.ArrayListUnmanaged(u8),
-    allocator: std.mem.Allocator,
-    had_error: *bool,
+const PrintCtx = struct {
+    list: std.ArrayListUnmanaged(u8),
+    alloc: std.mem.Allocator,
+    err: bool,
 };
 
-fn myPrintCallback(str: mlir.c.MlirStringRef, user_data: ?*anyopaque) callconv(.c) void {
-    const buf: *MyPrintBuffer = @ptrCast(@alignCast(user_data));
-    const bytes = str.data[0..str.length];
-    buf.list.appendSlice(buf.allocator, bytes) catch {
-        buf.had_error.* = true;
+fn printCb(str: mlir.c.MlirStringRef, ctx_ptr: ?*anyopaque) callconv(.c) void {
+    const ctx: *PrintCtx = @ptrCast(@alignCast(ctx_ptr));
+    ctx.list.appendSlice(ctx.alloc, str.data[0..str.length]) catch {
+        ctx.err = true;
     };
 }
 
 fn getAttrText(self: *Codegen, attr: mlir.Attribute) ![]const u8 {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    const scratch = self.debug_arena.allocator();
-    var had_error = false;
-    var pb = MyPrintBuffer{ .list = &buffer, .allocator = scratch, .had_error = &had_error };
-    attr.print(myPrintCallback, &pb);
-    if (had_error) return error.DebugAttrParseFailed;
-    return buffer.items;
+    var ctx = PrintCtx{ .list = .{}, .alloc = self.debug_arena.allocator(), .err = false };
+    attr.print(printCb, &ctx);
+    if (ctx.err) return error.DebugAttrParseFailed;
+    return ctx.list.items;
 }
 
 /// Create or reuse the debug metadata entry that describes `file_id`'s source file.
@@ -92,42 +82,33 @@ fn ensureDebugFile(self: *Codegen, file_id: u32) !*DebugFileInfo {
     if (self.di_files.getPtr(file_id)) |info| return info;
 
     const path = self.context.source_manager.get(file_id) orelse "unknown";
-    const base = std.fs.path.basename(path);
-    const dir = std.fs.path.dirname(path) orelse ".";
-
-    const base_attr = self.strAttr(base);
-    const dir_attr = self.strAttr(dir);
-    const file_attr = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, base_attr, dir_attr);
+    const file_attr = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, self.strAttr(std.fs.path.basename(path)), self.strAttr(std.fs.path.dirname(path) orelse "."));
     if (file_attr.isNull()) return error.DebugAttrParseFailed;
 
     const cu_attr = try buildDICompileUnit(self, file_attr);
     try addCompileUnitToModule(self, cu_attr);
 
-    try self.di_files.put(file_id, .{
-        .file_attr = file_attr,
-        .compile_unit_attr = cu_attr,
-    });
+    try self.di_files.put(file_id, .{ .file_attr = file_attr, .compile_unit_attr = cu_attr });
     return self.di_files.getPtr(file_id).?;
 }
 
 /// Serialize a `llvm.di.compile_unit` attribute for the given file.
 fn buildDICompileUnit(self: *Codegen, file_attr: mlir.Attribute) !mlir.Attribute {
-    const producer_attr = self.strAttr("sr-lang");
-    const scratch = self.debug_arena.allocator();
-    const id_payload = try std.fmt.allocPrint(scratch, "cu_{d}", .{nextDistinctId(self)});
-    const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
+    const alloc = self.debug_arena.allocator();
+    const id_str = try std.fmt.allocPrint(alloc, "cu_{d}", .{nextDistinctId(self)});
+    const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_str));
 
-    const file_text = try getAttrText(self, file_attr);
-    const producer_text = try getAttrText(self, producer_attr);
-    const id_text = try getAttrText(self, id_attr);
+    const file_txt = try getAttrText(self, file_attr);
+    const prod_txt = try getAttrText(self, self.strAttr("sr-lang"));
+    const id_txt = try getAttrText(self, id_attr);
 
-    const cu_text = try std.fmt.allocPrint(
-        scratch,
+    const cu_txt = try std.fmt.allocPrint(
+        alloc,
         "#llvm.di_compile_unit<id = {s}, sourceLanguage = DW_LANG_C11, file = {s}, producer = {s}, isOptimized = false, emissionKind = Full>",
-        .{ id_text, file_text, producer_text },
+        .{ id_txt, file_txt, prod_txt },
     );
 
-    const cu_attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(cu_text));
+    const cu_attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(cu_txt));
     if (cu_attr.isNull()) return error.DebugAttrParseFailed;
     return cu_attr;
 }
@@ -135,181 +116,123 @@ fn buildDICompileUnit(self: *Codegen, file_attr: mlir.Attribute) !mlir.Attribute
 /// Attach `cu_attr` to the module-level debug `llvm.dbg.cu` attribute list, avoiding duplicates.
 fn addCompileUnitToModule(self: *Codegen, cu_attr: mlir.Attribute) !void {
     var mod_op = self.module.getOperation();
-    const dbg_name = mlir.StringRef.from("llvm.dbg.cu");
-    const existing = mod_op.getDiscardableAttributeByName(dbg_name);
+    const name = mlir.StringRef.from("llvm.dbg.cu");
+    const existing = mod_op.getDiscardableAttributeByName(name);
+
     if (existing.isNull()) {
-        const array_attr = mlir.Attribute.arrayAttrGet(self.mlir_ctx, &.{cu_attr});
-        mod_op.setDiscardableAttributeByName(dbg_name, array_attr);
+        mod_op.setDiscardableAttributeByName(name, mlir.Attribute.arrayAttrGet(self.mlir_ctx, &.{cu_attr}));
         return;
     }
 
+    var elems = std.ArrayList(mlir.Attribute){};
+    defer elems.deinit(self.gpa);
+
+    var present = false;
     const count = existing.arrayAttrGetNumElements();
-    var already_present = false;
-    var elements: std.ArrayList(mlir.Attribute) = .empty;
-    defer elements.deinit(self.gpa);
-    var idx: usize = 0;
-    while (idx < count) : (idx += 1) {
-        const elem = existing.arrayAttrGetElement(idx);
-        if (!already_present and elem.equal(&cu_attr)) {
-            already_present = true;
-        }
-        try elements.append(self.gpa, elem);
+    for (0..count) |i| {
+        const e = existing.arrayAttrGetElement(i);
+        if (e.equal(&cu_attr)) present = true;
+        try elems.append(self.gpa, e);
     }
 
-    if (!already_present) {
-        try elements.append(self.gpa, cu_attr);
-        const array_attr = mlir.Attribute.arrayAttrGet(self.mlir_ctx, elements.items);
-        mod_op.setDiscardableAttributeByName(dbg_name, array_attr);
+    if (!present) {
+        try elems.append(self.gpa, cu_attr);
+        mod_op.setDiscardableAttributeByName(name, mlir.Attribute.arrayAttrGet(self.mlir_ctx, elems.items));
     }
 }
 
 /// Build the `llvm.disubprogram` attribute for `f_id` and cache it for reused emissions.
-/// `loc` represents the initial location, and `params` describe the signature in `t`.
-pub fn ensureDebugSubprogram(
-    self: *Codegen,
-    f_id: tir.FuncId,
-    func_name: []const u8,
-    line: u32,
-    file_id: u32,
-    loc: tir.OptLocId,
-    ret_ty: types.TypeId,
-    params: []const tir.ParamId,
-    t: *tir.TIR,
-) !*DebugSubprogramInfo {
+pub fn ensureDebugSubprogram(self: *Codegen, f_id: tir.FuncId, func_name: []const u8, line: u32, file_id: u32, loc: tir.OptLocId, ret_ty: types.TypeId, params: []const tir.ParamId, t: *tir.TIR) !*DebugSubprogramInfo {
     if (self.di_subprograms.getPtr(f_id)) |info| return info;
 
-    const file_info = try ensureDebugFile(self, file_id);
-    const func_name_attr = self.strAttr(func_name);
-    const linkage_name_attr = func_name_attr;
-    const scratch = self.debug_arena.allocator();
-    const id_payload = try std.fmt.allocPrint(scratch, "sp_{d}", .{nextDistinctId(self)});
-    const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
+    const fi = try ensureDebugFile(self, file_id);
+    const name_attr = self.strAttr(func_name);
 
-    const flags_definition: u64 = 1 << 3; // DISPFlagDefinition
-    const type_attr = try buildDISubroutineTypeAttr(self, ret_ty, params, t);
+    const id_str = try std.fmt.allocPrint(self.debug_arena.allocator(), "sp_{d}", .{nextDistinctId(self)});
+    const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_str));
     const rec_attr = mlir.Attribute.distinctAttrCreate(mlir.Attribute.unitAttrGet(self.mlir_ctx));
+
+    // Note: buildDISubroutineTypeAttr must be provided by the context (same file or imported)
+    const type_attr = try buildDISubroutineTypeAttr(self, ret_ty, params, t);
 
     const attr = mlir.LLVMAttributes.getLLVMDISubprogramAttr(
         self.mlir_ctx,
         rec_attr,
         false,
         id_attr,
-        file_info.compile_unit_attr,
-        file_info.file_attr,
-        func_name_attr,
-        linkage_name_attr,
-        file_info.file_attr,
+        fi.compile_unit_attr,
+        fi.file_attr,
+        name_attr,
+        name_attr,
+        fi.file_attr,
         line,
         line,
-        flags_definition,
+        1 << 3,
         type_attr,
         &[_]mlir.Attribute{},
         &[_]mlir.Attribute{},
     );
     if (attr.isNull()) return error.DebugAttrParseFailed;
 
-    try self.di_subprograms.put(f_id, .{
-        .attr = attr,
-        .file_id = file_id,
-        .line = line,
-        .scope_line = line,
-        .loc = loc,
-    });
+    try self.di_subprograms.put(f_id, .{ .attr = attr, .file_id = file_id, .line = line, .scope_line = line, .loc = loc });
     return self.di_subprograms.getPtr(f_id).?;
 }
 
 /// Set the LLVM target triple/data layout attributes emitted via MLIR.
 pub fn attachTargetInfo(self: *Codegen) !void {
-    const triple = self.strAttr("x86_64-unknown-linux-gnu");
-    const dl = self.strAttr("e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128");
     var mod_op = self.module.getOperation();
-    mod_op.setDiscardableAttributeByName(mlir.StringRef.from("llvm.target_triple"), triple);
-    mod_op.setDiscardableAttributeByName(mlir.StringRef.from("llvm.data_layout"), dl);
+    mod_op.setDiscardableAttributeByName(mlir.StringRef.from("llvm.target_triple"), self.strAttr("x86_64-unknown-linux-gnu"));
+    mod_op.setDiscardableAttributeByName(mlir.StringRef.from("llvm.data_layout"), self.strAttr("e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"));
 }
 
-const KEY_DEBUG_INFO_VERSION = ", \"Debug Info Version\",";
-const KEY_DWARF_VERSION = ", \"Dwarf Version\",";
+const KEY_DB_VER = ", \"Debug Info Version\",";
+const KEY_DW_VER = ", \"Dwarf Version\",";
 
-/// Format a module-flag attribute for the given `behavior`, `key`, and `value_repr`.
-fn moduleFlagAttr(self: *Codegen, behavior: []const u8, key: []const u8, value_repr: []const u8) !mlir.Attribute {
-    const scratch = self.debug_arena.allocator();
-    const text = try std.fmt.allocPrint(
-        scratch,
-        "#llvm.mlir.module_flag<{s}, \"{s}\", {s}>",
-        .{ behavior, key, value_repr },
-    );
-    const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(text));
+fn appendModuleFlag(self: *Codegen, list: *std.ArrayList(mlir.Attribute), behavior: []const u8, key: []const u8, val: []const u8) !void {
+    const txt = try std.fmt.allocPrint(self.debug_arena.allocator(), "#llvm.mlir.module_flag<{s}, \"{s}\", {s}>", .{ behavior, key, val });
+    const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(txt));
     if (attr.isNull()) return error.DebugAttrParseFailed;
-    return attr;
-}
-
-/// Check whether `attr` already encodes a module flag with the given `key`.
-fn moduleFlagMatchesKey(self: *Codegen, attr: mlir.Attribute, key: []const u8) !bool {
-    const scratch = self.debug_arena.allocator();
-    const text = try getAttrText(self, attr);
-    const needle = try std.fmt.allocPrint(scratch, ", \"{s}\",", .{key});
-    return std.mem.indexOf(u8, text, needle) != null;
-}
-fn moduleFlagHasKey(self: *Codegen, attr: mlir.Attribute, needle: []const u8) !bool {
-    const text = try getAttrText(self, attr);
-    return std.mem.indexOf(u8, text, needle) != null;
-}
-
-/// Append a new module flag entry; caller ensures key is missing already.
-fn appendModuleFlag(
-    self: *Codegen,
-    flags: *std.ArrayList(mlir.Attribute),
-    behavior: []const u8,
-    key: []const u8,
-    value_repr: []const u8,
-) !void {
-    const attr = try moduleFlagAttr(self, behavior, key, value_repr);
-    try flags.append(self.gpa, attr);
+    try list.append(self.gpa, attr);
 }
 
 /// Configure module-level debug attributes (flags, identifiers) once per module.
 pub fn ensureDebugModuleAttrs(self: *Codegen) !void {
-    if (!codegen.enable_debug_info) return;
-    if (self.debug_module_attrs_initialized) return;
+    if (!codegen.enable_debug_info or self.debug_module_attrs_initialized) return;
 
     var mod_op = self.module.getOperation();
     const flags_name = mlir.StringRef.from("llvm.module.flags");
-    const existing_flags = mod_op.getDiscardableAttributeByName(flags_name);
+    const existing = mod_op.getDiscardableAttributeByName(flags_name);
 
-    var flags: std.ArrayList(mlir.Attribute) = .empty;
+    var flags = std.ArrayList(mlir.Attribute){};
     defer flags.deinit(self.gpa);
-    var has_debug_info = false;
-    var has_dwarf = false;
-    if (!existing_flags.isNull()) {
-        const count = existing_flags.arrayAttrGetNumElements();
-        var idx: usize = 0;
-        while (idx < count) : (idx += 1) {
-            const elem = existing_flags.arrayAttrGetElement(idx);
+
+    var has_db = false;
+    var has_dw = false;
+
+    if (!existing.isNull()) {
+        const count = existing.arrayAttrGetNumElements();
+        for (0..count) |i| {
+            const elem = existing.arrayAttrGetElement(i);
             try flags.append(self.gpa, elem);
-            if (!has_debug_info) has_debug_info = try moduleFlagHasKey(self, elem, KEY_DEBUG_INFO_VERSION);
-            if (!has_dwarf) has_dwarf = try moduleFlagHasKey(self, elem, KEY_DWARF_VERSION);
+            if (!has_db or !has_dw) {
+                const txt = try getAttrText(self, elem);
+                if (!has_db and std.mem.indexOf(u8, txt, KEY_DB_VER) != null) has_db = true;
+                if (!has_dw and std.mem.indexOf(u8, txt, KEY_DW_VER) != null) has_dw = true;
+            }
         }
     }
 
-    if (!has_debug_info) {
-        try appendModuleFlag(self, &flags, "warning", "Debug Info Version", "3 : i32");
-    }
-    if (!has_dwarf) {
-        try appendModuleFlag(self, &flags, "max", "Dwarf Version", "5 : i32");
-    }
+    if (!has_db) try appendModuleFlag(self, &flags, "warning", "Debug Info Version", "3 : i32");
+    if (!has_dw) try appendModuleFlag(self, &flags, "max", "Dwarf Version", "5 : i32");
 
     if (flags.items.len > 0) {
-        const array_attr = mlir.Attribute.arrayAttrGet(self.mlir_ctx, flags.items);
-        mod_op.setDiscardableAttributeByName(flags_name, array_attr);
+        mod_op.setDiscardableAttributeByName(flags_name, mlir.Attribute.arrayAttrGet(self.mlir_ctx, flags.items));
     }
 
     const ident_name = mlir.StringRef.from("llvm.ident");
     if (mod_op.getDiscardableAttributeByName(ident_name).isNull()) {
-        const ident_attr = self.strAttr("sr-lang compiler");
-        const ident_array = mlir.Attribute.arrayAttrGet(self.mlir_ctx, &.{ident_attr});
-        mod_op.setDiscardableAttributeByName(ident_name, ident_array);
+        mod_op.setDiscardableAttributeByName(ident_name, mlir.Attribute.arrayAttrGet(self.mlir_ctx, &.{self.strAttr("sr-lang compiler")}));
     }
-
     self.debug_module_attrs_initialized = true;
 }
 
@@ -323,800 +246,320 @@ fn ensureDINullTypeAttr(self: *Codegen) !mlir.Attribute {
 }
 
 /// Map SR `ty` to an LLVM DI attribute, caching the result after creation.
-fn ensureDIType(self: *Codegen, ty: types.TypeId) !mlir.Attribute {
+pub fn ensureDIType(self: *Codegen, ty: types.TypeId) !mlir.Attribute {
     if (self.di_type_cache.get(ty)) |cached| return cached;
+
+    // Helper: Create basic integer/float types
+    const diBasic = struct {
+        fn make(cg: *Codegen, name: []const u8, bits: u64, enc: mlir.LLVMTypeEncoding) mlir.Attribute {
+            return mlir.LLVMAttributes.getLLVMDIBasicTypeAttr(cg.mlir_ctx, DW_TAG_base_type, cg.strAttr(name), bits, enc);
+        }
+    }.make;
+
+    // Helper: Format a derived type string (pointer, member, etc.)
+    const diDerived = struct {
+        fn make(cg: *Codegen, tag: []const u8, name: []const u8, base: mlir.Attribute, size: u64, @"align": u64, offset: u64) ![]const u8 {
+            const base_txt = try getAttrText(cg, base);
+            return std.fmt.allocPrint(cg.debug_arena.allocator(), "#llvm.di_derived_type<tag = {s}, name = \"{s}\", baseType = {s}, sizeInBits = {d}, alignInBits = {d}, offset = {d}>", .{ tag, name, base_txt, size, @"align", offset });
+        }
+    }.make;
+
+    // Helper: Parse a composite type string
+    const diComposite = struct {
+        fn make(cg: *Codegen, tag: []const u8, name: []const u8, id: mlir.Attribute, file: mlir.Attribute, size: u64, @"align": u64, flags: []const u8, elems: []const u8) !mlir.Attribute {
+            const id_txt = try getAttrText(cg, id);
+            const f_txt = try getAttrText(cg, file);
+            const txt = try std.fmt.allocPrint(cg.debug_arena.allocator(), "#llvm.di_composite_type<recId = {s}, tag = {s}, name = \"{s}\", file = {s}, line = 0, sizeInBits = {d}, alignInBits = {d}, flags = {s}, elements = #llvm.di_node_array<[{s}]>>", .{ id_txt, tag, name, f_txt, size, @"align", flags, elems });
+            return mlir.Attribute.parseGet(cg.mlir_ctx, mlir.StringRef.from(txt));
+        }
+    }.make;
 
     const kind = self.context.type_store.getKind(ty);
     const attr: mlir.Attribute = switch (kind) {
-        // .Void => return mlir.Attribute.getNull(),
-        .Bool => mlir.LLVMAttributes.getLLVMDIBasicTypeAttr(
-            self.mlir_ctx,
-            DW_TAG_base_type,
-            self.strAttr("bool"),
-            1,
-            mlir.LLVMTypeEncoding.Boolean,
-        ),
-        .I8 => diSignedIntType(self, "i8", 8),
-        .I16 => diSignedIntType(self, "i16", 16),
-        .I32 => diSignedIntType(self, "i32", 32),
-        .I64 => diSignedIntType(self, "i64", 64),
-        .U8 => diUnsignedIntType(self, "u8", 8),
-        .U16 => diUnsignedIntType(self, "u16", 16),
-        .U32 => diUnsignedIntType(self, "u32", 32),
-        .U64 => diUnsignedIntType(self, "u64", 64),
-        .Usize => diUnsignedIntType(self, "usize", POINTER_SIZE_BITS),
-        .F32 => mlir.LLVMAttributes.getLLVMDIBasicTypeAttr(
-            self.mlir_ctx,
-            DW_TAG_base_type,
-            self.strAttr("f32"),
-            32,
-            mlir.LLVMTypeEncoding.FloatT,
-        ),
-        .F64 => mlir.LLVMAttributes.getLLVMDIBasicTypeAttr(
-            self.mlir_ctx,
-            DW_TAG_base_type,
-            self.strAttr("f64"),
-            64,
-            mlir.LLVMTypeEncoding.FloatT,
-        ),
         .Void, .Noreturn => try ensureDINullTypeAttr(self),
+        .Bool => diBasic(self, "bool", 1, .Boolean),
+        .I8 => diBasic(self, "i8", 8, .Signed),
+        .I16 => diBasic(self, "i16", 16, .Signed),
+        .I32 => diBasic(self, "i32", 32, .Signed),
+        .I64 => diBasic(self, "i64", 64, .Signed),
+        .U8 => diBasic(self, "u8", 8, .Unsigned),
+        .U16 => diBasic(self, "u16", 16, .Unsigned),
+        .U32 => diBasic(self, "u32", 32, .Unsigned),
+        .U64 => diBasic(self, "u64", 64, .Unsigned),
+        .Usize => diBasic(self, "usize", POINTER_SIZE_BITS, .Unsigned),
+        .F32 => diBasic(self, "f32", 32, .FloatT),
+        .F64 => diBasic(self, "f64", 64, .FloatT),
+        .Undef, .MlirModule, .MlirAttribute, .MlirType, .TypeType, .Future, .Ast, .TypeError => try ensureDINullTypeAttr(self),
+
         .Ptr => blk: {
-            const ptr = self.context.type_store.get(.Ptr, ty);
-            var base_attr = ensureDIType(self, ptr.elem) catch try ensureDINullTypeAttr(self);
-            if (base_attr.isNull()) base_attr = try ensureDINullTypeAttr(self);
-
-            const base_text = try getAttrText(self, base_attr);
-            const scratch = self.debug_arena.allocator();
-
-            const attr_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_pointer_type, baseType = {s}, sizeInBits = 64, alignInBits = 64, offset = 0>", .{base_text});
-
-            const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(attr_text));
-            if (attr.isNull()) return error.DebugAttrParseFailed;
-            break :blk attr;
+            const inner = try ensureDIType(self, self.context.type_store.get(.Ptr, ty).elem);
+            const txt = try diDerived(self, "DW_TAG_pointer_type", "", inner, 64, 64, 0);
+            break :blk mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(txt));
         },
-        .Slice => blk: {
-            const slice = self.context.type_store.get(.Slice, ty);
+
+        .Slice, .String, .DynArray => blk: {
+            const is_str = kind == .String;
+            const is_dyn = kind == .DynArray;
+            const elem_ty = if (is_str) self.context.type_store.tU8() else if (is_dyn) self.context.type_store.get(.DynArray, ty).elem else self.context.type_store.get(.Slice, ty).elem;
+
             const scratch = self.debug_arena.allocator();
-            const id_payload = try std.fmt.allocPrint(scratch, "slice_{d}", .{nextDistinctId(self)});
-            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
+            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(try std.fmt.allocPrint(scratch, "slice_{d}_{s}", .{ nextDistinctId(self), @tagName(kind) })));
 
-            // Element type
-            var elem_attr = ensureDIType(self, slice.elem) catch try ensureDINullTypeAttr(self);
-            if (elem_attr.isNull()) elem_attr = try ensureDINullTypeAttr(self);
-            const elem_text = try getAttrText(self, elem_attr);
+            const elem_di = try ensureDIType(self, elem_ty);
+            const ptr_txt = try diDerived(self, "DW_TAG_pointer_type", "", elem_di, 64, 64, 0);
+            const ptr_di = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(ptr_txt));
 
-            // Pointer to Element Type
-            const ptr_to_elem_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_pointer_type, baseType = {s}, sizeInBits = 64, alignInBits = 64, offset = 0>", .{elem_text});
-            const ptr_type = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(ptr_to_elem_text));
+            const m_ptr = try diDerived(self, "DW_TAG_member", "ptr", ptr_di, 64, 64, 0);
+            const m_len = try diDerived(self, "DW_TAG_member", "len", diBasic(self, "i64", 64, .Signed), 64, 64, 64);
 
-            // ptr member
-            const ptr_type_text = try getAttrText(self, ptr_type);
-            const ptr_member_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"ptr\", baseType = {s}, sizeInBits = 64, alignInBits = 64, offset = 0>", .{ptr_type_text});
+            var elems_txt = try std.fmt.allocPrint(scratch, "{s}, {s}", .{ m_ptr, m_len });
+            var size: u64 = 128;
 
-            // len type (i64)
-            const len_type = diSignedIntType(self, "i64", 64);
-            const len_type_text = try getAttrText(self, len_type);
-
-            // len member
-            const len_member_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"len\", baseType = {s}, sizeInBits = 64, alignInBits = 64, offset = 64>", .{len_type_text});
-
-            // Elements array
-            const elements_text = try std.fmt.allocPrint(scratch, "{s}, {s}", .{ ptr_member_text, len_member_text });
-
-            const unknown_file = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, self.strAttr("<unknown>"), self.strAttr("."));
-            const file_text = try getAttrText(self, unknown_file);
-            const id_text = try getAttrText(self, id_attr);
-
-            const attr_text = try std.fmt.allocPrint(scratch, "#llvm.di_composite_type<recId = {s}, tag = DW_TAG_structure_type, name = \"[]\", file = {s}, line = 0, sizeInBits = 128, alignInBits = 64, elements = #llvm.di_node_array<[{s}]>>", .{ id_text, file_text, elements_text });
-
-            const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(attr_text));
-            if (attr.isNull()) return error.DebugAttrParseFailed;
-            break :blk attr;
-        },
-        .Struct => blk: {
-            if (self.di_recursive_ids.get(ty)) |recId| {
-                break :blk mlir.LLVMAttributes.getLLVMDICompositeTypeAttrRecSelf(recId);
+            if (is_dyn) {
+                const m_cap = try diDerived(self, "DW_TAG_member", "cap", diBasic(self, "i64", 64, .Signed), 64, 64, 128);
+                elems_txt = try std.fmt.allocPrint(scratch, "{s}, {s}", .{ elems_txt, m_cap });
+                size = 192;
             }
 
+            break :blk try diComposite(self, "DW_TAG_structure_type", if (is_str) "string" else if (is_dyn) "dyn[]" else "[]", id_attr, try ensureDINullTypeAttr(self), size, 64, "", elems_txt);
+        },
+
+        .Struct, .Tuple, .Complex, .Union, .Variant, .Error, .ErrorSet => blk: {
+            if (self.di_recursive_ids.get(ty)) |recId| break :blk mlir.LLVMAttributes.getLLVMDICompositeTypeAttrRecSelf(recId);
+
             const scratch = self.debug_arena.allocator();
-            const id_payload = try std.fmt.allocPrint(scratch, "struct_{d}", .{nextDistinctId(self)});
-            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
+            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(try std.fmt.allocPrint(scratch, "comp_{d}_{s}", .{ nextDistinctId(self), @tagName(kind) })));
             try self.di_recursive_ids.put(ty, id_attr);
 
-            const s = self.context.type_store.get(.Struct, ty);
-            const fields = self.context.type_store.field_pool.slice(s.fields);
-
-            var elements_text = std.ArrayListUnmanaged(u8){};
-
-            var offset: u64 = 0;
-            var struct_align: u64 = 1;
-
-            for (fields, 0..) |fid, i| {
-                const f = self.context.type_store.Field.get(fid);
-                const field_name = self.context.type_store.strs.get(f.name);
-
-                const field_sa = abi.abiSizeAlign(self, f.ty);
-                offset = std.mem.alignForward(u64, offset, field_sa.alignment);
-                if (field_sa.alignment > struct_align) struct_align = @intCast(field_sa.alignment);
-
-                var field_ty_attr = ensureDIType(self, f.ty) catch try ensureDINullTypeAttr(self);
-                if (field_ty_attr.isNull()) field_ty_attr = try ensureDINullTypeAttr(self);
-
-                const field_ty_text = try getAttrText(self, field_ty_attr);
-
-                const member_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"{s}\", baseType = {s}, sizeInBits = {d}, alignInBits = {d}, offset = {d}>", .{ field_name, field_ty_text, field_sa.size * 8, field_sa.alignment * 8, offset * 8 });
-
-                if (i > 0) try elements_text.appendSlice(scratch, ", ");
-                try elements_text.appendSlice(scratch, member_text);
-
-                offset += field_sa.size;
-            }
-
-            offset = std.mem.alignForward(u64, offset, struct_align);
-
-            const id_text = try getAttrText(self, id_attr);
-
-            const unknown_file = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, self.strAttr("<unknown>"), self.strAttr("."));
-            const file_text = try getAttrText(self, unknown_file);
-
-            const attr_text = try std.fmt.allocPrint(scratch, "#llvm.di_composite_type<recId = {s}, tag = DW_TAG_structure_type, name = \"struct\", file = {s}, line = 0, sizeInBits = {d}, alignInBits = {d}, elements = #llvm.di_node_array<[{s}]>>", .{ id_text, file_text, offset * 8, struct_align * 8, elements_text.items });
-
-            const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(attr_text));
-            _ = self.di_recursive_ids.remove(ty);
-
-            if (attr.isNull()) return error.DebugAttrParseFailed;
-            break :blk attr;
-        },
-        .Tuple => blk: {
-            const tuple = self.context.type_store.get(.Tuple, ty);
-            const elems = self.context.type_store.type_pool.slice(tuple.elems);
-
-            const scratch = self.debug_arena.allocator();
-            const id_payload = try std.fmt.allocPrint(scratch, "tuple_{d}", .{nextDistinctId(self)});
-            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
-
-            if (self.di_recursive_ids.get(ty)) |recId| {
-                break :blk mlir.LLVMAttributes.getLLVMDICompositeTypeAttrRecSelf(recId);
-            }
-            try self.di_recursive_ids.put(ty, id_attr);
-
-            var elements_text = std.ArrayListUnmanaged(u8){};
-
+            var elems_list = std.ArrayListUnmanaged(u8){};
             var offset: u64 = 0;
             var max_align: u64 = 1;
+            var name: []const u8 = "struct";
+            var tag: []const u8 = "DW_TAG_structure_type";
 
-            for (elems, 0..) |elem_ty, i| {
-                const elem_sa = abi.abiSizeAlign(self, elem_ty);
-                offset = std.mem.alignForward(u64, offset, elem_sa.alignment);
-                if (elem_sa.alignment > max_align) max_align = @intCast(elem_sa.alignment);
+            // Determine fields
+            switch (kind) {
+                .Struct => {
+                    const s = self.context.type_store.get(.Struct, ty);
+                    for (self.context.type_store.field_pool.slice(s.fields), 0..) |fid, i| {
+                        const f = self.context.type_store.Field.get(fid);
+                        const sa = abi.abiSizeAlign(self, f.ty);
+                        offset = std.mem.alignForward(u64, offset, sa.alignment);
+                        if (sa.alignment > max_align) max_align = @intCast(sa.alignment);
+                        if (i > 0) try elems_list.appendSlice(scratch, ", ");
+                        try elems_list.appendSlice(scratch, try diDerived(self, "DW_TAG_member", self.context.type_store.strs.get(f.name), try ensureDIType(self, f.ty), sa.size * 8, sa.alignment * 8, offset * 8));
+                        offset += sa.size;
+                    }
+                    offset = std.mem.alignForward(u64, offset, max_align);
+                },
+                .Tuple, .Complex => {
+                    name = if (kind == .Complex) "complex" else "tuple";
+                    const is_c = kind == .Complex;
+                    const c_ty = if (is_c) self.context.type_store.get(.Complex, ty) else undefined;
+                    const c_len = if (is_c) 2 else self.context.type_store.get(.Tuple, ty).elems.len;
 
-                var elem_attr = ensureDIType(self, elem_ty) catch try ensureDINullTypeAttr(self);
-                if (elem_attr.isNull()) elem_attr = try ensureDINullTypeAttr(self);
+                    for (0..c_len) |i| {
+                        const et = if (is_c) c_ty.elem else self.context.type_store.type_pool.slice(self.context.type_store.get(.Tuple, ty).elems)[i];
+                        const sa = abi.abiSizeAlign(self, et);
+                        offset = std.mem.alignForward(u64, offset, sa.alignment);
+                        if (sa.alignment > max_align) max_align = @intCast(sa.alignment);
+                        const fname = if (is_c) (if (i == 0) "re" else "im") else try std.fmt.allocPrint(scratch, "{d}", .{i});
+                        if (i > 0) try elems_list.appendSlice(scratch, ", ");
+                        try elems_list.appendSlice(scratch, try diDerived(self, "DW_TAG_member", fname, try ensureDIType(self, et), sa.size * 8, sa.alignment * 8, offset * 8));
+                        offset += sa.size;
+                    }
+                    offset = std.mem.alignForward(u64, offset, max_align);
+                },
+                .Union, .Variant, .Error, .ErrorSet => {
+                    name = if (kind == .Union) "union" else if (kind == .ErrorSet) "errorset" else if (kind == .Variant) "variant" else "error";
+                    tag = if (kind == .Union) "DW_TAG_union_type" else "DW_TAG_structure_type";
 
-                const field_name = try std.fmt.allocPrint(scratch, "{d}", .{i});
+                    // Tags for Tagged Unions
+                    if (kind != .Union) {
+                        try elems_list.appendSlice(scratch, try diDerived(self, "DW_TAG_member", "tag", diBasic(self, "i32", 32, .Signed), 32, 32, 0));
+                        offset = 4; // tag size
+                    }
 
-                const elem_text = try getAttrText(self, elem_attr);
-                const member_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"{s}\", baseType = {s}, sizeInBits = {d}, alignInBits = {d}, offset = {d}>", .{ field_name, elem_text, elem_sa.size * 8, elem_sa.alignment * 8, offset * 8 });
+                    // Fields
+                    const fields = if (kind == .ErrorSet) &[_]types.FieldId{} else if (kind == .Union) self.context.type_store.field_pool.slice(self.context.type_store.get(.Union, ty).fields) else if (kind == .Variant) self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, ty).variants) else self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, ty).variants);
 
-                if (i > 0) try elements_text.appendSlice(scratch, ", ");
-                try elements_text.appendSlice(scratch, member_text);
-                offset += elem_sa.size;
+                    var payload_align: u64 = if (kind == .Union) 1 else 4;
+                    var max_size: u64 = 0;
+
+                    // Calc alignment/size
+                    if (kind == .ErrorSet) {
+                        const es = self.context.type_store.get(.ErrorSet, ty);
+                        const v_sa = abi.abiSizeAlign(self, es.value_ty);
+                        const e_sa = abi.abiSizeAlign(self, es.error_ty);
+                        payload_align = @max(v_sa.alignment, e_sa.alignment);
+                        offset = std.mem.alignForward(u64, offset, payload_align);
+                        try elems_list.appendSlice(scratch, ", ");
+                        try elems_list.appendSlice(scratch, try diDerived(self, "DW_TAG_member", "Ok", try ensureDIType(self, es.value_ty), v_sa.size * 8, v_sa.alignment * 8, offset * 8));
+                        try elems_list.appendSlice(scratch, ", ");
+                        try elems_list.appendSlice(scratch, try diDerived(self, "DW_TAG_member", "Err", try ensureDIType(self, es.error_ty), e_sa.size * 8, e_sa.alignment * 8, offset * 8));
+                        offset += @max(v_sa.size, e_sa.size);
+                        max_align = payload_align;
+                    } else {
+                        for (fields) |fid| {
+                            const sa = abi.abiSizeAlign(self, self.context.type_store.Field.get(fid).ty);
+                            if (sa.alignment > payload_align) payload_align = @intCast(sa.alignment);
+                            if (sa.size > max_size) max_size = sa.size;
+                        }
+                        if (kind != .Union) offset = std.mem.alignForward(u64, offset, payload_align);
+
+                        for (fields) |fid| {
+                            const f = self.context.type_store.Field.get(fid);
+                            const sa = abi.abiSizeAlign(self, f.ty);
+                            if (elems_list.items.len > 0) try elems_list.appendSlice(scratch, ", ");
+                            try elems_list.appendSlice(scratch, try diDerived(self, "DW_TAG_member", self.context.type_store.strs.get(f.name), try ensureDIType(self, f.ty), sa.size * 8, sa.alignment * 8, offset * 8));
+                        }
+                        offset = if (kind == .Union) std.mem.alignForward(u64, max_size, payload_align) else std.mem.alignForward(u64, offset + max_size, payload_align);
+                        max_align = payload_align;
+                    }
+                },
+                else => unreachable,
             }
 
-            offset = std.mem.alignForward(u64, offset, max_align);
-
-            const id_text = try getAttrText(self, id_attr);
-
-            const unknown_file = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, self.strAttr("<unknown>"), self.strAttr("."));
-            const file_text = try getAttrText(self, unknown_file);
-
-            const attr_text = try std.fmt.allocPrint(scratch, "#llvm.di_composite_type<recId = {s}, tag = DW_TAG_structure_type, name = \"tuple\", file = {s}, line = 0, sizeInBits = {d}, alignInBits = {d}, elements = #llvm.di_node_array<[{s}]>>", .{ id_text, file_text, offset * 8, max_align * 8, elements_text.items });
-
-            const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(attr_text));
+            const res = try diComposite(self, tag, name, id_attr, try ensureDINullTypeAttr(self), offset * 8, max_align * 8, if (kind == .Map) "Declaration" else "", elems_list.items);
             _ = self.di_recursive_ids.remove(ty);
-
-            if (attr.isNull()) return error.DebugAttrParseFailed;
-            break :blk attr;
+            break :blk res;
         },
         .Array => blk: {
             const arr = self.context.type_store.get(.Array, ty);
-            const len = arr.len;
-
             const sa = abi.abiSizeAlign(self, ty);
+            const elem_di = try ensureDIType(self, arr.elem);
+            const elem_txt = try getAttrText(self, elem_di);
+            const sub = try std.fmt.allocPrint(self.debug_arena.allocator(), "#llvm.di_subrange<count = {d}>", .{arr.len});
+            const sub_attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(sub));
+            const sub_txt = try getAttrText(self, sub_attr);
 
             const scratch = self.debug_arena.allocator();
+            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(try std.fmt.allocPrint(scratch, "arr_{d}", .{nextDistinctId(self)})));
 
-            var elem_attr = ensureDIType(self, arr.elem) catch try ensureDINullTypeAttr(self);
-            if (elem_attr.isNull()) elem_attr = try ensureDINullTypeAttr(self);
-            const elem_text = try getAttrText(self, elem_attr);
-
-            // For huge arrays, we probably shouldn't emit every element.
-            // But for now we follow the existing logic.
-            // Optimization: emit as DW_TAG_array_type with a subrange instead of struct of members?
-            // The existing implementation emitted a struct of members "0", "1", ...
-            // Standard DWARF for arrays is DW_TAG_array_type with DW_TAG_subrange_type.
-            // Let's switch to that for better debugger support and smaller metadata.
-
-            const count_val = len;
-            const subrange_text = try std.fmt.allocPrint(scratch, "#llvm.di_subrange<count = {d}>", .{count_val});
-            const subrange_attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(subrange_text));
-            const subrange_str = try getAttrText(self, subrange_attr);
-
-            const id_payload = try std.fmt.allocPrint(scratch, "array_{d}", .{nextDistinctId(self)});
-            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
-            const id_text = try getAttrText(self, id_attr);
-
-            // DWARF 5: DW_TAG_array_type
-            const attr_text = try std.fmt.allocPrint(scratch, "#llvm.di_composite_type<recId = {s}, tag = DW_TAG_array_type, baseType = {s}, sizeInBits = {d}, alignInBits = {d}, elements = #llvm.di_node_array<[{s}]>>", .{ id_text, elem_text, sa.size * 8, sa.alignment * 8, subrange_str });
-
-            const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(attr_text));
-            if (attr.isNull()) return error.DebugAttrParseFailed;
-            break :blk attr;
+            // Manual construction required because standard diComposite helper doesn't support 'baseType' field needed for arrays
+            const id_txt = try getAttrText(self, id_attr);
+            const txt = try std.fmt.allocPrint(scratch, "#llvm.di_composite_type<recId = {s}, tag = DW_TAG_array_type, baseType = {s}, sizeInBits = {d}, alignInBits = {d}, elements = #llvm.di_node_array<[{s}]>>", .{ id_txt, elem_txt, sa.size * 8, sa.alignment * 8, sub_txt });
+            break :blk mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(txt));
         },
+
         .Enum => blk: {
             const e = self.context.type_store.get(.Enum, ty);
-            const members = self.context.type_store.enum_member_pool.slice(e.members);
-
-            var tag_attr = ensureDIType(self, e.tag_type) catch try ensureDINullTypeAttr(self);
-            if (tag_attr.isNull()) tag_attr = try ensureDINullTypeAttr(self);
-            const tag_text = try getAttrText(self, tag_attr);
+            const tag_di = try ensureDIType(self, e.tag_type);
+            const tag_txt = try getAttrText(self, tag_di);
 
             const scratch = self.debug_arena.allocator();
-            var elements_text = std.ArrayListUnmanaged(u8){};
-
-            for (members, 0..) |mid, i| {
-                const member = self.context.type_store.EnumMember.get(mid);
-                const name = self.context.type_store.strs.get(member.name);
-                const val = member.value;
-
-                const enumerator_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_enumerator, name = \"{s}\", value = {d}>", .{ name, val });
-
-                if (i > 0) try elements_text.appendSlice(scratch, ", ");
-                try elements_text.appendSlice(scratch, enumerator_text);
+            var elems = std.ArrayListUnmanaged(u8){};
+            for (self.context.type_store.enum_member_pool.slice(e.members), 0..) |mid, i| {
+                const mem = self.context.type_store.EnumMember.get(mid);
+                if (i > 0) try elems.appendSlice(scratch, ", ");
+                try elems.appendSlice(scratch, try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_enumerator, name = \"{s}\", value = {d}>", .{ self.context.type_store.strs.get(mem.name), mem.value }));
             }
 
-            const id_payload = try std.fmt.allocPrint(scratch, "enum_{d}", .{nextDistinctId(self)});
-            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
-            const id_text = try getAttrText(self, id_attr);
-
-            const unknown_file = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, self.strAttr("<unknown>"), self.strAttr("."));
-            const file_text = try getAttrText(self, unknown_file);
-
-            const attr_text = try std.fmt.allocPrint(scratch, "#llvm.di_composite_type<recId = {s}, tag = DW_TAG_enumeration_type, name = \"enum\", file = {s}, line = 0, baseType = {s}, sizeInBits = 64, alignInBits = 64, elements = #llvm.di_node_array<[{s}]>>", .{ id_text, file_text, tag_text, elements_text.items });
-
-            const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(attr_text));
-            if (attr.isNull()) return error.DebugAttrParseFailed;
-            break :blk attr;
+            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(try std.fmt.allocPrint(scratch, "enum_{d}", .{nextDistinctId(self)})));
+            const id_txt = try getAttrText(self, id_attr);
+            const txt = try std.fmt.allocPrint(scratch, "#llvm.di_composite_type<recId = {s}, tag = DW_TAG_enumeration_type, name = \"enum\", file = {s}, line = 0, baseType = {s}, sizeInBits = 64, alignInBits = 64, elements = #llvm.di_node_array<[{s}]>>", .{ id_txt, try getAttrText(self, try ensureDINullTypeAttr(self)), tag_txt, elems.items });
+            break :blk mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(txt));
         },
-        .Union => blk: {
-            if (self.di_recursive_ids.get(ty)) |recId| {
-                break :blk mlir.LLVMAttributes.getLLVMDICompositeTypeAttrRecSelf(recId);
-            }
 
-            const scratch = self.debug_arena.allocator();
-            const id_payload = try std.fmt.allocPrint(scratch, "union_{d}", .{nextDistinctId(self)});
-            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
-            try self.di_recursive_ids.put(ty, id_attr);
-
-            const u = self.context.type_store.get(.Union, ty);
-            const fields = self.context.type_store.field_pool.slice(u.fields);
-
-            var elements_text = std.ArrayListUnmanaged(u8){};
-
-            var max_size: u64 = 0;
-            var max_align: u64 = 1;
-
-            for (fields, 0..) |fid, i| {
-                const f = self.context.type_store.Field.get(fid);
-                const field_name = self.context.type_store.strs.get(f.name);
-
-                const field_sa = abi.abiSizeAlign(self, f.ty);
-                if (field_sa.size > max_size) max_size = field_sa.size;
-                if (field_sa.alignment > max_align) max_align = field_sa.alignment;
-
-                var field_ty_attr = ensureDIType(self, f.ty) catch try ensureDINullTypeAttr(self);
-                if (field_ty_attr.isNull()) field_ty_attr = try ensureDINullTypeAttr(self);
-
-                const field_ty_text = try getAttrText(self, field_ty_attr);
-
-                // Union members usually share offset 0
-                const member_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"{s}\", baseType = {s}, sizeInBits = {d}, alignInBits = {d}, offset = 0>", .{ field_name, field_ty_text, field_sa.size * 8, field_sa.alignment * 8 });
-
-                if (i > 0) try elements_text.appendSlice(scratch, ", ");
-                try elements_text.appendSlice(scratch, member_text);
-            }
-
-            const total_size = std.mem.alignForward(u64, max_size, max_align);
-
-            const id_text = try getAttrText(self, id_attr);
-
-            const unknown_file = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, self.strAttr("<unknown>"), self.strAttr("."));
-            const file_text = try getAttrText(self, unknown_file);
-
-            const attr_text = try std.fmt.allocPrint(scratch, "#llvm.di_composite_type<recId = {s}, tag = DW_TAG_union_type, name = \"union\", file = {s}, line = 0, sizeInBits = {d}, alignInBits = {d}, elements = #llvm.di_node_array<[{s}]>>", .{ id_text, file_text, total_size * 8, max_align * 8, elements_text.items });
-
-            const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(attr_text));
-            _ = self.di_recursive_ids.remove(ty);
-
-            if (attr.isNull()) return error.DebugAttrParseFailed;
-            break :blk attr;
-        },
-        .String => blk: {
-            const scratch = self.debug_arena.allocator();
-            const id_payload = try std.fmt.allocPrint(scratch, "string_{d}", .{nextDistinctId(self)});
-            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
-
-            // u8 type
-            const u8_type = diUnsignedIntType(self, "u8", 8);
-            const u8_text = try getAttrText(self, u8_type);
-
-            // Pointer to u8
-            const ptr_to_u8_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_pointer_type, baseType = {s}, sizeInBits = 64, alignInBits = 64, offset = 0>", .{u8_text});
-            const ptr_type = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(ptr_to_u8_text));
-            const ptr_type_text = try getAttrText(self, ptr_type);
-
-            // ptr member
-            const ptr_member_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"ptr\", baseType = {s}, sizeInBits = 64, alignInBits = 64, offset = 0>", .{ptr_type_text});
-
-            // len type (i64)
-            const len_type = diSignedIntType(self, "i64", 64);
-            const len_type_text = try getAttrText(self, len_type);
-
-            // len member
-            const len_member_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"len\", baseType = {s}, sizeInBits = 64, alignInBits = 64, offset = 64>", .{len_type_text});
-
-            const elements_text = try std.fmt.allocPrint(scratch, "{s}, {s}", .{ ptr_member_text, len_member_text });
-
-            const unknown_file = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, self.strAttr("<unknown>"), self.strAttr("."));
-            const file_text = try getAttrText(self, unknown_file);
-            const id_text = try getAttrText(self, id_attr);
-
-            const attr_text = try std.fmt.allocPrint(scratch, "#llvm.di_composite_type<recId = {s}, tag = DW_TAG_structure_type, name = \"string\", file = {s}, line = 0, sizeInBits = 128, alignInBits = 64, elements = #llvm.di_node_array<[{s}]>>", .{ id_text, file_text, elements_text });
-
-            const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(attr_text));
-            if (attr.isNull()) return error.DebugAttrParseFailed;
-            break :blk attr;
-        },
         .Optional => blk: {
-            const opt = self.context.type_store.get(.Optional, ty);
-
-            // Check if it's an optional pointer (optimization)
             if (self.context.type_store.isOptionalPointer(ty)) {
-                // Just emit the pointer debug info
-                var ptr_attr = ensureDIType(self, opt.elem) catch try ensureDINullTypeAttr(self);
-                if (ptr_attr.isNull()) ptr_attr = try ensureDINullTypeAttr(self);
-                break :blk ptr_attr;
+                break :blk try ensureDIType(self, self.context.type_store.get(.Optional, ty).elem);
             }
-
-            const scratch = self.debug_arena.allocator();
-            const id_payload = try std.fmt.allocPrint(scratch, "optional_{d}", .{nextDistinctId(self)});
-            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
-
+            const opt = self.context.type_store.get(.Optional, ty);
             const sa = abi.abiSizeAlign(self, ty);
             const elem_sa = abi.abiSizeAlign(self, opt.elem);
 
-            // bool type (tag)
-            const bool_type = mlir.LLVMAttributes.getLLVMDIBasicTypeAttr(
-                self.mlir_ctx,
-                DW_TAG_base_type,
-                self.strAttr("bool"),
-                8, // ABI usually aligns bool to 1 byte
-                mlir.LLVMTypeEncoding.Boolean,
-            );
-            const bool_text = try getAttrText(self, bool_type);
-
-            // present member (offset 0)
-            const present_member_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"present\", baseType = {s}, sizeInBits = 8, alignInBits = 8, offset = 0>", .{bool_text});
-
-            // Element type
-            var elem_attr = ensureDIType(self, opt.elem) catch try ensureDINullTypeAttr(self);
-            if (elem_attr.isNull()) elem_attr = try ensureDINullTypeAttr(self);
-            const elem_text = try getAttrText(self, elem_attr);
-
-            // val member (offset aligned)
-            var val_offset: usize = 1; // after bool
-            val_offset = std.mem.alignForward(usize, val_offset, elem_sa.alignment);
-
-            const val_member_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"val\", baseType = {s}, sizeInBits = {d}, alignInBits = {d}, offset = {d}>", .{ elem_text, elem_sa.size * 8, elem_sa.alignment * 8, val_offset * 8 });
-
-            const elements_text = try std.fmt.allocPrint(scratch, "{s}, {s}", .{ present_member_text, val_member_text });
-
-            const unknown_file = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, self.strAttr("<unknown>"), self.strAttr("."));
-            const file_text = try getAttrText(self, unknown_file);
-            const id_text = try getAttrText(self, id_attr);
-
-            const attr_text = try std.fmt.allocPrint(scratch, "#llvm.di_composite_type<recId = {s}, tag = DW_TAG_structure_type, name = \"optional\", file = {s}, line = 0, sizeInBits = {d}, alignInBits = {d}, elements = #llvm.di_node_array<[{s}]>>", .{ id_text, file_text, sa.size * 8, sa.alignment * 8, elements_text });
-
-            const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(attr_text));
-            if (attr.isNull()) return error.DebugAttrParseFailed;
-            break :blk attr;
-        },
-        .Complex => blk: {
-            const cplx = self.context.type_store.get(.Complex, ty);
-
             const scratch = self.debug_arena.allocator();
-            const id_payload = try std.fmt.allocPrint(scratch, "complex_{d}", .{nextDistinctId(self)});
-            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
+            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(try std.fmt.allocPrint(scratch, "opt_{d}", .{nextDistinctId(self)})));
 
-            var elem_attr = ensureDIType(self, cplx.elem) catch try ensureDINullTypeAttr(self);
-            if (elem_attr.isNull()) elem_attr = try ensureDINullTypeAttr(self);
-            const elem_text = try getAttrText(self, elem_attr);
+            const m_pres = try diDerived(self, "DW_TAG_member", "present", diBasic(self, "bool", 8, .Boolean), 8, 8, 0);
+            const val_off = std.mem.alignForward(u64, 1, elem_sa.alignment);
+            const m_val = try diDerived(self, "DW_TAG_member", "val", try ensureDIType(self, opt.elem), elem_sa.size * 8, elem_sa.alignment * 8, val_off * 8);
 
-            // re member
-            const re_member_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"re\", baseType = {s}, sizeInBits = 64, alignInBits = 64, offset = 0>", .{elem_text});
-
-            // im member
-            const im_member_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"im\", baseType = {s}, sizeInBits = 64, alignInBits = 64, offset = 64>", .{elem_text});
-
-            const elements_text = try std.fmt.allocPrint(scratch, "{s}, {s}", .{ re_member_text, im_member_text });
-
-            const unknown_file = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, self.strAttr("<unknown>"), self.strAttr("."));
-            const file_text = try getAttrText(self, unknown_file);
-            const id_text = try getAttrText(self, id_attr);
-
-            const attr_text = try std.fmt.allocPrint(scratch, "#llvm.di_composite_type<recId = {s}, tag = DW_TAG_structure_type, name = \"complex\", file = {s}, line = 0, sizeInBits = 128, alignInBits = 64, elements = #llvm.di_node_array<[{s}]>>", .{ id_text, file_text, elements_text });
-
-            const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(attr_text));
-            if (attr.isNull()) return error.DebugAttrParseFailed;
-            break :blk attr;
+            break :blk try diComposite(self, "DW_TAG_structure_type", "optional", id_attr, try ensureDINullTypeAttr(self), sa.size * 8, sa.alignment * 8, "", try std.fmt.allocPrint(scratch, "{s}, {s}", .{ m_pres, m_val }));
         },
-        .DynArray => blk: {
-            const da = self.context.type_store.get(.DynArray, ty);
+
+        .Function => blk: {
+            const f = self.context.type_store.get(.Function, ty);
             const scratch = self.debug_arena.allocator();
-            const id_payload = try std.fmt.allocPrint(scratch, "dynarray_{d}", .{nextDistinctId(self)});
-            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
+            var types_list = std.ArrayListUnmanaged(mlir.Attribute){};
 
-            // Element type
-            var elem_attr = ensureDIType(self, da.elem) catch try ensureDINullTypeAttr(self);
-            if (elem_attr.isNull()) elem_attr = try ensureDINullTypeAttr(self);
-            const elem_text = try getAttrText(self, elem_attr);
+            try types_list.append(self.gpa, try ensureDIType(self, f.result));
+            for (self.context.type_store.type_pool.slice(f.params)) |p| try types_list.append(self.gpa, try ensureDIType(self, p));
 
-            // Pointer to Element Type
-            const ptr_to_elem_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_pointer_type, baseType = {s}, sizeInBits = 64, alignInBits = 64, offset = 0>", .{elem_text});
-            const ptr_type = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(ptr_to_elem_text));
-
-            // ptr member
-            const ptr_type_text = try getAttrText(self, ptr_type);
-            const ptr_member_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"ptr\", baseType = {s}, sizeInBits = 64, alignInBits = 64, offset = 0>", .{ptr_type_text});
-
-            // i64 type
-            const i64_type = diSignedIntType(self, "i64", 64);
-            const i64_type_text = try getAttrText(self, i64_type);
-
-            // len member
-            const len_member_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"len\", baseType = {s}, sizeInBits = 64, alignInBits = 64, offset = 64>", .{i64_type_text});
-
-            // cap member
-            const cap_member_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"cap\", baseType = {s}, sizeInBits = 64, alignInBits = 64, offset = 128>", .{i64_type_text});
-
-            // Elements array
-            const elements_text = try std.fmt.allocPrint(scratch, "{s}, {s}, {s}", .{ ptr_member_text, len_member_text, cap_member_text });
-
-            const unknown_file = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, self.strAttr("<unknown>"), self.strAttr("."));
-            const file_text = try getAttrText(self, unknown_file);
-            const id_text = try getAttrText(self, id_attr);
-
-            const attr_text = try std.fmt.allocPrint(scratch, "#llvm.di_composite_type<recId = {s}, tag = DW_TAG_structure_type, name = \"dyn[]\", file = {s}, line = 0, sizeInBits = 192, alignInBits = 64, elements = #llvm.di_node_array<[{s}]>>", .{ id_text, file_text, elements_text });
-
-            const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(attr_text));
-            if (attr.isNull()) return error.DebugAttrParseFailed;
-            break :blk attr;
+            const sub = mlir.LLVMAttributes.getLLVMDISubroutineTypeAttr(self.mlir_ctx, 0, types_list.items);
+            const sub_txt = try getAttrText(self, sub);
+            const txt = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_pointer_type, baseType = {s}, sizeInBits = 64, alignInBits = 64, offset = 0>", .{sub_txt});
+            break :blk mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(txt));
         },
+
         .Simd => blk: {
-            const simd = self.context.type_store.get(.Simd, ty);
-            const len = simd.lanes;
-
+            const s = self.context.type_store.get(.Simd, ty);
             const scratch = self.debug_arena.allocator();
-            var elements_text = std.ArrayListUnmanaged(u8){};
-            var offset: u64 = 0;
-
-            var elem_attr = ensureDIType(self, simd.elem) catch try ensureDINullTypeAttr(self);
-            if (elem_attr.isNull()) elem_attr = try ensureDINullTypeAttr(self);
-            const elem_text = try getAttrText(self, elem_attr);
-
-            var i: usize = 0;
-            while (i < len) : (i += 1) {
-                const member_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"{d}\", baseType = {s}, sizeInBits = 64, alignInBits = 64, offset = {d}>", .{ i, elem_text, offset });
-                if (i > 0) try elements_text.appendSlice(scratch, ", ");
-                try elements_text.appendSlice(scratch, member_text);
-                offset += 64;
+            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(try std.fmt.allocPrint(scratch, "simd_{d}", .{nextDistinctId(self)})));
+            const elem_di = try ensureDIType(self, s.elem);
+            var elems = std.ArrayListUnmanaged(u8){};
+            for (0..s.lanes) |i| {
+                if (i > 0) try elems.appendSlice(scratch, ", ");
+                try elems.appendSlice(scratch, try diDerived(self, "DW_TAG_member", try std.fmt.allocPrint(scratch, "{d}", .{i}), elem_di, 64, 64, i * 64));
             }
-
-            const id_payload = try std.fmt.allocPrint(scratch, "simd_{d}", .{nextDistinctId(self)});
-            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
-            const id_text = try getAttrText(self, id_attr);
-
-            const unknown_file = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, self.strAttr("<unknown>"), self.strAttr("."));
-            const file_text = try getAttrText(self, unknown_file);
-
-            const attr_text = try std.fmt.allocPrint(scratch, "#llvm.di_composite_type<recId = {s}, tag = DW_TAG_structure_type, name = \"simd\", file = {s}, line = 0, sizeInBits = {d}, alignInBits = 64, elements = #llvm.di_node_array<[{s}]>>", .{ id_text, file_text, offset, elements_text.items });
-            const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(attr_text));
-            if (attr.isNull()) return error.DebugAttrParseFailed;
-            break :blk attr;
+            break :blk try diComposite(self, "DW_TAG_structure_type", "simd", id_attr, try ensureDINullTypeAttr(self), s.lanes * 64, 64, "", elems.items);
         },
-        .Tensor => blk: {
-            const tensor = self.context.type_store.get(.Tensor, ty);
-            var len: usize = 1;
-            for (tensor.dims) |d| {
-                if (d > 0) len *= d;
-            }
-            if (tensor.dims.len == 0) len = 0;
 
+        // Map, Any, etc. fallback to simple stubs or handled above in composite generic
+        .Map => blk: {
             const scratch = self.debug_arena.allocator();
-            var elements_text = std.ArrayListUnmanaged(u8){};
-            var offset: u64 = 0;
-
-            var elem_attr = ensureDIType(self, tensor.elem) catch try ensureDINullTypeAttr(self);
-            if (elem_attr.isNull()) elem_attr = try ensureDINullTypeAttr(self);
-            const elem_text = try getAttrText(self, elem_attr);
-
-            var i: usize = 0;
-            while (i < len) : (i += 1) {
-                const member_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"{d}\", baseType = {s}, sizeInBits = 64, alignInBits = 64, offset = {d}>", .{ i, elem_text, offset });
-                if (i > 0) try elements_text.appendSlice(scratch, ", ");
-                try elements_text.appendSlice(scratch, member_text);
-                offset += 64;
-            }
-
-            const id_payload = try std.fmt.allocPrint(scratch, "tensor_{d}", .{nextDistinctId(self)});
-            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
-            const id_text = try getAttrText(self, id_attr);
-
-            const unknown_file = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, self.strAttr("<unknown>"), self.strAttr("."));
-            const file_text = try getAttrText(self, unknown_file);
-
-            const attr_text = try std.fmt.allocPrint(scratch, "#llvm.di_composite_type<recId = {s}, tag = DW_TAG_structure_type, name = \"tensor\", file = {s}, line = 0, sizeInBits = {d}, alignInBits = 64, elements = #llvm.di_node_array<[{s}]>>", .{ id_text, file_text, offset, elements_text.items });
-            const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(attr_text));
-            if (attr.isNull()) return error.DebugAttrParseFailed;
-            break :blk attr;
+            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(try std.fmt.allocPrint(scratch, "map_{d}", .{nextDistinctId(self)})));
+            break :blk try diComposite(self, "DW_TAG_structure_type", "map", id_attr, try ensureDINullTypeAttr(self), 64, 64, "Declaration", "");
         },
+
         .Any => blk: {
             const scratch = self.debug_arena.allocator();
-            const id_payload = try std.fmt.allocPrint(scratch, "any_{d}", .{nextDistinctId(self)});
-            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
-
-            // ptr member
-            const ptr_to_void_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_pointer_type, baseType = null, sizeInBits = 64, alignInBits = 64, offset = 0>", .{});
-            const ptr_member_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"ptr\", baseType = {s}, sizeInBits = 64, alignInBits = 64, offset = 0>", .{ptr_to_void_text});
-
-            // type_id member (u64)
-            const u64_type = diUnsignedIntType(self, "u64", 64);
-            const u64_text = try getAttrText(self, u64_type);
-            const id_member_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"type_id\", baseType = {s}, sizeInBits = 64, alignInBits = 64, offset = 64>", .{u64_text});
-
-            const elements_text = try std.fmt.allocPrint(scratch, "{s}, {s}", .{ ptr_member_text, id_member_text });
-
-            const unknown_file = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, self.strAttr("<unknown>"), self.strAttr("."));
-            const file_text = try getAttrText(self, unknown_file);
-            const id_text = try getAttrText(self, id_attr);
-
-            const attr_text = try std.fmt.allocPrint(scratch, "#llvm.di_composite_type<recId = {s}, tag = DW_TAG_structure_type, name = \"any\", file = {s}, line = 0, sizeInBits = 128, alignInBits = 64, elements = #llvm.di_node_array<[{s}]>>", .{ id_text, file_text, elements_text });
-
-            const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(attr_text));
-            if (attr.isNull()) return error.DebugAttrParseFailed;
-            break :blk attr;
+            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(try std.fmt.allocPrint(scratch, "any_{d}", .{nextDistinctId(self)})));
+            const ptr_void = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from("#llvm.di_derived_type<tag = DW_TAG_pointer_type, baseType = null, sizeInBits = 64, alignInBits = 64, offset = 0>"));
+            const m_ptr = try diDerived(self, "DW_TAG_member", "ptr", ptr_void, 64, 64, 0);
+            const m_id = try diDerived(self, "DW_TAG_member", "type_id", diBasic(self, "u64", 64, .Unsigned), 64, 64, 64);
+            break :blk try diComposite(self, "DW_TAG_structure_type", "any", id_attr, try ensureDINullTypeAttr(self), 128, 64, "", try std.fmt.allocPrint(scratch, "{s}, {s}", .{ m_ptr, m_id }));
         },
-        .Map => blk: {
-            // Placeholder for map: opaque struct
+        .Tensor => blk: {
+            // Treat Tensor as opaque struct of elements for now, similar to original but flattened
+            const t = self.context.type_store.get(.Tensor, ty);
+            var len: u64 = 1;
+            for (t.dims) |d| len *= d;
             const scratch = self.debug_arena.allocator();
-            const id_payload = try std.fmt.allocPrint(scratch, "map_{d}", .{nextDistinctId(self)});
-            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
-            const id_text = try getAttrText(self, id_attr);
-
-            const unknown_file = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, self.strAttr("<unknown>"), self.strAttr("."));
-            const file_text = try getAttrText(self, unknown_file);
-
-            const attr_text = try std.fmt.allocPrint(scratch, "#llvm.di_composite_type<recId = {s}, tag = DW_TAG_structure_type, name = \"map\", file = {s}, line = 0, sizeInBits = 64, alignInBits = 64, flags = Declaration>", .{ id_text, file_text });
-            const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(attr_text));
-            if (attr.isNull()) return error.DebugAttrParseFailed;
-            break :blk attr;
+            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(try std.fmt.allocPrint(scratch, "tensor_{d}", .{nextDistinctId(self)})));
+            const elem_di = try ensureDIType(self, t.elem);
+            var elems = std.ArrayListUnmanaged(u8){};
+            for (0..len) |i| {
+                if (i > 0) try elems.appendSlice(scratch, ", ");
+                try elems.appendSlice(scratch, try diDerived(self, "DW_TAG_member", try std.fmt.allocPrint(scratch, "{d}", .{i}), elem_di, 64, 64, i * 64));
+            }
+            break :blk try diComposite(self, "DW_TAG_structure_type", "tensor", id_attr, try ensureDINullTypeAttr(self), len * 64, 64, "", elems.items);
         },
-        .Variant, .Error => blk: {
-            // Same as Union
-            if (self.di_recursive_ids.get(ty)) |recId| {
-                break :blk mlir.LLVMAttributes.getLLVMDICompositeTypeAttrRecSelf(recId);
-            }
-
-            const scratch = self.debug_arena.allocator();
-            const id_payload = try std.fmt.allocPrint(scratch, "variant_{d}", .{nextDistinctId(self)});
-            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
-            try self.di_recursive_ids.put(ty, id_attr);
-
-            var fields: []const types.FieldId = &.{};
-            if (kind == .Variant) {
-                fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, ty).variants);
-            } else {
-                fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, ty).variants);
-            }
-
-            var elements_text = std.ArrayListUnmanaged(u8){};
-
-            // 1. Tag member (i32) at offset 0
-            const i32_type = diSignedIntType(self, "i32", 32);
-            const i32_text = try getAttrText(self, i32_type);
-            const tag_member = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"tag\", baseType = {s}, sizeInBits = 32, alignInBits = 32, offset = 0>", .{i32_text});
-            try elements_text.appendSlice(scratch, tag_member);
-
-            // Compute payload offset
-            var max_align: u64 = 4;
-            for (fields) |fid| {
-                const f = self.context.type_store.Field.get(fid);
-                const sa = abi.abiSizeAlign(self, f.ty);
-                if (sa.alignment > max_align) max_align = @intCast(sa.alignment);
-            }
-            const payload_offset = std.mem.alignForward(u64, 4, max_align);
-
-            for (fields, 0..) |fid, i| {
-                const f = self.context.type_store.Field.get(fid);
-                const field_name = self.context.type_store.strs.get(f.name);
-
-                var field_ty_attr = ensureDIType(self, f.ty) catch try ensureDINullTypeAttr(self);
-                if (field_ty_attr.isNull()) field_ty_attr = try ensureDINullTypeAttr(self);
-
-                const field_ty_text = try getAttrText(self, field_ty_attr);
-                const field_sa = abi.abiSizeAlign(self, f.ty);
-
-                const member_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"{s}\", baseType = {s}, sizeInBits = {d}, alignInBits = {d}, offset = {d}>", .{ field_name, field_ty_text, field_sa.size * 8, field_sa.alignment * 8, payload_offset * 8 });
-
-                try elements_text.appendSlice(scratch, ", ");
-                try elements_text.appendSlice(scratch, member_text);
-                _ = i;
-            }
-
-            const total_sa = abi.abiSizeAlign(self, ty);
-
-            const id_text = try getAttrText(self, id_attr);
-
-            const unknown_file = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, self.strAttr("<unknown>"), self.strAttr("."));
-            const file_text = try getAttrText(self, unknown_file);
-
-            const name_str = if (kind == .Variant) "variant" else "error";
-
-            const attr_text = try std.fmt.allocPrint(scratch, "#llvm.di_composite_type<recId = {s}, tag = DW_TAG_structure_type, name = \"{s}\", file = {s}, line = 0, sizeInBits = {d}, alignInBits = {d}, elements = #llvm.di_node_array<[{s}]>>", .{ id_text, name_str, file_text, total_sa.size * 8, total_sa.alignment * 8, elements_text.items });
-
-            const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(attr_text));
-            _ = self.di_recursive_ids.remove(ty);
-
-            if (attr.isNull()) return error.DebugAttrParseFailed;
-            break :blk attr;
-        },
-        .ErrorSet => blk: {
-            const es = self.context.type_store.get(.ErrorSet, ty);
-            const scratch = self.debug_arena.allocator();
-
-            const id_payload = try std.fmt.allocPrint(scratch, "errorset_{d}", .{nextDistinctId(self)});
-            const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
-
-            const sa = abi.abiSizeAlign(self, ty);
-
-            // 1. Tag (i32) at offset 0
-            const i32_type = diSignedIntType(self, "i32", 32);
-            const i32_text = try getAttrText(self, i32_type);
-            const tag_member = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"tag\", baseType = {s}, sizeInBits = 32, alignInBits = 32, offset = 0>", .{i32_text});
-
-            // 2. Payload (Union of Value/Error)
-            const val_sa = abi.abiSizeAlign(self, es.value_ty);
-            const err_sa = abi.abiSizeAlign(self, es.error_ty);
-            const payload_align = @max(val_sa.alignment, err_sa.alignment);
-            const payload_offset = std.mem.alignForward(u64, 4, payload_align);
-
-            // Value member
-            var val_attr = ensureDIType(self, es.value_ty) catch try ensureDINullTypeAttr(self);
-            if (val_attr.isNull()) val_attr = try ensureDINullTypeAttr(self);
-            const val_text = try getAttrText(self, val_attr);
-
-            const val_member = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"Ok\", baseType = {s}, sizeInBits = {d}, alignInBits = {d}, offset = {d}>", .{ val_text, val_sa.size * 8, val_sa.alignment * 8, payload_offset * 8 });
-
-            // Error member
-            var err_attr = ensureDIType(self, es.error_ty) catch try ensureDINullTypeAttr(self);
-            if (err_attr.isNull()) err_attr = try ensureDINullTypeAttr(self);
-            const err_text = try getAttrText(self, err_attr);
-
-            const err_member = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_member, name = \"Err\", baseType = {s}, sizeInBits = {d}, alignInBits = {d}, offset = {d}>", .{ err_text, err_sa.size * 8, err_sa.alignment * 8, payload_offset * 8 });
-
-            const elements_text = try std.fmt.allocPrint(scratch, "{s}, {s}, {s}", .{ tag_member, val_member, err_member });
-
-            const unknown_file = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, self.strAttr("<unknown>"), self.strAttr("."));
-            const file_text = try getAttrText(self, unknown_file);
-            const id_text = try getAttrText(self, id_attr);
-
-            const attr_text = try std.fmt.allocPrint(scratch, "#llvm.di_composite_type<recId = {s}, tag = DW_TAG_structure_type, name = \"errorset\", file = {s}, line = 0, sizeInBits = {d}, alignInBits = {d}, elements = #llvm.di_node_array<[{s}]>>", .{ id_text, file_text, sa.size * 8, sa.alignment * 8, elements_text });
-            const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(attr_text));
-            if (attr.isNull()) return error.DebugAttrParseFailed;
-            break :blk attr;
-        },
-        .Function => blk: {
-            const finfo = self.context.type_store.get(.Function, ty);
-
-            // Create the subroutine type
-            var types_buf = std.ArrayListUnmanaged(mlir.Attribute){};
-            defer types_buf.deinit(self.gpa);
-
-            var ret_attr = ensureDIType(self, finfo.result) catch blk_ret: {
-                break :blk_ret try ensureDINullTypeAttr(self);
-            };
-            if (ret_attr.isNull()) ret_attr = try ensureDINullTypeAttr(self);
-            try types_buf.append(self.gpa, ret_attr);
-
-            const params = self.context.type_store.type_pool.slice(finfo.params);
-            for (params) |param_ty| {
-                var param_attr = ensureDIType(self, param_ty) catch try ensureDINullTypeAttr(self);
-                if (param_attr.isNull()) param_attr = try ensureDINullTypeAttr(self);
-                try types_buf.append(self.gpa, param_attr);
-            }
-
-            const sub_ty = mlir.LLVMAttributes.getLLVMDISubroutineTypeAttr(
-                self.mlir_ctx,
-                0,
-                types_buf.items,
-            );
-            if (sub_ty.isNull()) return error.DebugAttrParseFailed;
-
-            // Wrap in pointer type
-            const scratch = self.debug_arena.allocator();
-            const sub_ty_text = try getAttrText(self, sub_ty);
-
-            const ptr_text = try std.fmt.allocPrint(scratch, "#llvm.di_derived_type<tag = DW_TAG_pointer_type, baseType = {s}, sizeInBits = 64, alignInBits = 64, offset = 0>", .{sub_ty_text});
-
-            const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(ptr_text));
-            if (attr.isNull()) return error.DebugAttrParseFailed;
-            break :blk attr;
-        },
-        else => try ensureDINullTypeAttr(self),
     };
 
     if (!attr.isNull()) try self.di_type_cache.put(ty, attr);
     return attr;
 }
 
-/// Helper to build a signed integer debug descriptor for `bits` width.
-fn diSignedIntType(self: *Codegen, name: []const u8, bits: u64) mlir.Attribute {
-    return mlir.LLVMAttributes.getLLVMDIBasicTypeAttr(
-        self.mlir_ctx,
-        DW_TAG_base_type,
-        self.strAttr(name),
-        bits,
-        mlir.LLVMTypeEncoding.Signed,
-    );
-}
-
-/// Helper to build an unsigned integer debug descriptor for `bits` width.
-fn diUnsignedIntType(self: *Codegen, name: []const u8, bits: u64) mlir.Attribute {
-    return mlir.LLVMAttributes.getLLVMDIBasicTypeAttr(
-        self.mlir_ctx,
-        DW_TAG_base_type,
-        self.strAttr(name),
-        bits,
-        mlir.LLVMTypeEncoding.Unsigned,
-    );
-}
-
 /// Construct the DI subroutine type attribute for a function given its return/param types.
-fn buildDISubroutineTypeAttr(
-    self: *Codegen,
-    ret_ty: types.TypeId,
-    params: []const tir.ParamId,
-    t: *tir.TIR,
-) !mlir.Attribute {
-    var types_buf: std.ArrayList(mlir.Attribute) = .empty;
+fn buildDISubroutineTypeAttr(self: *Codegen, ret_ty: types.TypeId, params: []const tir.ParamId, t: *tir.TIR) !mlir.Attribute {
+    var types_buf = std.ArrayListUnmanaged(mlir.Attribute){};
     defer types_buf.deinit(self.gpa);
 
-    const ret_attr = ensureDIType(self, ret_ty) catch try ensureDINullTypeAttr(self);
-    const norm_ret = if (!ret_attr.isNull()) ret_attr else try ensureDINullTypeAttr(self);
-    try types_buf.append(self.gpa, norm_ret);
+    const null_attr = try ensureDINullTypeAttr(self);
 
+    // Return type
+    const ret_attr = ensureDIType(self, ret_ty) catch null_attr;
+    try types_buf.append(self.gpa, if (ret_attr.isNull()) null_attr else ret_attr);
+
+    // Parameter types
     for (params) |pid| {
-        const param = t.funcs.Param.get(pid);
-        const param_attr = ensureDIType(self, param.ty) catch try ensureDINullTypeAttr(self);
-        const norm_param = if (!param_attr.isNull()) param_attr else try ensureDINullTypeAttr(self);
-        try types_buf.append(self.gpa, norm_param);
+        const param_attr = ensureDIType(self, t.funcs.Param.get(pid).ty) catch null_attr;
+        try types_buf.append(self.gpa, if (param_attr.isNull()) null_attr else param_attr);
     }
 
-    const attr = mlir.LLVMAttributes.getLLVMDISubroutineTypeAttr(
-        self.mlir_ctx,
-        0,
-        types_buf.items,
-    );
+    const attr = mlir.LLVMAttributes.getLLVMDISubroutineTypeAttr(self.mlir_ctx, 0, types_buf.items);
     if (attr.isNull()) return error.DebugAttrParseFailed;
     return attr;
 }
@@ -1131,130 +574,61 @@ fn ensureEmptyDIExpression(self: *Codegen) !mlir.Attribute {
 }
 
 /// Emit `llvm.dbg.value` intrinsics for each named parameter of `f_id`.
-pub fn emitParameterDebugInfo(
-    self: *Codegen,
-    f_id: tir.FuncId,
-    params: []const tir.ParamId,
-    entry_block: mlir.Block,
-    t: *tir.TIR,
-) !void {
+pub fn emitParameterDebugInfo(self: *Codegen, f_id: tir.FuncId, params: []const tir.ParamId, entry_block: mlir.Block, t: *tir.TIR) !void {
     if (!codegen.enable_debug_info) return;
-    const subp_ptr = self.di_subprograms.getPtr(f_id) orelse return;
-    const subp = subp_ptr.*;
+    const subp = self.di_subprograms.getPtr(f_id) orelse return;
 
+    // Fast check if any parameter is named
     var has_named = false;
-    for (params) |pid| {
-        const p = t.funcs.Param.get(pid);
-        if (!p.name.isNone()) {
-            has_named = true;
-            break;
-        }
-    }
+    for (params) |pid| if (!t.funcs.Param.get(pid).name.isNone()) {
+        has_named = true;
+        break;
+    };
     if (!has_named) return;
 
     const file_info = ensureDebugFile(self, subp.file_id) catch return;
     const expr_attr = ensureEmptyDIExpression(self) catch return;
+    const null_attr = ensureDINullTypeAttr(self) catch return;
 
-    const prev_loc = self.pushLocation(subp.loc);
-    defer self.loc = prev_loc;
+    defer self.loc = self.pushLocation(subp.loc);
 
     for (params, 0..) |pid, idx| {
         const p = t.funcs.Param.get(pid);
         if (p.name.isNone()) continue;
+
+        var di_type = ensureDIType(self, p.ty) catch null_attr;
+        if (di_type.isNull() or di_type.equal(&null_attr)) continue;
+
         const name = t.instrs.strs.get(p.name.unwrap());
-        var di_type = ensureDIType(self, p.ty) catch ensureDINullTypeAttr(self) catch continue;
-        if (di_type.isNull()) di_type = ensureDINullTypeAttr(self) catch continue;
-
-        // Skip emitting debug info for types we don't handle yet (pointers, structs, etc.)
-        // to avoid crashing LLVM.
-        const null_attr = ensureDINullTypeAttr(self) catch continue;
-        if (di_type.equal(&null_attr)) continue;
-
-        const var_attr = mlir.LLVMAttributes.getLLVMDILocalVariableAttr(
-            self.mlir_ctx,
-            subp.attr,
-            self.strAttr(name),
-            file_info.file_attr,
-            subp.line,
-            @intCast(idx + 1),
-            0,
-            di_type,
-            0,
-        );
+        const var_attr = mlir.LLVMAttributes.getLLVMDILocalVariableAttr(self.mlir_ctx, subp.attr, self.strAttr(name), file_info.file_attr, subp.line, @intCast(idx + 1), 0, di_type, 0);
         if (var_attr.isNull()) continue;
 
-        const arg_val = entry_block.getArgument(idx);
-        const attrs = [_]mlir.NamedAttribute{
-            self.named("varInfo", var_attr),
-            self.named("locationExpr", expr_attr),
-        };
         _ = self.appendOp("llvm.intr.dbg.value", .{
-            .operands = &.{arg_val},
-            .attributes = &attrs,
+            .operands = &.{entry_block.getArgument(idx)},
+            .attributes = &.{ self.named("varInfo", var_attr), self.named("locationExpr", expr_attr) },
         });
     }
 }
 
 /// Emit debug info for a local variable (either stack slot or SSA value).
-pub fn emitLocalVariable(
-    self: *Codegen,
-    value: mlir.Value,
-    val_id: tir.ValueId,
-    t: *tir.TIR,
-    name: []const u8,
-    loc: tir.OptLocId,
-) !void {
-    if (!codegen.enable_debug_info) return;
-    if (self.current_scope == null) return;
-    if (loc.isNone()) return;
+pub fn emitLocalVariable(self: *Codegen, value: mlir.Value, val_id: tir.ValueId, t: *tir.TIR, name: []const u8, loc: tir.OptLocId) !void {
+    if (!codegen.enable_debug_info or self.current_scope == null or loc.isNone()) return;
 
-    const loc_id = loc.unwrap();
-    const loc_record = self.context.loc_store.get(loc_id);
-    const file_info = ensureDebugFile(self, loc_record.file_id) catch return;
-    const line: u32 = 0; // Placeholder
-
+    const loc_rec = self.context.loc_store.get(loc.unwrap());
+    const file_info = ensureDebugFile(self, loc_rec.file_id) catch return;
     const expr_attr = ensureEmptyDIExpression(self) catch return;
 
-    // Determine type debug info
     const ty = self.val_types.get(val_id) orelse return;
     var di_type = ensureDIType(self, ty) catch ensureDINullTypeAttr(self) catch return;
     if (di_type.isNull()) di_type = ensureDINullTypeAttr(self) catch return;
 
-    const var_attr = mlir.LLVMAttributes.getLLVMDILocalVariableAttr(
-        self.mlir_ctx,
-        self.current_scope.?,
-        self.strAttr(name),
-        file_info.file_attr,
-        line,
-        0, // arg_index (0 for locals)
-        0, // align
-        di_type,
-        0, // flags
-    );
+    const var_attr = mlir.LLVMAttributes.getLLVMDILocalVariableAttr(self.mlir_ctx, self.current_scope.?, self.strAttr(name), file_info.file_attr, 0, 0, 0, di_type, 0);
     if (var_attr.isNull()) return;
 
-    // Determine if it's an alloca (declare) or value (value)
-    var is_alloca = false;
-    if (self.def_instr.get(val_id)) |instr_id| {
-        if (t.kind(instr_id) == .Alloca) {
-            is_alloca = true;
-        }
-    }
+    const is_alloca = if (self.def_instr.get(val_id)) |instr_id| t.kind(instr_id) == .Alloca else false;
 
-    const attrs = [_]mlir.NamedAttribute{
-        self.named("varInfo", var_attr),
-        self.named("locationExpr", expr_attr),
-    };
-
-    if (is_alloca) {
-        _ = self.appendOp("llvm.intr.dbg.declare", .{
-            .operands = &.{value},
-            .attributes = &attrs,
-        });
-    } else {
-        _ = self.appendOp("llvm.intr.dbg.value", .{
-            .operands = &.{value},
-            .attributes = &attrs,
-        });
-    }
+    _ = self.appendOp(if (is_alloca) "llvm.intr.dbg.declare" else "llvm.intr.dbg.value", .{
+        .operands = &.{value},
+        .attributes = &.{ self.named("varInfo", var_attr), self.named("locationExpr", expr_attr) },
+    });
 }
