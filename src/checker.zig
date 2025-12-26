@@ -548,10 +548,10 @@ fn predeclare(self: *Checker, ast_unit: *ast.Ast, ctx: *CheckerContext) !void {
     const decl_len = ast_unit.exprs.Decl.list.len;
 
     // Batch allocations and initialization
-    try ast_unit.type_info.expr_types.resize(self.gpa, expr_len);
+    try ast_unit.type_info.expr_types.resize(ast_unit.type_info.gpa, expr_len);
     @memset(ast_unit.type_info.expr_types.items, null);
 
-    try ast_unit.type_info.decl_types.resize(self.gpa, decl_len);
+    try ast_unit.type_info.decl_types.resize(ast_unit.type_info.gpa, decl_len);
     @memset(ast_unit.type_info.decl_types.items, null);
 
     try ctx.resolving_type_exprs.resize(self.gpa, expr_len, false);
@@ -619,7 +619,7 @@ pub fn evalComptimeExprBorrowed(
     var computed = try interp.evalExpr(expr);
     defer computed.destroy(self.gpa);
 
-    const stored = try comp.cloneComptimeValue(self.gpa, computed);
+    const stored = try comp.cloneComptimeValue(ast_unit.type_info.gpa, computed);
     try ast_unit.type_info.setComptimeValue(expr, stored);
     return ast_unit.type_info.getComptimeValue(expr).?;
 }
@@ -716,7 +716,7 @@ pub fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_
                     }
                 }
 
-                const cloned = try comp.cloneComptimeValue(self.gpa, computed);
+                const cloned = try comp.cloneComptimeValue(ast_unit.type_info.gpa, computed);
                 try ast_unit.type_info.setComptimeBinding(binding.name, binding_ty, cloned);
 
                 if (ctx.interp) |*interp| {
@@ -912,7 +912,7 @@ pub fn checkSpecializedFunction(
             ast_unit.type_info.removeComptimeBinding(bk.name);
             if (bk.ty) |t| {
                 if (bk.value) |v| {
-                    const c = comp.cloneComptimeValue(self.gpa, v) catch continue;
+                    const c = comp.cloneComptimeValue(ast_unit.type_info.gpa, v) catch continue;
                     ast_unit.type_info.setComptimeBinding(bk.name, t, c) catch {};
                 }
             }
@@ -932,8 +932,8 @@ pub fn checkSpecializedFunction(
         const existing_val = ast_unit.type_info.cloneComptimeBindingValue(self.gpa, b.name) catch null;
         ct_backups.appendAssumeCapacity(.{ .name = b.name, .ty = ast_unit.type_info.lookupComptimeBindingType(b.name), .value = existing_val });
 
-        var clone = try comp.cloneComptimeValue(self.gpa, b.value);
-        errdefer clone.destroy(self.gpa);
+        var clone = try comp.cloneComptimeValue(ast_unit.type_info.gpa, b.value);
+        errdefer clone.destroy(ast_unit.type_info.gpa);
         try ast_unit.type_info.setComptimeBinding(b.name, b.ty, clone);
 
         const v = switch (b.value) {
@@ -954,7 +954,7 @@ pub fn checkSpecializedFunction(
 
     var removed_cv = List(comp.ComptimeValue){};
     defer {
-        for (removed_cv.items) |*v| v.destroy(self.gpa);
+        for (removed_cv.items) |*v| v.destroy(ast_unit.type_info.gpa);
         removed_cv.deinit(self.gpa);
     }
 
@@ -1053,7 +1053,7 @@ pub fn getOrInstantiateSpecialization(
     }
 
     const syn_id = ast.DeclId.fromRaw(@intCast(ast_unit.type_info.decl_types.items.len));
-    try ast_unit.type_info.decl_types.append(self.gpa, null);
+    try ast_unit.type_info.decl_types.append(ast_unit.type_info.gpa, null);
 
     const a = ctx.spec_arena.allocator();
     const k_dup = types.SpecializationKey{ .digest = digest, .original_decl_id = orig_decl.toRaw(), .param_types = try a.dupe(types.TypeId, params), .comptime_hashes = try a.dupe(u64, ct_hashes) };
@@ -2848,7 +2848,7 @@ fn checkParamDefault(
         };
         defer def_val.destroy(self.gpa);
 
-        const cloned = try comp.cloneComptimeValue(self.gpa, def_val);
+        const cloned = try comp.cloneComptimeValue(ast_unit.type_info.gpa, def_val);
         try ast_unit.type_info.setComptimeBinding(param_name.?, param_ty, cloned);
 
         var binding_clone = try comp.cloneComptimeValue(self.gpa, def_val);
@@ -4743,7 +4743,7 @@ fn checkMlirBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
             if (sym.is_comptime or is_cached) {
                 try ast_unit.type_info.setMlirSpliceInfo(pid, .{ .decl = .{ .decl_id = did, .name = name } });
                 var computed = try self.evalComptimeExpr(ctx, ast_unit, decl_expr, &[_]Pipeline.ComptimeBinding{});
-                const value_clone = try comp.cloneComptimeValue(self.gpa, computed);
+                const value_clone = try comp.cloneComptimeValue(ast_unit.type_info.gpa, computed);
                 try ast_unit.type_info.setMlirSpliceValue(pid, value_clone);
                 computed.destroy(self.gpa);
                 continue;

@@ -2071,7 +2071,8 @@ fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docume
         var related = std.ArrayList(RelatedInformation){};
         defer related.deinit(gpa);
 
-        for (message.notes.items) |note| {
+        var note_it = entry.context.diags.noteIterator(message);
+        while (note_it.next()) |note| {
             const note_loc = note.loc orelse continue;
             if (note_loc.file_id != entry.file_id) continue;
 

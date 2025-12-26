@@ -73,11 +73,9 @@ inline fn advance(self: *Parser) void {
 }
 /// If the current token matches `tag`, consume it and return true.
 inline fn consumeIf(self: *Parser, tag: Token.Tag) bool {
-    if (self.cur.tag == tag) {
-        self.advance();
-        return true;
-    }
-    return false;
+    if (self.cur.tag != tag) return false;
+    self.advance();
+    return true;
 }
 /// Demand that the current token is `tag`, otherwise emit an error.
 inline fn expect(self: *Parser, tag: Token.Tag) !void {
@@ -118,11 +116,11 @@ fn recordComment(self: *Parser, tok: Token) void {
 /// Fetch the next non-comment token from the lexer.
 fn fetchNext(self: *Parser) Token {
     var tok = self.lex.next();
-    while (isComment(tok.tag)) {
+    while (true) {
+        if (!isComment(tok.tag)) return tok;
         self.recordComment(tok);
         tok = self.lex.next();
     }
-    return tok;
 }
 /// Intern `bytes` as an identifier string for the CST.
 fn intern(self: *Parser, bytes: []const u8) cst.StrId {
@@ -204,10 +202,7 @@ inline fn exprIsIntegerLiteral(self: *Parser, expr_id: cst.ExprId) bool {
 }
 /// Return true if the lookahead token can terminate a list or expression.
 inline fn nextIsTerminator(self: *const Parser) bool {
-    return switch (self.nxt.tag) {
-        .comma, .rsquare, .rparen, .rcurly, .eos, .eof => true,
-        else => false,
-    };
+    return isTerminator(self, self.nxt.tag);
 }
 /// Add a CST expression node of `kind` and return its ID.
 inline fn addExpr(self: *Parser, comptime kind: cst.ExprKind, value: cst.RowT(kind)) cst.ExprId {
@@ -461,6 +456,7 @@ fn sync(self: *Parser, comptime tag: Token.Tag) void {
 fn parseProgram(self: *Parser) !void {
     var decls: List(cst.DeclId) = .empty;
     defer decls.deinit(self.gpa);
+    const default_pkg = self.intern("main");
 
     // Optional package declaration
     if (self.cur.tag == .keyword_package) {
@@ -474,7 +470,7 @@ fn parseProgram(self: *Parser) !void {
         self.cst_u.program.package_loc = .some(self.toLocId(start));
     } else {
         // default package, set to "main"
-        self.cst_u.program.package_name = .some(self.intern("main"));
+        self.cst_u.program.package_name = .some(default_pkg);
         self.cst_u.program.package_loc = .some(self.toLocId(self.cur.loc));
     }
 
@@ -501,27 +497,28 @@ fn parseDecl(self: *Parser) anyerror!cst.DeclId {
     var lhs_opt: cst.OptExprId = .none();
     var rhs_id = lhs_or_rhs;
     var method_path: cst.OptRangeMethodPathSeg = .none();
+    const finishStmt = struct {
+        fn call(p: *Parser) !void {
+            if (p.cur.tag == .eos) {
+                p.advance();
+            } else if (p.cur.tag != .rcurly and p.cur.tag != .eof) {
+                try p.expect(.eos);
+            }
+        }
+    }.call;
 
     switch (self.cur.tag) {
         .coloncolon => { // constant: x :: (type)? (= rhs)?
             self.advance();
             flags.is_const = true;
             rhs_id = try self.parseExpr(0, .expr);
-            if (self.cur.tag == .eos) {
-                self.advance();
-            } else if (self.cur.tag != .rcurly and self.cur.tag != .eof) {
-                try self.expect(.eos);
-            }
+            try finishStmt(self);
             lhs_opt = .some(lhs_or_rhs);
         },
         .coloneq => { // x := rhs
             self.advance();
             rhs_id = try self.parseExpr(0, .expr);
-            if (self.cur.tag == .eos) {
-                self.advance();
-            } else if (self.cur.tag != .rcurly and self.cur.tag != .eof) {
-                try self.expect(.eos);
-            }
+            try finishStmt(self);
             lhs_opt = .some(lhs_or_rhs);
         },
         .colon => { // x : T (=|::) rhs
@@ -533,22 +530,14 @@ fn parseDecl(self: *Parser) anyerror!cst.DeclId {
                 .equal => {
                     self.advance();
                     rhs_id = try self.parseExpr(0, .expr);
-                    if (self.cur.tag == .eos) {
-                        self.advance();
-                    } else if (self.cur.tag != .rcurly and self.cur.tag != .eof) {
-                        try self.expect(.eos);
-                    }
+                    try finishStmt(self);
                     lhs_opt = .some(lhs_or_rhs);
                 },
                 .colon => {
                     self.advance();
                     flags.is_const = true;
                     rhs_id = try self.parseExpr(0, .expr);
-                    if (self.cur.tag == .eos) {
-                        self.advance();
-                    } else if (self.cur.tag != .rcurly and self.cur.tag != .eof) {
-                        try self.expect(.eos);
-                    }
+                    try finishStmt(self);
                     lhs_opt = .some(lhs_or_rhs);
                 },
                 .eos, .rcurly, .eof => {
@@ -571,11 +560,7 @@ fn parseDecl(self: *Parser) anyerror!cst.DeclId {
             self.advance();
             flags.is_assign = true;
             rhs_id = try self.parseExpr(0, .expr);
-            if (self.cur.tag == .eos) {
-                self.advance();
-            } else if (self.cur.tag != .rcurly and self.cur.tag != .eof) {
-                try self.expect(.eos);
-            }
+            try finishStmt(self);
             lhs_opt = .some(lhs_or_rhs);
         },
         .eos, .rcurly, .eof => {
@@ -591,15 +576,14 @@ fn parseDecl(self: *Parser) anyerror!cst.DeclId {
         method_path = try self.tryMethodPath(lhs_opt.unwrap());
     }
 
-    const row: cst.Rows.Decl = .{
+    return self.cst_u.exprs.addDeclRow(.{
         .lhs = lhs_opt,
         .rhs = rhs_id,
         .ty = ty_opt,
         .method_path = method_path,
         .flags = flags,
         .loc = loc,
-    };
-    return self.cst_u.exprs.addDeclRow(row);
+    });
 }
 
 /// Parse a `test "name" { ... }` declaration by desugaring into a const procedure with a test attribute.
@@ -695,16 +679,14 @@ fn tryMethodPath(self: *Parser, lhs_expr: cst.ExprId) !cst.OptRangeMethodPathSeg
     const ok = try self.collectMethodPathSegments(lhs_expr, &segs);
     if (!ok or segs.items.len < 2) return cst.OptRangeMethodPathSeg.none();
 
-    var ids = try self.gpa.alloc(cst.MethodPathSegId, segs.items.len);
-    defer self.gpa.free(ids);
-
-    var i: usize = 0;
-    while (i < segs.items.len) : (i += 1) {
-        const seg_id = self.cst_u.exprs.addMethodPathSegRow(segs.items[i]);
-        ids[i] = seg_id;
+    var ids = std.ArrayListUnmanaged(cst.MethodPathSegId){};
+    defer ids.deinit(self.gpa);
+    try ids.ensureTotalCapacity(self.gpa, segs.items.len);
+    for (segs.items) |seg| {
+        ids.appendAssumeCapacity(self.cst_u.exprs.addMethodPathSegRow(seg));
     }
 
-    const range = self.cst_u.exprs.method_path_pool.pushMany(self.gpa, ids);
+    const range = self.cst_u.exprs.method_path_pool.pushMany(self.gpa, ids.items);
     return cst.OptRangeMethodPathSeg.some(range);
 }
 
@@ -827,13 +809,11 @@ fn nud(self: *Parser, tag: Token.Tag, comptime mode: ParseMode) anyerror!cst.Exp
         .keyword_async => blk: {
             const loc = self.toLocId(self.cur.loc);
             self.advance();
-            switch (self.cur.tag) {
-                .keyword_proc, .keyword_fn => break :blk try self.parseFunctionLike(self.cur.tag, false, true),
-                else => {
-                    const body = try self.parseBlockExpr();
-                    break :blk self.addExpr(.Async, .{ .body = body, .loc = loc });
-                },
+            if (self.cur.tag == .keyword_proc or self.cur.tag == .keyword_fn) {
+                break :blk try self.parseFunctionLike(self.cur.tag, false, true);
             }
+            const body = try self.parseBlockExpr();
+            break :blk self.addExpr(.Async, .{ .body = body, .loc = loc });
         },
         .keyword_if => try self.parseIfExpr(),
         .keyword_while => try self.parseWhileExpr(),
@@ -937,8 +917,7 @@ fn parseExpr(self: *Parser, min_bp: u8, comptime mode: ParseMode) anyerror!cst.E
                 }
 
                 // Range postfix still defers to infix when it’s actually x..y or x..=y
-                const prefer_postfix_for_range = (tag == .dotdot or tag == .dotdoteq);
-                const should_let_infix_win = prefer_postfix_for_range and !self.nextIsTerminator();
+                const should_let_infix_win = (tag == .dotdot or tag == .dotdoteq) and !self.nextIsTerminator();
 
                 // Special-case: skip postfix consumption for '!' when used as infix error-union in expr mode
                 if (tag == .bang and mode != .type and self.isTypeStart(self.nxt.tag)) {
@@ -1012,20 +991,14 @@ fn parseStructLiteral(self: *Parser, lcurly_loc: Token.Loc) !cst.ExprId {
         const value = try self.parseExpr(0, .expr);
         const entry_loc = self.toLocId(field_tok.loc);
 
-        const sfv_row: cst.Rows.StructFieldValue = .{
+        try sfv_ids.append(self.gpa, self.cst_u.exprs.addStructFieldValue(.{
             .name = name_opt,
             .value = value,
             .loc = entry_loc,
-        };
-        const sfv_id = self.cst_u.exprs.addStructFieldValue(sfv_row);
-        try sfv_ids.append(self.gpa, sfv_id);
+        }));
 
-        if (!self.consumeIf(.comma)) {
-            trailing = false;
-            break;
-        }
-        trailing = true;
-        if (self.cur.tag == .rcurly) break;
+        trailing = self.consumeIf(.comma);
+        if (!trailing or self.cur.tag == .rcurly) break;
     }
     const end_loc = self.cur.loc;
     try self.expect(.rcurly);
@@ -1056,20 +1029,14 @@ fn parseStructLiteralWithHead(self: *Parser, head: cst.ExprId, lcurly_loc: Token
         const value = try self.parseExpr(0, .expr);
         const entry_loc = self.toLocId(field_tok.loc);
 
-        const sfv_row: cst.Rows.StructFieldValue = .{
+        try sfv_ids.append(self.gpa, self.cst_u.exprs.addStructFieldValue(.{
             .name = name_opt,
             .value = value,
             .loc = entry_loc,
-        };
-        const sfv_id = self.cst_u.exprs.addStructFieldValue(sfv_row);
-        try sfv_ids.append(self.gpa, sfv_id);
+        }));
 
-        if (!self.consumeIf(.comma)) {
-            trailing = false;
-            break;
-        }
-        trailing = true;
-        if (self.cur.tag == .rcurly) break;
+        trailing = self.consumeIf(.comma);
+        if (!trailing or self.cur.tag == .rcurly) break;
     }
     const end_loc = self.cur.loc;
     try self.expect(.rcurly);
@@ -1112,8 +1079,6 @@ fn parseField(self: *Parser, parent: cst.ExprId) !cst.ExprId {
     return self.addExpr(.FieldAccess, .{ .parent = parent, .field = name, .is_tuple = is_tuple, .loc = loc });
 }
 
-// Parse a comma-separated list of expressions until `end_tag`,
-// then convert to a RangeOf(ExprId) using the expr_pool.
 /// Parse comma-separated expressions until `end_tag`, returning range + trailing flag.
 fn parseCommaExprListUntil(self: *Parser, comptime end_tag: Token.Tag) anyerror!struct { range: cst.RangeOf(cst.ExprId), trailing: bool } {
     var items: List(cst.ExprId) = .empty;
@@ -1123,12 +1088,8 @@ fn parseCommaExprListUntil(self: *Parser, comptime end_tag: Token.Tag) anyerror!
     if (self.cur.tag != end_tag) {
         while (true) {
             try items.append(self.gpa, try self.parseExpr(0, .expr));
-            if (!self.consumeIf(.comma)) {
-                trailing = false;
-                break;
-            }
-            trailing = true;
-            if (self.cur.tag == end_tag) break;
+            trailing = self.consumeIf(.comma);
+            if (!trailing or self.cur.tag == end_tag) break;
         }
     }
     try self.expect(end_tag);
@@ -1206,13 +1167,11 @@ inline fn parseReturn(self: *Parser) !cst.ExprId {
     const tok = self.cur;
     const loc = self.toLocId(tok.loc);
     self.advance(); // 'return'
-    var value: cst.OptExprId = .none();
-    if (!self.isStmtTerminator()) {
-        value = .some(try self.parseExpr(0, .expr));
-    }
-    if (!self.isStmtTerminator()) {
-        try self.expect(.eos);
-    }
+    const value: cst.OptExprId = if (!self.isStmtTerminator())
+        .some(try self.parseExpr(0, .expr))
+    else
+        .none();
+    if (!self.isStmtTerminator()) try self.expect(.eos);
     return self.addExpr(.Return, .{ .value = value, .loc = loc });
 }
 
@@ -1243,9 +1202,8 @@ fn parseBlockExpr(self: *Parser) !cst.ExprId {
 
 /// Parse either an expression or a block expression, whichever matches.
 inline fn parseExprOrBlock(self: *Parser) !cst.ExprId {
-    if (self.cur.tag == .lcurly) {
-        return self.parseBlock();
-    } else return self.parseExpr(0, .expr);
+    if (self.cur.tag == .lcurly) return self.parseBlock();
+    return self.parseExpr(0, .expr);
 }
 
 // -------------------- Closures --------------------
@@ -1264,11 +1222,8 @@ fn parseClosure(self: *Parser) !cst.ExprId {
 
         while (true) {
             const start_tok = self.cur;
-            var is_comptime = false;
-            if (self.cur.tag == .keyword_comptime) {
-                is_comptime = true;
-                self.advance();
-            }
+            const is_comptime = self.cur.tag == .keyword_comptime;
+            if (is_comptime) self.advance();
             const p_loc = self.toLocId(start_tok.loc);
             const pat_expr = try self.parseExpr(barrier, .expr_no_struct);
 
@@ -1284,15 +1239,14 @@ fn parseClosure(self: *Parser) !cst.ExprId {
                 val_opt = .some(try self.parseExpr(0, .expr));
             }
 
-            const pid = self.cst_u.exprs.addParamRow(.{
+            try param_ids.append(self.gpa, self.cst_u.exprs.addParamRow(.{
                 .pat = .some(pat_expr),
                 .ty = ty_opt,
                 .value = val_opt,
                 .attrs = .none(),
                 .is_comptime = is_comptime,
                 .loc = p_loc,
-            });
-            try param_ids.append(self.gpa, pid);
+            }));
 
             if (self.consumeIf(.comma)) continue;
             if (self.cur.tag == .b_or) break;
@@ -1385,11 +1339,10 @@ fn parseIfExpr(self: *Parser) !cst.ExprId {
     const cond = try self.parseExpr(0, .expr_no_struct);
     const then_block = try self.parseBlock();
 
-    var else_opt: cst.OptExprId = .none();
-    if (self.cur.tag == .keyword_else) {
+    const else_opt: cst.OptExprId = if (self.cur.tag == .keyword_else) blk: {
         self.advance();
-        else_opt = .some(try self.parseExprOrBlock());
-    }
+        break :blk .some(try self.parseExprOrBlock());
+    } else .none();
     return self.addExpr(.If, .{
         .cond = cond,
         .then_block = then_block,
@@ -1468,30 +1421,25 @@ fn parseMatchExpr(self: *Parser) !cst.ExprId {
         try self.expect(.comma);
 
         // arm row → id
-        const arm_row: cst.Rows.MatchArm = .{
+        try tmp_arms.append(self.gpa, self.cst_u.exprs.addMatchArmRow(.{
             .pattern = pat_id,
             .guard = guard_opt,
             .body = body_id,
             .loc = self.toLocId(self.cur.loc),
-        };
-        const arm_id = self.cst_u.exprs.addMatchArmRow(arm_row);
-        try tmp_arms.append(self.gpa, arm_id);
+        }));
     }
 
     try self.expect(.rcurly);
 
     // Commit arm ids into a contiguous range in the arm_pool.
-    const arms_range: cst.RangeOf(cst.MatchArmId) =
-        self.cst_u.exprs.arm_pool.pushMany(self.gpa, tmp_arms.items);
+    const arms_range = self.cst_u.exprs.arm_pool.pushMany(self.gpa, tmp_arms.items);
 
     // Build the Match expr.
-    const match_id = self.addExpr(.Match, .{
+    return self.addExpr(.Match, .{
         .expr = scrutinee,
         .arms = arms_range,
         .loc = self.toLocId(start_loc_tok.loc),
     });
-
-    return match_id;
 }
 
 /// Parse a `for` loop (pattern+iterable) optionally labeled.
@@ -1566,9 +1514,7 @@ fn parsePatOr(self: *Parser) !cst.PatternId {
 
 /// Determine if token `tag` can start a pattern literal.
 fn canStartPattern(self: *Parser, tag: Token.Tag) bool {
-    if (self.isLiteralTag(tag)) {
-        return true;
-    }
+    if (self.isLiteralTag(tag)) return true;
     return switch (tag) {
         .plus, .minus, .dotdot, .dotdoteq, .lsquare, .lparen, .lcurly, .keyword_proc, .keyword_fn, .keyword_extern, .keyword_any, .keyword_type, .keyword_noreturn, .keyword_complex, .keyword_simd, .keyword_tensor, .keyword_struct, .keyword_union, .keyword_enum, .keyword_variant, .keyword_error, .keyword_return, .keyword_import, .keyword_typeof, .keyword_async, .keyword_if, .keyword_while, .keyword_match, .keyword_for, .keyword_break, .keyword_continue, .keyword_unreachable, .keyword_null, .keyword_undefined, .keyword_defer, .keyword_errdefer => true,
         else => false,
@@ -1739,12 +1685,8 @@ fn parseTuplePattern(self: *Parser) anyerror!cst.PatternId {
     if (self.cur.tag != .rparen) {
         while (true) {
             try elems.append(self.gpa, try self.parsePattern());
-            if (!self.consumeIf(.comma)) {
-                trailing_comma = false;
-                break;
-            }
-            trailing_comma = true;
-            if (self.cur.tag == .rparen) break;
+            trailing_comma = self.consumeIf(.comma);
+            if (!trailing_comma or self.cur.tag == .rparen) break;
         }
     }
     try self.expect(.rparen);
@@ -1772,8 +1714,7 @@ fn parsePathishPattern(self: *Parser) anyerror!cst.PatternId {
         const seg = self.cst_u.pats.addPathSeg(.{ .name = name, .loc = self.toLocId(tok.loc) });
         try seg_ids.append(self.gpa, seg);
 
-        if (self.cur.tag != .dot) break;
-        self.advance();
+        if (!self.consumeIf(.dot)) break;
         if (self.cur.tag != .identifier) break;
     }
 
@@ -1830,8 +1771,7 @@ fn parsePathishPattern(self: *Parser) anyerror!cst.PatternId {
                     p = self.addPat(.Binding, .{ .name = name, .by_ref = false, .is_mut = false, .loc = nloc });
                 }
 
-                const pf = self.cst_u.pats.addPatField(.{ .name = name, .pattern = p, .loc = nloc });
-                try fields.append(self.gpa, pf);
+                try fields.append(self.gpa, self.cst_u.pats.addPatField(.{ .name = name, .pattern = p, .loc = nloc }));
 
                 if (!self.consumeIf(.comma)) break;
             }
@@ -1905,11 +1845,10 @@ fn parseSlicePattern(self: *Parser) anyerror!cst.PatternId {
                 // Optional: `.. name`
                 if (self.cur.tag == .identifier) {
                     const name_tok = self.cur;
-                    const name_bytes = self.slice(name_tok);
                     self.advance();
-                    if (!std.mem.eql(u8, name_bytes, "_")) {
+                    if (!std.mem.eql(u8, self.slice(name_tok), "_")) {
                         const bind_id = self.addPat(.Binding, .{
-                            .name = self.intern(name_bytes),
+                            .name = self.intern(self.slice(name_tok)),
                             .by_ref = false,
                             .is_mut = false,
                             .loc = self.toLocId(name_tok.loc),
@@ -1986,9 +1925,10 @@ fn parseStructField(self: *Parser) !cst.StructFieldId {
 
     const field_attrs = try self.parseOptionalAttributesRange(); // DOD version below
     const name_tok = self.cur;
-    switch (self.cur.tag) {
-        .identifier, .raw_identifier => self.advance(),
-        else => try self.expect(.identifier),
+    if (self.cur.tag == .identifier or self.cur.tag == .raw_identifier) {
+        self.advance();
+    } else {
+        try self.expect(.identifier);
     }
     const name = self.slice(name_tok);
     try self.expect(.colon);
@@ -2013,12 +1953,8 @@ fn parseStructFieldList(self: *Parser, end_tag: Token.Tag) !struct { range: cst.
     var trailing = false;
     while (self.cur.tag != end_tag and self.cur.tag != .eof) {
         try ids.append(self.gpa, try self.parseStructField());
-        if (!self.consumeIf(.comma)) {
-            trailing = false;
-            break;
-        }
-        trailing = true;
-        if (self.cur.tag == end_tag) break;
+        trailing = self.consumeIf(.comma);
+        if (!trailing or self.cur.tag == end_tag) break;
     }
     try self.expect(end_tag);
 
@@ -2141,11 +2077,9 @@ fn parseTensorType(self: *Parser) !cst.ExprId {
 
 /// Parse an optional initializer expression following `=` or type annotations.
 inline fn parseOptionalInitializer(self: *Parser, comptime mode: ParseMode) !cst.OptExprId {
-    if (self.cur.tag == .equal) {
-        self.advance();
-        return .some(try self.parseExpr(0, mode));
-    }
-    return .none();
+    if (self.cur.tag != .equal) return .none();
+    self.advance();
+    return .some(try self.parseExpr(0, mode));
 }
 
 // Parse @[ ... ] into Attribute rows; return OptRangeAttr.
@@ -2161,19 +2095,19 @@ fn parseOptionalAttributesRange(self: *Parser) !cst.OptRangeAttr {
 
     while (self.cur.tag != .rsquare and self.cur.tag != .eof) {
         const tok = self.cur;
-        var name_bytes: []const u8 = undefined;
-
-        if (tok.tag == .identifier) {
-            name_bytes = self.slice(tok);
+        const name_id: cst.StrId = if (tok.tag == .identifier) blk: {
+            const name = self.intern(self.slice(tok));
             self.advance();
-        } else if (Token.Tag.lexeme(tok.tag)) |lx| {
-            name_bytes = lx;
+            break :blk name;
+        } else if (Token.Tag.lexeme(tok.tag)) |lx| blk: {
+            const name = self.intern(lx);
             self.advance();
+            break :blk name;
         } else {
             self.errorNote(tok.loc, .expected_attribute_name, .{tok.tag}, tok.loc, .attribute_names_identifiers_or_keywords);
             self.sync(.rsquare);
             return error.UnexpectedToken;
-        }
+        };
 
         var val: cst.OptExprId = .none();
         if (self.cur.tag == .equal) {
@@ -2183,12 +2117,11 @@ fn parseOptionalAttributesRange(self: *Parser) !cst.OptRangeAttr {
             val = .some(try self.parseExpr(0, .expr));
         }
 
-        const id = self.cst_u.exprs.addAttrRow(.{
-            .name = self.intern(name_bytes),
+        try ids.append(self.gpa, self.cst_u.exprs.addAttrRow(.{
+            .name = name_id,
             .value = val,
             .loc = self.toLocId(tok.loc),
-        });
-        try ids.append(self.gpa, id);
+        }));
 
         if (!self.consumeIf(.comma)) break;
     }
@@ -2199,7 +2132,7 @@ fn parseOptionalAttributesRange(self: *Parser) !cst.OptRangeAttr {
 }
 
 //=================================================================
-// Array-like / Map (type or literal) — DOD
+// Array-like / Map (type or literal) —
 //=================================================================
 
 /// Parse either a map literal or a map type beginning with `key_expr`.
@@ -2225,25 +2158,21 @@ fn parseMapTypeOrLiteral(self: *Parser, key_expr: cst.ExprId, start_loc: cst.Loc
             defer kv_ids.deinit(self.gpa);
 
             // first pair (we already parsed K:V)
-            {
-                const kv = self.cst_u.exprs.addKeyValue(.{
-                    .key = key_expr,
-                    .value = value_expr,
-                    .loc = start_loc,
-                });
-                try kv_ids.append(self.gpa, kv);
-            }
+            try kv_ids.append(self.gpa, self.cst_u.exprs.addKeyValue(.{
+                .key = key_expr,
+                .value = value_expr,
+                .loc = start_loc,
+            }));
 
             while (self.cur.tag != .rsquare and self.cur.tag != .eof) {
                 const k = try self.parseExpr(0, .expr);
                 try self.expect(.colon);
                 const v = try self.parseExpr(0, .expr);
-                const kv = self.cst_u.exprs.addKeyValue(.{
+                try kv_ids.append(self.gpa, self.cst_u.exprs.addKeyValue(.{
                     .key = k,
                     .value = v,
                     .loc = self.toLocId(self.cur.loc),
-                });
-                try kv_ids.append(self.gpa, kv);
+                }));
                 if (!self.consumeIf(.comma)) break;
             }
             try self.expect(.rsquare);
@@ -2420,12 +2349,11 @@ fn parseAttributesList(self: *Parser) !cst.RangeOf(cst.AttributeId) {
             }
         }
 
-        const aid = self.cst_u.exprs.addAttrRow(.{
+        try ids.append(self.gpa, self.cst_u.exprs.addAttrRow(.{
             .name = name_id,
             .value = value_opt,
             .loc = attr_loc_id,
-        });
-        try ids.append(self.gpa, aid);
+        }));
 
         if (!self.consumeIf(.comma)) break;
     }
@@ -2440,26 +2368,19 @@ fn parseAttributesList(self: *Parser) !cst.RangeOf(cst.AttributeId) {
 
 /// Parse optional attributes (returning none when none present).
 fn parseOptionalAttributes(self: *Parser) !cst.OptRangeAttr {
-    if (self.cur.tag == .at) {
-        const r = try self.parseAttributesList();
-        return .some(r);
-    }
-    return .none();
+    if (self.cur.tag != .at) return .none();
+    return .some(try self.parseAttributesList());
 }
 
 /// Parse an annotated expression (`@annot(...)` or similar metadata).
 fn parseAnnotated(self: *Parser, comptime mode: ParseMode) !cst.ExprId {
-    const r = try self.parseAttributesList();
+    const some: cst.OptRangeAttr = .some(try self.parseAttributesList());
     while (self.cur.tag == .eos) self.advance();
 
     const id = try self.parseExpr(0, mode);
+    const row = self.cst_u.exprs.index.rows.items[id.toRaw()];
 
-    const idx = id.toRaw();
-    const kind = self.cst_u.kind(id);
-    const row = self.cst_u.exprs.index.rows.items[idx];
-    const some: cst.OptRangeAttr = .some(r);
-
-    switch (kind) {
+    switch (self.cst_u.kind(id)) {
         .Function => self.cst_u.exprs.Function.col("attrs")[row] = some,
         .StructType => self.cst_u.exprs.StructType.col("attrs")[row] = some,
         .EnumType => self.cst_u.exprs.EnumType.col("attrs")[row] = some,
@@ -2471,8 +2392,7 @@ fn parseAnnotated(self: *Parser, comptime mode: ParseMode) !cst.ExprId {
 
 /// Parse a parenthesized expression, handling type tuples or grouping.
 fn parseParenExpr(self: *Parser) !cst.ExprId {
-    const lparen_tok = self.cur;
-    const loc = self.toLocId(lparen_tok.loc);
+    const loc = self.toLocId(self.cur.loc);
     self.advance(); // "("
 
     return switch (self.cur.tag) {
@@ -2513,36 +2433,28 @@ fn parseParenExpr(self: *Parser) !cst.ExprId {
 
 /// Parse optional return type annotation after function parameters.
 inline fn parseOptionalReturnType(self: *Parser) !cst.OptExprId {
-    return switch (self.cur.tag) {
-        .lcurly, .eos => .none(),
-        else => blk: {
-            const ty = try self.parseExpr(0, .type);
-            break :blk .some(ty);
-        },
-    };
+    if (self.cur.tag == .lcurly or self.cur.tag == .eos) return .none();
+    return .some(try self.parseExpr(0, .type));
 }
 
 /// Parse an `extern` declaration attached to a function or variable.
-/// Parse an `extern` declaration specifier.
 fn parseExternDecl(self: *Parser) !cst.ExprId {
     self.advance(); // "extern"
     return switch (self.cur.tag) {
         .keyword_async => blk: {
             self.advance();
-            switch (self.cur.tag) {
-                .keyword_proc, .keyword_fn => break :blk try self.parseFunctionLike(self.cur.tag, true, true),
-                else => {
-                    self.errorNote(
-                        self.cur.loc,
-                        .expected_extern_async_function,
-                        .{self.cur.tag},
-                        null,
-                        .use_extern_async_proc_or_fn,
-                    );
-                    self.sync(.eos);
-                    return error.UnexpectedToken;
-                },
+            if (self.cur.tag == .keyword_proc or self.cur.tag == .keyword_fn) {
+                break :blk try self.parseFunctionLike(self.cur.tag, true, true);
             }
+            self.errorNote(
+                self.cur.loc,
+                .expected_extern_async_function,
+                .{self.cur.tag},
+                null,
+                .use_extern_async_proc_or_fn,
+            );
+            self.sync(.eos);
+            return error.UnexpectedToken;
         },
         .keyword_proc, .keyword_fn => try self.parseFunctionLike(self.cur.tag, true, false),
         .keyword_struct => try self.parseStructLikeType(.keyword_struct, true),
@@ -2564,8 +2476,7 @@ fn parseExternDecl(self: *Parser) !cst.ExprId {
 
 /// Parse a function or procedure declaration (optionally extern/async) identified by `tag`.
 fn parseFunctionLike(self: *Parser, tag: Token.Tag, comptime is_extern: bool, is_async: bool) !cst.ExprId {
-    const start_tok = self.cur;
-    const start_loc = self.toLocId(start_tok.loc);
+    const start_loc = self.toLocId(self.cur.loc);
 
     self.advance(); // "proc" or "fn"
     try self.expect(.lparen);
@@ -2573,53 +2484,54 @@ fn parseFunctionLike(self: *Parser, tag: Token.Tag, comptime is_extern: bool, is
     var param_ids: List(cst.ParamId) = .empty;
     defer param_ids.deinit(self.gpa);
 
-    var lcst_param_ty: cst.OptExprId = .none();
+    var last_param_ty: cst.OptExprId = .none();
     var trailing_params = false;
 
     while (self.cur.tag != .rparen and self.cur.tag != .eof) {
         const attr_range = try self.parseOptionalAttributes(); // DOD: returns OptRangeAttr
 
-        var is_comptime = false;
         const param_loc = self.toLocId(self.cur.loc);
+        const is_comptime = self.cur.tag == .keyword_comptime;
+        if (is_comptime) self.advance();
 
         // Start by parsing something expr-like; it may be a pattern or a bare type.
-        if (self.cur.tag == .keyword_comptime) {
-            is_comptime = true;
-            self.advance();
-        }
         const pat_expr = try self.parseExpr(0, .expr);
         var pat_opt: cst.OptExprId = .some(pat_expr);
         var ty_opt: cst.OptExprId = .none();
         var val_opt: cst.OptExprId = .none();
 
-        if (self.cur.tag == .colon) {
-            // name: Type [= default]
-            self.advance();
-            const ty = try self.parseExpr(0, .type);
-            ty_opt = .some(ty);
-            if (self.cur.tag == .equal) {
+        switch (self.cur.tag) {
+            .colon => {
+                // name: Type [= default]
                 self.advance();
-                const v = try self.parseExpr(0, .expr);
-                val_opt = .some(v);
-            }
-        } else if (self.cur.tag == .comma or self.cur.tag == .rparen) {
-            // Bare type param: treat the parsed node as the type, no pattern.
-            ty_opt = .some(pat_expr);
-            pat_opt = .none();
-        } else {
-            self.errorNote(
-                self.cur.loc,
-                .expected_parameter_type_or_end,
-                .{self.cur.tag},
-                null,
-                .use_colon_for_type_or_comma_or_paren,
-            );
-            self.sync(.eos);
-            return error.UnexpectedToken;
+                const ty = try self.parseExpr(0, .type);
+                ty_opt = .some(ty);
+                if (self.cur.tag == .equal) {
+                    self.advance();
+                    const v = try self.parseExpr(0, .expr);
+                    val_opt = .some(v);
+                }
+            },
+            .comma, .rparen => {
+                // Bare type param: treat the parsed node as the type, no pattern.
+                ty_opt = .some(pat_expr);
+                pat_opt = .none();
+            },
+            else => {
+                self.errorNote(
+                    self.cur.loc,
+                    .expected_parameter_type_or_end,
+                    .{self.cur.tag},
+                    null,
+                    .use_colon_for_type_or_comma_or_paren,
+                );
+                self.sync(.eos);
+                return error.UnexpectedToken;
+            },
         }
 
         // Remember the lcst param's type for variadic check.
-        lcst_param_ty = ty_opt;
+        last_param_ty = ty_opt;
 
         const pid = self.cst_u.exprs.addParamRow(.{
             .pat = pat_opt,
@@ -2631,13 +2543,8 @@ fn parseFunctionLike(self: *Parser, tag: Token.Tag, comptime is_extern: bool, is
         });
         try param_ids.append(self.gpa, pid);
 
-        if (self.cur.tag != .comma) {
-            trailing_params = false;
-            break;
-        }
-        self.advance();
-        trailing_params = true;
-        if (self.cur.tag == .rparen) break;
+        trailing_params = self.consumeIf(.comma);
+        if (!trailing_params or self.cur.tag == .rparen) break;
     }
     try self.expect(.rparen);
 
@@ -2660,8 +2567,8 @@ fn parseFunctionLike(self: *Parser, tag: Token.Tag, comptime is_extern: bool, is
 
     // Variadic if the lcst param type is `Any`.
     var is_variadic: bool = false;
-    if (!lcst_param_ty.isNone()) {
-        const lcst_ty = lcst_param_ty.unwrap();
+    if (!last_param_ty.isNone()) {
+        const lcst_ty = last_param_ty.unwrap();
         const k = self.cst_u.kind(lcst_ty);
         is_variadic = (k == .AnyType);
     }
@@ -2730,22 +2637,18 @@ fn parseMlir(self: *Parser) !cst.ExprId {
 
     var result_ty: cst.OptExprId = .none();
     var kind: cst.MlirKind = .Module;
-    switch (self.cur.tag) {
-        .identifier => {
-            const kw = self.slice(self.cur);
-            if (std.mem.eql(u8, kw, "attribute")) {
-                kind = .Attribute;
-                self.advance();
-            } else if (std.mem.eql(u8, kw, "op") or std.mem.eql(u8, kw, "operation")) {
-                kind = .Operation;
-                self.advance();
-            }
-        },
-        .keyword_type => {
-            kind = .Type;
+    if (self.cur.tag == .identifier) {
+        const kw = self.slice(self.cur);
+        if (std.mem.eql(u8, kw, "attribute")) {
+            kind = .Attribute;
             self.advance();
-        },
-        else => {},
+        } else if (std.mem.eql(u8, kw, "op") or std.mem.eql(u8, kw, "operation")) {
+            kind = .Operation;
+            self.advance();
+        }
+    } else if (self.cur.tag == .keyword_type) {
+        kind = .Type;
+        self.advance();
     }
 
     var args_range = cst.OptRangeOf(cst.ExprId).none();
@@ -2763,8 +2666,7 @@ fn parseMlir(self: *Parser) !cst.ExprId {
         result_ty = .some(t);
     }
 
-    if (self.cur.tag != .lcurly) try self.expect(.lcurly);
-    self.advance(); // consume '{'
+    if (self.cur.tag == .lcurly) self.advance() else try self.expect(.lcurly);
     const start_index = self.cur.loc.start;
     var depth: usize = 1;
     var end_index: usize = start_index; // will be set when we see the matching '}'
@@ -2788,14 +2690,8 @@ fn parseMlir(self: *Parser) !cst.ExprId {
         }
     }
 
-    // Build a "fake" token over the exact byte range so we can reuse `self.slice`.
-    const TokT = @TypeOf(self.cur); // same token type the parser already uses
     const mlir_loc: Loc = .{ .file_id = file_id, .start = start_index, .end = end_index - 1 };
-    const text_tok = TokT{
-        .tag = .invalid,
-        .loc = mlir_loc,
-    };
-    const raw_text = self.slice(text_tok);
+    const raw_text = self.src[start_index .. end_index - 1];
     const text = self.intern(raw_text);
 
     const pieces_range = try self.buildMlirPieces(raw_text);
@@ -2813,31 +2709,30 @@ fn buildMlirPieces(self: *Parser, raw_text: []const u8) !cst.RangeOf(cst.MlirPie
     var piece_ids = std.ArrayListUnmanaged(cst.MlirPieceId){};
     defer piece_ids.deinit(self.gpa);
 
+    const addPiece = struct {
+        fn call(p: *Parser, list: *std.ArrayListUnmanaged(cst.MlirPieceId), kind: cst.MlirPieceKind, text: []const u8) void {
+            const pid = p.cst_u.exprs.addMlirPieceRow(.{ .kind = kind, .text = p.intern(text) });
+            list.append(p.gpa, pid) catch @panic("OOM");
+        }
+    }.call;
+
     var literal_start: usize = 0;
     var i: usize = 0;
     while (i < raw_text.len) {
         // Backtick-delimited splice: `Ident`
         if (raw_text[i] == '`') {
             // Flush any preceding literal chunk first.
-            if (i > literal_start) {
-                const lit = self.intern(raw_text[literal_start..i]);
-                const pid = self.cst_u.exprs.addMlirPieceRow(.{ .kind = .literal, .text = lit });
-                piece_ids.append(self.gpa, pid) catch @panic("OOM");
-            }
+            if (i > literal_start) addPiece(self, &piece_ids, .literal, raw_text[literal_start..i]);
 
-            var j = i + 1;
-            while (j < raw_text.len and raw_text[j] != '`') : (j += 1) {}
-            if (j >= raw_text.len) {
+            const closing = std.mem.indexOfScalarPos(u8, raw_text, i + 1, '`') orelse {
                 // No closing backtick; treat the single backtick as literal.
-                const lit = self.intern(raw_text[i .. i + 1]);
-                const pid = self.cst_u.exprs.addMlirPieceRow(.{ .kind = .literal, .text = lit });
-                piece_ids.append(self.gpa, pid) catch @panic("OOM");
+                addPiece(self, &piece_ids, .literal, raw_text[i .. i + 1]);
                 i += 1;
                 literal_start = i;
                 continue;
-            }
+            };
 
-            const ident_text = raw_text[(i + 1)..j];
+            const ident_text = raw_text[(i + 1)..closing];
             // Only treat as splice if the content is a valid identifier.
             var is_ident = ident_text.len > 0 and isIdentStart(ident_text[0]);
             if (is_ident) {
@@ -2851,19 +2746,15 @@ fn buildMlirPieces(self: *Parser, raw_text: []const u8) !cst.RangeOf(cst.MlirPie
             }
 
             if (is_ident) {
-                const ident = self.intern(ident_text);
-                const sid = self.cst_u.exprs.addMlirPieceRow(.{ .kind = .splice, .text = ident });
-                piece_ids.append(self.gpa, sid) catch @panic("OOM");
+                addPiece(self, &piece_ids, .splice, ident_text);
                 // Resume scanning after the closing backtick.
-                literal_start = j + 1;
-                i = j + 1;
+                literal_start = closing + 1;
+                i = closing + 1;
                 continue;
             } else {
                 // Not a valid identifier — emit the whole backtick pair as literal.
-                const lit = self.intern(raw_text[i .. j + 1]);
-                const pid = self.cst_u.exprs.addMlirPieceRow(.{ .kind = .literal, .text = lit });
-                piece_ids.append(self.gpa, pid) catch @panic("OOM");
-                i = j + 1;
+                addPiece(self, &piece_ids, .literal, raw_text[i .. closing + 1]);
+                i = closing + 1;
                 literal_start = i;
                 continue;
             }
@@ -2872,14 +2763,11 @@ fn buildMlirPieces(self: *Parser, raw_text: []const u8) !cst.RangeOf(cst.MlirPie
     }
 
     if (literal_start < raw_text.len) {
-        const tail = self.intern(raw_text[literal_start..]);
-        const pid = self.cst_u.exprs.addMlirPieceRow(.{ .kind = .literal, .text = tail });
-        piece_ids.append(self.gpa, pid) catch @panic("OOM");
+        addPiece(self, &piece_ids, .literal, raw_text[literal_start..]);
     }
 
     if (piece_ids.items.len == 0) {
-        const empty_id = self.cst_u.exprs.addMlirPieceRow(.{ .kind = .literal, .text = self.intern("") });
-        piece_ids.append(self.gpa, empty_id) catch @panic("OOM");
+        addPiece(self, &piece_ids, .literal, "");
     }
 
     return self.cst_u.exprs.mlir_piece_pool.pushMany(self.gpa, piece_ids.items);
@@ -2896,7 +2784,7 @@ fn isIdentContinue(ch: u8) bool {
 }
 
 //=================================================================
-// Enums / Variants (DOD)
+// Enums / Variants
 //=================================================================
 
 /// Parse an `enum` type declaration, possibly marked `extern`.
@@ -2923,23 +2811,18 @@ inline fn parseEnumType(self: *Parser, comptime is_extern: bool) !cst.ExprId {
         const attrs = try self.parseOptionalAttributes(); // OptRangeAttr
         const tok = self.cur;
         try self.expect(.identifier);
-        const nm = self.slice(tok);
-        const name_id = self.intern(nm);
+        const name_id = self.intern(self.slice(tok));
         const val = try self.parseOptionalInitializer(.expr);
 
-        const fid = self.cst_u.exprs.addEnumFieldRow(.{
+        try field_ids.append(self.gpa, self.cst_u.exprs.addEnumFieldRow(.{
             .name = name_id,
             .value = val,
             .attrs = attrs,
             .loc = f_loc,
-        });
-        try field_ids.append(self.gpa, fid);
+        }));
 
-        if (!self.consumeIf(.comma)) {
-            trailing = false;
-            break;
-        }
-        trailing = true;
+        trailing = self.consumeIf(.comma);
+        if (!trailing) break;
         if (self.cur.tag == .rcurly) break;
     }
 
@@ -2990,6 +2873,18 @@ fn parseVariantLikeType(self: *Parser, comptime is_error: bool) !cst.ExprId {
         const nm = self.slice(nm_tok);
         const name_id = self.intern(nm);
 
+        var row = cst.Rows.VariantField{
+            .name = name_id,
+            .ty_tag = .none,
+            .tuple_elems = .empty(),
+            .struct_fields = .empty(),
+            .value = .none(),
+            .attrs = attrs,
+            .tuple_trailing_comma = false,
+            .struct_trailing_comma = false,
+            .loc = case_loc,
+        };
+
         switch (self.cur.tag) {
             .lparen => {
                 // Tuple-like payload
@@ -2997,94 +2892,45 @@ fn parseVariantLikeType(self: *Parser, comptime is_error: bool) !cst.ExprId {
                 var elems: List(cst.ExprId) = .empty;
                 defer elems.deinit(self.gpa);
 
-                var tuple_trailing = false;
                 if (self.cur.tag != .rparen) {
                     while (true) {
                         try elems.append(self.gpa, try self.parseExpr(0, .type));
-                        if (!self.consumeIf(.comma)) {
-                            tuple_trailing = false;
-                            break;
-                        }
-                        tuple_trailing = true;
+                        if (!self.consumeIf(.comma)) break;
+                        row.tuple_trailing_comma = true;
                         if (self.cur.tag == .rparen) break;
                     }
                 }
                 try self.expect(.rparen);
 
-                const value = try self.parseOptionalInitializer(.expr);
-                const tuple_range = if (elems.items.len == 0)
+                row.ty_tag = .Tuple;
+                row.value = try self.parseOptionalInitializer(.expr);
+                row.tuple_elems = if (elems.items.len == 0)
                     cst.RangeOf(cst.ExprId).empty()
                 else
                     self.cst_u.exprs.expr_pool.pushMany(self.gpa, elems.items);
-
-                const id = self.cst_u.exprs.addVariantFieldRow(.{
-                    .name = name_id,
-                    .ty_tag = .Tuple,
-                    .tuple_elems = tuple_range,
-                    .struct_fields = .empty(),
-                    .value = value,
-                    .attrs = attrs,
-                    .tuple_trailing_comma = tuple_trailing,
-                    .struct_trailing_comma = false,
-                    .loc = case_loc,
-                });
-                try vfield_ids.append(self.gpa, id);
-
-                if (self.cur.tag != .comma) {
-                    trailing = false;
-                    break;
-                }
-                self.advance();
-                trailing = true;
             },
             .lcurly => {
                 // Struct-like payload
                 self.advance();
                 const struct_fields = try self.parseStructFieldList(.rcurly); // returns RangeOf(StructFieldId)
-                const value = try self.parseOptionalInitializer(.expr);
-
-                const id = self.cst_u.exprs.addVariantFieldRow(.{
-                    .name = name_id,
-                    .ty_tag = .Struct,
-                    .tuple_elems = .empty(),
-                    .struct_fields = struct_fields.range,
-                    .struct_trailing_comma = struct_fields.trailing,
-                    .tuple_trailing_comma = false,
-                    .value = value,
-                    .attrs = attrs,
-                    .loc = case_loc,
-                });
-                try vfield_ids.append(self.gpa, id);
-
-                if (!self.consumeIf(.comma)) {
-                    trailing = false;
-                    break;
-                }
-                trailing = true;
+                row.ty_tag = .Struct;
+                row.struct_fields = struct_fields.range;
+                row.struct_trailing_comma = struct_fields.trailing;
+                row.value = try self.parseOptionalInitializer(.expr);
             },
             else => {
                 // No payload
-                const value = try self.parseOptionalInitializer(.expr);
-                const id = self.cst_u.exprs.addVariantFieldRow(.{
-                    .name = name_id,
-                    .ty_tag = .none,
-                    .tuple_elems = .empty(),
-                    .struct_fields = .empty(),
-                    .value = value,
-                    .attrs = attrs,
-                    .tuple_trailing_comma = false,
-                    .struct_trailing_comma = false,
-                    .loc = case_loc,
-                });
-                try vfield_ids.append(self.gpa, id);
-
-                if (!self.consumeIf(.comma)) {
-                    trailing = false;
-                    break;
-                }
-                trailing = true;
+                row.value = try self.parseOptionalInitializer(.expr);
             },
         }
+
+        try vfield_ids.append(self.gpa, self.cst_u.exprs.addVariantFieldRow(row));
+
+        if (!self.consumeIf(.comma)) {
+            trailing = false;
+            break;
+        }
+        trailing = true;
     }
 
     try self.expect(.rcurly);

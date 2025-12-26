@@ -5,7 +5,6 @@ const comp = @import("comptime.zig");
 const call_resolution = @import("call_resolution.zig");
 
 // DOD Type Store
-/// TypeTag struct definition used by the compiler.
 pub const TypeTag = struct {};
 
 pub const max_tensor_rank: usize = 4;
@@ -25,36 +24,14 @@ pub const StrId = cst.StrId;
 
 /// MlirSpliceInfo union definition used by the compiler.
 pub const MlirSpliceInfo = union(enum) {
-    decl: struct {
-        decl_id: ast.DeclId,
-        name: ast.StrId,
-    },
-    value_param: struct {
-        param_id: ast.ParamId,
-        name: ast.StrId,
-        ty: TypeId,
-    },
-    type_param: struct {
-        param_id: ast.ParamId,
-        name: ast.StrId,
-        ty: TypeId,
-    },
+    decl: struct { decl_id: ast.DeclId, name: ast.StrId },
+    value_param: struct { param_id: ast.ParamId, name: ast.StrId, ty: TypeId },
+    type_param: struct { param_id: ast.ParamId, name: ast.StrId, ty: TypeId },
 };
 
-/// MethodReceiverKind enum definition used by the compiler.
-pub const MethodReceiverKind = enum {
-    none,
-    value,
-    pointer,
-    pointer_const,
-};
+pub const MethodReceiverKind = enum { none, value, pointer, pointer_const };
+pub const BuiltinMethod = enum { dynarray_append };
 
-/// BuiltinMethod enum definition used by the compiler.
-pub const BuiltinMethod = enum {
-    dynarray_append,
-};
-
-/// MethodEntry struct definition used by the compiler.
 pub const MethodEntry = struct {
     owner_type: TypeId,
     method_name: ast.StrId,
@@ -67,7 +44,6 @@ pub const MethodEntry = struct {
     builtin: ?BuiltinMethod = null,
 };
 
-/// MethodBinding struct definition used by the compiler.
 pub const MethodBinding = struct {
     owner_type: TypeId,
     method_name: ast.StrId,
@@ -81,48 +57,31 @@ pub const MethodBinding = struct {
     builtin: ?BuiltinMethod = null,
 };
 
-/// MethodKey struct definition used by the compiler.
 pub const MethodKey = struct {
     owner: usize,
     name: usize,
 };
 
-/// Instructions for `lower_tir` on how to handle a specific function call.
 pub const CallSpecialization = struct {
-    /// The concrete function ID to call instead of the one in the AST.
-    target_decl: u32, // represents ast.DeclId
-    /// File id of the AST that owns `target_decl`.
+    target_decl: u32,
     target_file_id: u32 = std.math.maxInt(u32),
-    /// If true, the backend must create a tuple from the tail arguments before calling.
     pack_args: bool = false,
-    /// The index in the argument list where packing begins.
     pack_start_index: usize = 0,
-    /// If true, this call uses the spread `..` operator on a tuple,
-    /// requiring the backend to explode the tuple onto the stack/registers.
     is_spread: bool = false,
 };
 
-/// Computes a hash for specialization parameters.
 pub fn hashSpecialization(original_decl_id: u32, param_types: []const TypeId, comptime_hashes: []const u64) u64 {
     var hasher: std.hash.Fnv1a_64 = .init();
     hasher.update(std.mem.asBytes(&original_decl_id));
-    for (param_types) |pt| {
-        const raw = pt.toRaw();
-        hasher.update(std.mem.asBytes(&raw));
-    }
-    for (comptime_hashes) |h| {
-        hasher.update(std.mem.asBytes(&h));
-    }
+    for (param_types) |pt| hasher.update(std.mem.asBytes(&pt.toRaw()));
+    for (comptime_hashes) |h| hasher.update(std.mem.asBytes(&h));
     return hasher.final();
 }
 
-/// Key used to cache specializations so we don't generate the same function twice.
 pub const SpecializationKey = struct {
     digest: u64,
     original_decl_id: u32,
-    /// The concrete types mapped to the function's parameters for this specific call.
     param_types: []const TypeId,
-    /// Hashes of comptime parameter values (0 for non-comptime params).
     comptime_hashes: []const u64,
 
     pub fn hash(self: SpecializationKey) u64 {
@@ -133,14 +92,11 @@ pub const SpecializationKey = struct {
         if (self.original_decl_id != other.original_decl_id) return false;
         if (self.param_types.len != other.param_types.len) return false;
         if (self.comptime_hashes.len != other.comptime_hashes.len) return false;
-        for (self.param_types, other.param_types) |a, b| {
-            if (!a.eq(b)) return false;
-        }
+        for (self.param_types, other.param_types) |a, b| if (!a.eq(b)) return false;
         return std.mem.eql(u64, self.comptime_hashes, other.comptime_hashes);
     }
 };
 
-/// Hash/equality context for `SpecializationKey` that hashes parameter contents.
 pub const SpecializationKeyContext = struct {
     pub fn hash(_: @This(), key: SpecializationKey) u64 {
         return key.hash();
@@ -150,32 +106,31 @@ pub const SpecializationKeyContext = struct {
     }
 };
 
-/// makeMethodKey type system helper.
 fn makeMethodKey(owner: TypeId, name: ast.StrId) MethodKey {
     return .{ .owner = owner.toRaw(), .name = name.toRaw() };
 }
 
-/// StoredComptimeBinding struct definition used by the compiler.
-const StoredComptimeBinding = struct {
-    ty: TypeId,
-    value: comp.ComptimeValue,
-};
-
+const StoredComptimeBinding = struct { ty: TypeId, value: comp.ComptimeValue };
 pub const ComptimeBindingVisitor = fn (?*anyopaque, ast.StrId, comp.ComptimeValue, TypeId) anyerror!void;
 
-/// TypeInfo struct definition used by the compiler.
 pub const TypeInfo = struct {
+    arena: *std.heap.ArenaAllocator,
+    backing_gpa: std.mem.Allocator,
     gpa: std.mem.Allocator,
     store: *TypeStore,
+
     expr_types: std.ArrayListUnmanaged(?TypeId) = .{},
     decl_types: std.ArrayListUnmanaged(?TypeId) = .{},
     field_index_for_expr: std.AutoArrayHashMapUnmanaged(u32, u32) = .{},
     comptime_values: std.AutoArrayHashMapUnmanaged(ast.ExprId, comp.ComptimeValue) = .{},
     comptime_bindings: std.AutoArrayHashMapUnmanaged(ast.StrId, StoredComptimeBinding) = .{},
+
     method_bindings: std.AutoArrayHashMapUnmanaged(u32, MethodBinding) = .{},
     method_expr_snapshots: std.AutoArrayHashMapUnmanaged(MethodKey, MethodExprSnapshot) = .{},
+
     specialization_expr_snapshots: std.AutoArrayHashMapUnmanaged(u32, MethodExprSnapshot) = .{},
     specialization_call_snapshots: std.AutoArrayHashMapUnmanaged(u32, CallSpecSnapshot) = .{},
+
     mlir_splice_info: std.AutoArrayHashMapUnmanaged(u32, MlirSpliceInfo) = .{},
     mlir_splice_values: std.AutoArrayHashMapUnmanaged(u32, comp.ComptimeValue) = .{},
     exports: std.AutoArrayHashMapUnmanaged(ast.StrId, ExportEntry) = .{},
@@ -184,107 +139,34 @@ pub const TypeInfo = struct {
     call_specializations: std.AutoArrayHashMapUnmanaged(u32, CallSpecialization) = .{},
     synthetic_decls: std.ArrayListUnmanaged(u32) = .{},
 
-    /// ExportEntry struct definition used by the compiler.
-    pub const ExportEntry = struct {
-        ty: TypeId,
-        decl_id: ast.DeclId,
-    };
+    pub const ExportEntry = struct { ty: TypeId, decl_id: ast.DeclId };
+    const MethodExprSnapshot = struct { expr_ids: []u32, expr_types: []TypeId };
+    const CallSpecSnapshot = struct { expr_ids: []u32, specs: []CallSpecialization, comptime_snapshot: ?ComptimeBindingSnapshot = null };
+    const ComptimeBindingSnapshot = struct { names: []ast.StrId, types: []TypeId, values: []comp.ComptimeValue };
 
-    /// MethodExprSnapshot struct definition used by the compiler.
-    const MethodExprSnapshot = struct {
-        expr_ids: []u32,
-        expr_types: []TypeId,
-    };
-
-    const CallSpecSnapshot = struct {
-        expr_ids: []u32,
-        specs: []CallSpecialization,
-        comptime_snapshot: ?ComptimeBindingSnapshot = null,
-    };
-
-    const ComptimeBindingSnapshot = struct {
-        names: []ast.StrId,
-        types: []TypeId,
-        values: []comp.ComptimeValue,
-    };
-
-    /// init type system helper.
     pub fn init(gpa: std.mem.Allocator, store: *TypeStore) TypeInfo {
+        const arena = gpa.create(std.heap.ArenaAllocator) catch @panic("OOM");
+        arena.* = std.heap.ArenaAllocator.init(gpa);
         return .{
-            .gpa = gpa,
+            .arena = arena,
+            .backing_gpa = gpa,
+            .gpa = arena.allocator(),
             .store = store,
-            .comptime_values = .{},
-            .comptime_bindings = .{},
-            .mlir_splice_info = .{},
-            .mlir_splice_values = .{},
         };
     }
-    /// deinit type system helper.
+
     pub fn deinit(self: *TypeInfo) void {
-        self.expr_types.deinit(self.gpa);
-        self.decl_types.deinit(self.gpa);
-        self.field_index_for_expr.deinit(self.gpa);
-        var cv_it = self.comptime_values.iterator();
-        while (cv_it.next()) |value_ptr| {
-            self.destroyComptimeValue(value_ptr.value_ptr);
-        }
-        self.comptime_values.deinit(self.gpa);
-        var cb_it = self.comptime_bindings.iterator();
-        while (cb_it.next()) |entry| {
-            self.destroyStoredComptimeBinding(entry.value_ptr);
-        }
-        self.comptime_bindings.deinit(self.gpa);
-        self.method_bindings.deinit(self.gpa);
-        var snapshot_it = self.method_expr_snapshots.iterator();
-        while (snapshot_it.next()) |entry| {
-            self.gpa.free(entry.value_ptr.expr_ids);
-            self.gpa.free(entry.value_ptr.expr_types);
-        }
-        self.method_expr_snapshots.deinit(self.gpa);
-        var spec_snapshot_it = self.specialization_expr_snapshots.iterator();
-        while (spec_snapshot_it.next()) |entry| {
-            self.gpa.free(entry.value_ptr.expr_ids);
-            self.gpa.free(entry.value_ptr.expr_types);
-        }
-        self.specialization_expr_snapshots.deinit(self.gpa);
-        var call_snapshot_it = self.specialization_call_snapshots.iterator();
-        while (call_snapshot_it.next()) |entry| {
-            self.gpa.free(entry.value_ptr.expr_ids);
-            self.gpa.free(entry.value_ptr.specs);
-            if (entry.value_ptr.comptime_snapshot) |c| {
-                for (c.values) |*v| v.destroy(self.gpa);
-                self.gpa.free(c.names);
-                self.gpa.free(c.types);
-                self.gpa.free(c.values);
-            }
-        }
-        self.specialization_call_snapshots.deinit(self.gpa);
-        self.mlir_splice_info.deinit(self.gpa);
-        var splice_values_it = self.mlir_splice_values.iterator();
-        while (splice_values_it.next()) |entry| {
-            self.destroyComptimeValue(entry.value_ptr);
-        }
-        self.mlir_splice_values.deinit(self.gpa);
-        self.exports.deinit(self.gpa);
-        self.specialized_calls.deinit(self.gpa);
-        self.spread_ranges.deinit(self.gpa);
-        self.call_specializations.deinit(self.gpa);
-        self.synthetic_decls.deinit(self.gpa);
+        self.arena.deinit();
+        self.backing_gpa.destroy(self.arena);
     }
 
-    /// print type system helper.
     pub fn print(self: *TypeInfo) void {
-        std.debug.print("TypeInfo:\n", .{});
-        std.debug.print(" Expr types:\n", .{});
+        std.debug.print("TypeInfo:\n Expr types:\n", .{});
         var buffer: [1024]u8 = undefined;
         var writer = std.fs.File.stdout().writer(&buffer);
         for (self.expr_types.items, 0..) |value, i| {
             writer.interface.print("  {}: ", .{i}) catch {};
-            if (value) |ty| {
-                self.store.fmt(ty, &writer.interface) catch {};
-            } else {
-                writer.interface.print("null", .{}) catch {};
-            }
+            if (value) |ty| self.store.fmt(ty, &writer.interface) catch {} else writer.interface.print("null", .{}) catch {};
             writer.interface.print("\n", .{}) catch {};
         }
         writer.interface.flush() catch {};
@@ -292,145 +174,92 @@ pub const TypeInfo = struct {
         std.debug.print("\n Decl types:\n", .{});
         for (self.decl_types.items, 0..) |value, i| {
             writer.interface.print("  {}: ", .{i}) catch {};
-            if (value) |ty| {
-                self.store.fmt(ty, &writer.interface) catch {};
-            } else {
-                writer.interface.print("null", .{}) catch {};
-            }
+            if (value) |ty| self.store.fmt(ty, &writer.interface) catch {} else writer.interface.print("null", .{}) catch {};
             writer.interface.print("\n", .{}) catch {};
         }
         writer.interface.flush() catch {};
     }
 
-    /// Ensure we have room up to (and including) `expr_id.toRaw()`
-    pub fn ensureExpr(self: *TypeInfo, gpa: std.mem.Allocator, expr_id: ast.ExprId) !void {
+    pub fn ensureExpr(self: *TypeInfo, _: std.mem.Allocator, expr_id: ast.ExprId) !void {
         const need = expr_id.toRaw() + 1;
-
         if (self.expr_types.items.len < need) {
-            try self.expr_types.ensureTotalCapacity(gpa, need);
+            try self.expr_types.ensureTotalCapacity(self.arena.allocator(), need);
             while (self.expr_types.items.len < need) self.expr_types.appendAssumeCapacity(null);
         }
         if (self.field_index_for_expr.count() < need) {
-            try self.field_index_for_expr.ensureTotalCapacity(gpa, need);
+            try self.field_index_for_expr.ensureTotalCapacity(self.arena.allocator(), need);
             var i = self.field_index_for_expr.count();
-            while (i < need) : (i += 1) {
-                try self.field_index_for_expr.put(gpa, @intCast(i), 0xFFFF_FFFF);
-            }
+            while (i < need) : (i += 1) try self.field_index_for_expr.put(self.arena.allocator(), @intCast(i), 0xFFFF_FFFF);
         }
     }
 
-    /// setExprType type system helper.
     pub fn setExprType(self: *TypeInfo, expr_id: ast.ExprId, ty: TypeId) void {
         self.expr_types.items[expr_id.toRaw()] = ty;
     }
 
-    /// setFieldIndex type system helper.
     pub fn setFieldIndex(self: *TypeInfo, expr_id: ast.ExprId, idx: u32) !void {
-        try self.field_index_for_expr.put(self.gpa, expr_id.toRaw(), idx);
+        try self.field_index_for_expr.put(self.arena.allocator(), expr_id.toRaw(), idx);
     }
 
-    /// getFieldIndex type system helper.
     pub fn getFieldIndex(self: *const TypeInfo, expr_id: ast.ExprId) ?u32 {
         const v = self.field_index_for_expr.get(expr_id.toRaw()) orelse 0xFFFF_FFFF;
         return if (v == 0xFFFF_FFFF) null else v;
     }
 
-    /// clearFieldIndex type system helper.
     pub fn clearFieldIndex(self: *TypeInfo, expr_id: ast.ExprId) !void {
-        try self.field_index_for_expr.put(self.gpa, expr_id.toRaw(), 0xFFFF_FFFF);
+        try self.field_index_for_expr.put(self.arena.allocator(), expr_id.toRaw(), 0xFFFF_FFFF);
     }
 
-    /// getMethodBinding type system helper.
     pub fn getMethodBinding(self: *const TypeInfo, expr_id: ast.ExprId) ?MethodBinding {
         return self.method_bindings.get(expr_id.toRaw());
     }
 
-    /// setMethodBinding type system helper.
     pub fn setMethodBinding(self: *TypeInfo, expr_id: ast.ExprId, binding: MethodBinding) !void {
-        const gop = try self.method_bindings.getOrPut(self.gpa, expr_id.toRaw());
-        gop.value_ptr.* = binding;
+        try self.method_bindings.put(self.arena.allocator(), expr_id.toRaw(), binding);
     }
 
-    /// storeMethodExprSnapshot type system helper.
-    pub fn storeMethodExprSnapshot(
-        self: *TypeInfo,
-        owner: TypeId,
-        method_name: ast.StrId,
-        expr_ids: []const u32,
-        expr_types: []const TypeId,
-    ) !void {
-        std.debug.assert(expr_ids.len == expr_types.len);
-        const key = makeMethodKey(owner, method_name);
-        const gop = try self.method_expr_snapshots.getOrPut(self.gpa, key);
-        if (gop.found_existing) {
-            self.gpa.free(gop.value_ptr.expr_ids);
-            self.gpa.free(gop.value_ptr.expr_types);
-        }
-        const ids_copy = try self.gpa.alloc(u32, expr_ids.len);
-        const tys_copy = try self.gpa.alloc(TypeId, expr_types.len);
-        std.mem.copyForwards(u32, ids_copy, expr_ids);
-        std.mem.copyForwards(TypeId, tys_copy, expr_types);
-        gop.value_ptr.* = .{ .expr_ids = ids_copy, .expr_types = tys_copy };
+    fn updateSnapshot(self: *TypeInfo, map: anytype, key: anytype, val: anytype) !void {
+        const gop = try map.getOrPut(self.arena.allocator(), key);
+        gop.value_ptr.* = val;
     }
 
-    /// applyMethodExprSnapshot type system helper.
-    pub fn applyMethodExprSnapshot(
-        self: *TypeInfo,
-        owner: TypeId,
-        method_name: ast.StrId,
-    ) bool {
-        const key = makeMethodKey(owner, method_name);
-        const snapshot = self.method_expr_snapshots.get(key) orelse return false;
-        var i: usize = 0;
-        while (i < snapshot.expr_ids.len) : (i += 1) {
-            const raw = snapshot.expr_ids[i];
-            if (raw >= self.expr_types.items.len) continue;
-            self.expr_types.items[raw] = snapshot.expr_types[i];
+    fn cloneSlice(self: *TypeInfo, comptime T: type, slice: []const T) ![]T {
+        const copy = try self.arena.allocator().alloc(T, slice.len);
+        @memcpy(copy, slice);
+        return copy;
+    }
+
+    pub fn storeMethodExprSnapshot(self: *TypeInfo, owner: TypeId, method_name: ast.StrId, expr_ids: []const u32, expr_types: []const TypeId) !void {
+        const val = MethodExprSnapshot{
+            .expr_ids = try self.cloneSlice(u32, expr_ids),
+            .expr_types = try self.cloneSlice(TypeId, expr_types),
+        };
+        try self.updateSnapshot(&self.method_expr_snapshots, makeMethodKey(owner, method_name), val);
+    }
+
+    pub fn applyMethodExprSnapshot(self: *TypeInfo, owner: TypeId, method_name: ast.StrId) bool {
+        const snapshot = self.method_expr_snapshots.get(makeMethodKey(owner, method_name)) orelse return false;
+        for (snapshot.expr_ids, snapshot.expr_types) |raw, ty| {
+            if (raw < self.expr_types.items.len) self.expr_types.items[raw] = ty;
         }
         return true;
     }
 
-    /// storeSpecializationExprSnapshot type system helper.
-    pub fn storeSpecializationExprSnapshot(
-        self: *TypeInfo,
-        decl_id: ast.DeclId,
-        expr_ids: []const u32,
-        expr_types: []const TypeId,
-    ) !void {
-        std.debug.assert(expr_ids.len == expr_types.len);
-        const gop = try self.specialization_expr_snapshots.getOrPut(self.gpa, decl_id.toRaw());
-        if (gop.found_existing) {
-            self.gpa.free(gop.value_ptr.expr_ids);
-            self.gpa.free(gop.value_ptr.expr_types);
-        }
-        const ids_copy = try self.gpa.alloc(u32, expr_ids.len);
-        const tys_copy = try self.gpa.alloc(TypeId, expr_types.len);
-        std.mem.copyForwards(u32, ids_copy, expr_ids);
-        std.mem.copyForwards(TypeId, tys_copy, expr_types);
-        gop.value_ptr.* = .{ .expr_ids = ids_copy, .expr_types = tys_copy };
+    pub fn storeSpecializationExprSnapshot(self: *TypeInfo, decl_id: ast.DeclId, expr_ids: []const u32, expr_types: []const TypeId) !void {
+        const val = MethodExprSnapshot{
+            .expr_ids = try self.cloneSlice(u32, expr_ids),
+            .expr_types = try self.cloneSlice(TypeId, expr_types),
+        };
+        try self.updateSnapshot(&self.specialization_expr_snapshots, decl_id.toRaw(), val);
     }
 
-    pub fn storeSpecializationCallSnapshot(
-        self: *TypeInfo,
-        decl_id: ast.DeclId,
-        expr_ids: []const u32,
-        specs: []const CallSpecialization,
-    ) !void {
-        std.debug.assert(expr_ids.len == specs.len);
-        const gop = try self.specialization_call_snapshots.getOrPut(self.gpa, decl_id.toRaw());
+    pub fn storeSpecializationCallSnapshot(self: *TypeInfo, decl_id: ast.DeclId, expr_ids: []const u32, specs: []const CallSpecialization) !void {
+        const gop = try self.specialization_call_snapshots.getOrPut(self.arena.allocator(), decl_id.toRaw());
         const existing_comptime = if (gop.found_existing) gop.value_ptr.comptime_snapshot else null;
-        if (gop.found_existing) {
-            self.gpa.free(gop.value_ptr.expr_ids);
-            self.gpa.free(gop.value_ptr.specs);
-        }
-        const ids_copy = try self.gpa.alloc(u32, expr_ids.len);
-        const specs_copy = try self.gpa.alloc(CallSpecialization, specs.len);
-        std.mem.copyForwards(u32, ids_copy, expr_ids);
-        std.mem.copyForwards(CallSpecialization, specs_copy, specs);
-        gop.value_ptr.* = .{ .expr_ids = ids_copy, .specs = specs_copy, .comptime_snapshot = existing_comptime };
+
+        gop.value_ptr.* = .{ .expr_ids = try self.cloneSlice(u32, expr_ids), .specs = try self.cloneSlice(CallSpecialization, specs), .comptime_snapshot = existing_comptime };
     }
 
-    /// getSpecializationExprSnapshot type system helper.
     pub fn getSpecializationExprSnapshot(self: *const TypeInfo, decl_id: ast.DeclId) ?MethodExprSnapshot {
         return self.specialization_expr_snapshots.get(decl_id.toRaw());
     }
@@ -439,248 +268,104 @@ pub const TypeInfo = struct {
         return self.specialization_call_snapshots.get(decl_id.toRaw());
     }
 
-    pub fn storeSpecializationComptimeSnapshot(
-        self: *TypeInfo,
-        gpa: std.mem.Allocator,
-        decl_id: ast.DeclId,
-        names: []const ast.StrId,
-        types: []const TypeId,
-        values: []const comp.ComptimeValue,
-    ) !void {
-        std.debug.assert(names.len == types.len and types.len == values.len);
-        const key = decl_id.toRaw();
-        const gop = try self.specialization_call_snapshots.getOrPut(gpa, key);
-        if (gop.found_existing) {
-            if (gop.value_ptr.comptime_snapshot) |c| {
-                for (c.values) |*v| v.destroy(gpa);
-                gpa.free(c.names);
-                gpa.free(c.types);
-                gpa.free(c.values);
-            }
-        } else {
+    pub fn storeSpecializationComptimeSnapshot(self: *TypeInfo, _: std.mem.Allocator, decl_id: ast.DeclId, names: []const ast.StrId, types: []const TypeId, values: []const comp.ComptimeValue) !void {
+        const gop = try self.specialization_call_snapshots.getOrPut(self.arena.allocator(), decl_id.toRaw());
+        if (!gop.found_existing) {
             gop.value_ptr.* = .{ .expr_ids = &.{}, .specs = &.{}, .comptime_snapshot = null };
         }
-        const name_copy = try gpa.alloc(ast.StrId, names.len);
-        const type_copy = try gpa.alloc(TypeId, types.len);
-        const value_copy = try gpa.alloc(comp.ComptimeValue, values.len);
-        errdefer gpa.free(name_copy);
-        errdefer gpa.free(type_copy);
-        errdefer gpa.free(value_copy);
-        @memcpy(name_copy, names);
-        @memcpy(type_copy, types);
-        var idx: usize = 0;
-        while (idx < values.len) : (idx += 1) {
-            value_copy[idx] = try comp.cloneComptimeValue(gpa, values[idx]);
-        }
+
+        const val_copy = try self.arena.allocator().alloc(comp.ComptimeValue, values.len);
+        for (values, 0..) |v, i| val_copy[i] = try comp.cloneComptimeValue(self.arena.allocator(), v);
+
         gop.value_ptr.comptime_snapshot = .{
-            .names = name_copy,
-            .types = type_copy,
-            .values = value_copy,
+            .names = try self.cloneSlice(ast.StrId, names),
+            .types = try self.cloneSlice(TypeId, types),
+            .values = val_copy,
         };
     }
 
     pub fn getSpecializationComptimeSnapshot(self: *const TypeInfo, decl_id: ast.DeclId) ?ComptimeBindingSnapshot {
-        if (self.specialization_call_snapshots.get(decl_id.toRaw())) |snap| {
-            return snap.comptime_snapshot;
-        }
-        return null;
+        return if (self.specialization_call_snapshots.get(decl_id.toRaw())) |snap| snap.comptime_snapshot else null;
     }
 
-    /// addExport type system helper.
     pub fn addExport(self: *TypeInfo, name: ast.StrId, ty: TypeId, decl_id: ast.DeclId) !void {
-        const gop = try self.exports.getOrPut(self.gpa, name);
-        gop.value_ptr.* = .{ .ty = ty, .decl_id = decl_id };
+        try self.exports.put(self.arena.allocator(), name, .{ .ty = ty, .decl_id = decl_id });
     }
-
-    /// getExport type system helper.
     pub fn getExport(self: *const TypeInfo, name: ast.StrId) ?ExportEntry {
         return self.exports.get(name);
     }
 
-    /// markSpecializedCall type system helper.
-    pub fn markSpecializedCall(self: *TypeInfo, gpa: std.mem.Allocator, expr_id: ast.ExprId, ctx: call_resolution.FunctionDeclContext) !void {
-        const key = expr_id.toRaw();
-        const gop = try self.specialized_calls.getOrPut(gpa, key);
-        gop.value_ptr.* = ctx;
+    pub fn markSpecializedCall(self: *TypeInfo, _: std.mem.Allocator, expr_id: ast.ExprId, ctx: call_resolution.FunctionDeclContext) !void {
+        try self.specialized_calls.put(self.arena.allocator(), expr_id.toRaw(), ctx);
     }
 
-    /// Maps a Call ExprId to its specialization details for lowering.
-    pub fn setCallSpecialization(self: *TypeInfo, gpa: std.mem.Allocator, expr_id: ast.ExprId, spec: CallSpecialization) !void {
-        try self.call_specializations.put(gpa, expr_id.toRaw(), spec);
+    pub fn setCallSpecialization(self: *TypeInfo, _: std.mem.Allocator, expr_id: ast.ExprId, spec: CallSpecialization) !void {
+        try self.call_specializations.put(self.arena.allocator(), expr_id.toRaw(), spec);
     }
 
-    /// markRangeSpread type system helper.
-    pub fn markRangeSpread(self: *TypeInfo, gpa: std.mem.Allocator, expr_id: ast.ExprId) !void {
-        try self.spread_ranges.put(gpa, expr_id.toRaw(), {});
+    pub fn markRangeSpread(self: *TypeInfo, _: std.mem.Allocator, expr_id: ast.ExprId) !void {
+        try self.spread_ranges.put(self.arena.allocator(), expr_id.toRaw(), {});
     }
-
-    /// isRangeSpread type system helper.
     pub fn isRangeSpread(self: *const TypeInfo, expr_id: ast.ExprId) bool {
         return self.spread_ranges.contains(expr_id.toRaw());
     }
-
-    /// getSpecializedCall type system helper.
     pub fn getSpecializedCall(self: *const TypeInfo, expr_id: ast.ExprId) ?call_resolution.FunctionDeclContext {
         return self.specialized_calls.get(expr_id.toRaw());
     }
 
-    /// hasComptimeValue type system helper.
     pub fn hasComptimeValue(self: *const TypeInfo, expr_id: ast.ExprId) bool {
-        return self.comptime_values.get(expr_id) != null;
+        return self.comptime_values.contains(expr_id);
     }
-
-    /// getComptimeValue type system helper.
     pub fn getComptimeValue(self: *const TypeInfo, expr_id: ast.ExprId) ?*comp.ComptimeValue {
-        return if (self.comptime_values.getEntry(expr_id)) |entry| entry.value_ptr else null;
+        return self.comptime_values.getPtr(expr_id);
     }
 
-    /// setComptimeValue type system helper.
     pub fn setComptimeValue(self: *TypeInfo, expr_id: ast.ExprId, value: comp.ComptimeValue) !void {
-        const gop = try self.comptime_values.getOrPut(self.gpa, expr_id);
-        if (gop.found_existing) {
-            self.destroyComptimeValue(gop.value_ptr);
-        }
-        gop.value_ptr.* = value;
+        try self.comptime_values.put(self.arena.allocator(), expr_id, value);
     }
 
-    /// setComptimeBinding type system helper.
     pub fn setComptimeBinding(self: *TypeInfo, name: ast.StrId, ty: TypeId, value: comp.ComptimeValue) !void {
-        const gop = try self.comptime_bindings.getOrPut(self.gpa, name);
-        if (gop.found_existing) {
-            self.destroyStoredComptimeBinding(gop.value_ptr);
-        }
-        gop.value_ptr.* = StoredComptimeBinding{ .ty = ty, .value = value };
+        try self.comptime_bindings.put(self.arena.allocator(), name, .{ .ty = ty, .value = value });
     }
 
-    /// lookupComptimeBindingType returns a stored type alias or `null`.
     pub fn lookupComptimeBindingType(self: *const TypeInfo, name: ast.StrId) ?TypeId {
-        if (self.comptime_bindings.get(name)) |entry| {
-            return entry.ty;
-        }
-        return null;
+        return if (self.comptime_bindings.get(name)) |e| e.ty else null;
     }
 
-    /// cloneComptimeBindingValue duplicates a stored value alias so callers can own it.
-    pub fn cloneComptimeBindingValue(
-        self: *const TypeInfo,
-        gpa: std.mem.Allocator,
-        name: ast.StrId,
-    ) anyerror!?comp.ComptimeValue {
-        if (self.comptime_bindings.get(name)) |entry| {
-            return try comp.cloneComptimeValue(gpa, entry.value);
-        }
-        return null;
+    pub fn cloneComptimeBindingValue(self: *const TypeInfo, gpa: std.mem.Allocator, name: ast.StrId) anyerror!?comp.ComptimeValue {
+        return if (self.comptime_bindings.get(name)) |e| try comp.cloneComptimeValue(gpa, e.value) else null;
     }
 
     pub fn removeComptimeBinding(self: *TypeInfo, name: ast.StrId) void {
-        if (self.comptime_bindings.fetchSwapRemove(name)) |removed| {
-            var item = removed.value;
-            self.destroyStoredComptimeBinding(&item);
-        }
+        _ = self.comptime_bindings.fetchSwapRemove(name);
     }
 
-    /// forEachComptimeBinding type system helper.
-    pub fn forEachComptimeBinding(
-        self: *TypeInfo,
-        gpa: std.mem.Allocator,
-        ctx: ?*anyopaque,
-        visitor: ComptimeBindingVisitor,
-    ) anyerror!void {
+    pub fn forEachComptimeBinding(self: *TypeInfo, gpa: std.mem.Allocator, ctx: ?*anyopaque, visitor: ComptimeBindingVisitor) anyerror!void {
         var iter = self.comptime_bindings.iterator();
         while (iter.next()) |entry| {
-            const ty = entry.value_ptr.ty;
-            var value = try comp.cloneComptimeValue(gpa, entry.value_ptr.value);
-            defer if (value != .Void) value.destroy(gpa);
-            try visitor(ctx, entry.key_ptr.*, value, ty);
-            value = .Void;
+            var val = try comp.cloneComptimeValue(gpa, entry.value_ptr.value);
+            defer if (val != .Void) val.destroy(gpa);
+            try visitor(ctx, entry.key_ptr.*, val, entry.value_ptr.ty);
         }
     }
 
-    /// destroyStoredComptimeBinding type system helper.
-    fn destroyStoredComptimeBinding(self: *TypeInfo, binding: *StoredComptimeBinding) void {
-        binding.value.destroy(self.gpa);
-    }
-
-    /// destroyComptimeValue type system helper.
-    fn destroyComptimeValue(self: *TypeInfo, value_ptr: *comp.ComptimeValue) void {
-        value_ptr.destroy(self.gpa);
-    }
-
-    /// setMlirSpliceInfo type system helper.
     pub fn setMlirSpliceInfo(self: *TypeInfo, piece_id: ast.MlirPieceId, info: MlirSpliceInfo) !void {
-        const gop = try self.mlir_splice_info.getOrPut(self.gpa, piece_id.toRaw());
-        gop.value_ptr.* = info;
+        try self.mlir_splice_info.put(self.arena.allocator(), piece_id.toRaw(), info);
     }
-
-    /// getMlirSpliceInfo type system helper.
     pub fn getMlirSpliceInfo(self: *const TypeInfo, piece_id: ast.MlirPieceId) ?MlirSpliceInfo {
-        if (self.mlir_splice_info.get(piece_id.toRaw())) |info_ptr|
-            return info_ptr;
-        return null;
+        return self.mlir_splice_info.get(piece_id.toRaw());
     }
 
-    /// getMlirSpliceValue type system helper.
     pub fn getMlirSpliceValue(self: *const TypeInfo, piece_id: ast.MlirPieceId) ?*comp.ComptimeValue {
-        if (self.mlir_splice_values.getPtr(piece_id.toRaw())) |entry| return entry;
-        return null;
+        return self.mlir_splice_values.getPtr(piece_id.toRaw());
     }
-
-    /// setMlirSpliceValue type system helper.
     pub fn setMlirSpliceValue(self: *TypeInfo, piece_id: ast.MlirPieceId, value: comp.ComptimeValue) !void {
-        const gop = try self.mlir_splice_values.getOrPut(self.gpa, piece_id.toRaw());
-        if (gop.found_existing) {
-            self.destroyComptimeValue(gop.value_ptr);
-        }
-        gop.value_ptr.* = value;
+        try self.mlir_splice_values.put(self.arena.allocator(), piece_id.toRaw(), value);
     }
 };
 
-/// TypeKind enum definition used by the compiler.
-pub const TypeKind = enum(u8) {
-    Void,
-    Bool,
-    I8,
-    I16,
-    I32,
-    I64,
-    U8,
-    U16,
-    U32,
-    U64,
-    F32,
-    F64,
-    Usize,
-    Complex,
-    Tensor,
-    Simd,
-    String,
-    Any,
-    Undef,
-    Ptr,
-    Slice,
-    Array,
-    DynArray,
-    Map,
-    Optional,
-    Tuple,
-    Function,
-    Struct,
-    Union,
-    Enum,
-    Variant,
-    Error,
-    ErrorSet,
-    MlirModule,
-    MlirAttribute,
-    MlirType,
-    TypeType,
-    Future,
-    Noreturn,
-    Ast,
-    TypeError,
-};
+pub const TypeKind = enum(u8) { Void, Bool, I8, I16, I32, I64, U8, U16, U32, U64, F32, F64, Usize, Complex, Tensor, Simd, String, Any, Undef, Ptr, Slice, Array, DynArray, Map, Optional, Tuple, Function, Struct, Union, Enum, Variant, Error, ErrorSet, MlirModule, MlirAttribute, MlirType, TypeType, Future, Noreturn, Ast, TypeError };
 
-/// Rows struct definition used by the compiler.
 pub const Rows = struct {
     pub const Void = struct {};
     pub const Bool = struct {};
@@ -729,40 +414,27 @@ pub const Rows = struct {
     pub const TypeError = struct {};
 };
 
-/// Options for formatting types in diagnostic messages
 pub const FormatOptions = struct {
-    /// Maximum depth for nested types (default: 2)
     max_depth: u8 = 2,
-
-    /// Maximum parameters to show in function (default: 5)
     max_params: u8 = 5,
-
-    /// Maximum fields to show in struct/enum (default: 3)
     max_fields: u8 = 3,
-
-    /// Show module path for named types (default: true)
     show_module_path: bool = true,
-
-    /// Use type names instead of structure (default: true)
     prefer_names: bool = true,
-
-    /// Show constness for pointers (default: true)
     show_const: bool = true,
 };
 
-/// RowT type system helper.
 inline fn RowT(comptime K: TypeKind) type {
     return @field(Rows, @tagName(K));
 }
 
-/// TypeStore struct definition used by the compiler.
 pub const TypeStore = struct {
+    arena: *std.heap.ArenaAllocator,
+    backing_gpa: std.mem.Allocator,
     gpa: std.mem.Allocator,
     index: StoreIndex(TypeKind) = .{},
-
     method_table: std.AutoArrayHashMapUnmanaged(MethodKey, MethodEntry) = .{},
 
-    // basic kinds
+    // Table storage
     Void: Table(Rows.Void) = .{},
     Bool: Table(Rows.Bool) = .{},
     I8: Table(Rows.I8) = .{},
@@ -807,7 +479,6 @@ pub const TypeStore = struct {
     ErrorSet: Table(Rows.ErrorSet) = .{},
     TypeType: Table(Rows.TypeType) = .{},
     TypeError: Table(Rows.TypeError) = .{},
-
     Ast: Table(Rows.Ast) = .{},
 
     type_pool: Pool(TypeId) = .{},
@@ -816,7 +487,7 @@ pub const TypeStore = struct {
     strs: *StringInterner,
     type_names: std.AutoArrayHashMapUnmanaged(TypeId, StrId) = .{},
 
-    // cached builtins
+    // Cached primitive IDs
     t_void: ?TypeId = null,
     t_bool: ?TypeId = null,
     t_i32: ?TypeId = null,
@@ -839,342 +510,146 @@ pub const TypeStore = struct {
     t_type_error: ?TypeId = null,
     t_test_error: ?TypeId = null,
 
-    /// init type system helper.
     pub fn init(gpa: std.mem.Allocator, strs: *StringInterner) TypeStore {
-        return .{ .gpa = gpa, .strs = strs };
-    }
-    /// deinit type system helper.
-    pub fn deinit(self: *TypeStore) void {
-        const gpa = self.gpa;
-        self.index.deinit(gpa);
-        self.method_table.deinit(gpa);
-        inline for (@typeInfo(TypeKind).@"enum".fields) |f| @field(self, f.name).deinit(gpa);
-        self.Field.deinit(gpa);
-        self.EnumMember.deinit(gpa);
-        self.type_pool.deinit(gpa);
-        self.field_pool.deinit(gpa);
-        self.enum_member_pool.deinit(gpa);
-        self.type_names.deinit(gpa);
+        const arena = gpa.create(std.heap.ArenaAllocator) catch @panic("OOM");
+        arena.* = std.heap.ArenaAllocator.init(gpa);
+        return .{
+            .arena = arena,
+            .backing_gpa = gpa,
+            .gpa = arena.allocator(),
+            .strs = strs,
+        };
     }
 
-    /// getKind type system helper.
+    pub fn deinit(self: *TypeStore) void {
+        self.arena.deinit();
+        self.backing_gpa.destroy(self.arena);
+    }
+
     pub fn getKind(self: *const TypeStore, id: TypeId) TypeKind {
         return self.index.kinds.items[id.toRaw()];
     }
 
-    /// get type system helper.
     pub fn get(self: *TypeStore, comptime K: TypeKind, id: TypeId) RowT(K) {
         const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
         return tbl.get(.{ .index = self.index.rows.items[id.toRaw()] });
     }
 
-    /// setQualifiedName records an optional user-visible identifier for `id`.
     pub fn setQualifiedName(self: *TypeStore, id: TypeId, name: StrId) !void {
-        const gop = try self.type_names.getOrPut(self.gpa, id);
-        if (!gop.found_existing) {
-            gop.value_ptr.* = name;
-        }
+        const gop = try self.type_names.getOrPut(self.arena.allocator(), id);
+        if (!gop.found_existing) gop.value_ptr.* = name;
     }
-    /// getQualifiedName retrieves the recorded identifier for `id`.
     pub fn getQualifiedName(self: *const TypeStore, id: TypeId) ?StrId {
         return self.type_names.get(id);
     }
 
-    /// addMethod type system helper.
     pub fn addMethod(self: *TypeStore, entry: MethodEntry) !bool {
         const key = makeMethodKey(entry.owner_type, entry.method_name);
-        const gop = try self.method_table.getOrPut(self.gpa, key);
+        const gop = try self.method_table.getOrPut(self.arena.allocator(), key);
         if (gop.found_existing) return false;
         gop.value_ptr.* = entry;
         return true;
     }
 
-    /// putMethod type system helper.
     pub fn putMethod(self: *TypeStore, entry: MethodEntry) !void {
-        const key = makeMethodKey(entry.owner_type, entry.method_name);
-        try self.method_table.put(self.gpa, key, entry);
+        try self.method_table.put(self.arena.allocator(), makeMethodKey(entry.owner_type, entry.method_name), entry);
     }
 
-    /// getMethod type system helper.
     pub fn getMethod(self: *TypeStore, owner: TypeId, name: ast.StrId) ?MethodEntry {
-        const key = makeMethodKey(owner, name);
-        return self.method_table.get(key);
+        return self.method_table.get(makeMethodKey(owner, name));
     }
 
-    /// addLocked type system helper.
     fn addLocked(self: *TypeStore, comptime K: TypeKind, row: RowT(K)) TypeId {
         const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
-        const idx = tbl.add(self.gpa, row);
-        return self.index.newId(self.gpa, K, idx.toRaw(), TypeId);
+        return self.index.newId(self.arena.allocator(), K, tbl.add(self.arena.allocator(), row).toRaw(), TypeId);
     }
 
-    /// add type system helper.
     pub fn add(self: *TypeStore, comptime K: TypeKind, row: RowT(K)) TypeId {
         return self.addLocked(K, row);
     }
-
-    /// addFieldLocked type system helper.
-    fn addFieldLocked(self: *TypeStore, row: Rows.Field) FieldId {
-        return self.Field.add(self.gpa, row);
-    }
-
-    /// addField type system helper.
     pub fn addField(self: *TypeStore, row: Rows.Field) FieldId {
-        return self.addFieldLocked(row);
+        return self.Field.add(self.arena.allocator(), row);
     }
-
-    /// addEnumMemberLocked type system helper.
-    fn addEnumMemberLocked(self: *TypeStore, row: Rows.EnumMember) EnumMemberId {
-        return self.EnumMember.add(self.gpa, row);
-    }
-
-    /// addEnumMember type system helper.
     pub fn addEnumMember(self: *TypeStore, row: Rows.EnumMember) EnumMemberId {
-        return self.addEnumMemberLocked(row);
+        return self.EnumMember.add(self.arena.allocator(), row);
     }
 
-    // ---- builtin constructors (interned once) ----
-    /// tVoidLocked type system helper.
-    fn tVoidLocked(self: *TypeStore) TypeId {
-        if (self.t_void) |id| return id;
-        const id = self.addLocked(.Void, .{});
-        self.t_void = id;
+    // Primitive Constructors
+    fn mkPrim(self: *TypeStore, comptime K: TypeKind, cache: *?TypeId) TypeId {
+        if (cache.*) |id| return id;
+        const id = self.addLocked(K, .{});
+        cache.* = id;
         return id;
     }
-    /// tVoid type system helper.
+
     pub fn tVoid(self: *TypeStore) TypeId {
-        return self.tVoidLocked();
+        return self.mkPrim(.Void, &self.t_void);
     }
-    /// tBoolLocked type system helper.
-    fn tBoolLocked(self: *TypeStore) TypeId {
-        if (self.t_bool) |id| return id;
-        const id = self.addLocked(.Bool, .{});
-        self.t_bool = id;
-        return id;
-    }
-    /// tBool type system helper.
     pub fn tBool(self: *TypeStore) TypeId {
-        return self.tBoolLocked();
+        return self.mkPrim(.Bool, &self.t_bool);
     }
-    /// tI8Locked type system helper.
-    fn tI8Locked(self: *TypeStore) TypeId {
-        if (self.t_i8) |id| return id;
-        const id = self.addLocked(.I8, .{});
-        self.t_i8 = id;
-        return id;
-    }
-    /// tI8 type system helper.
     pub fn tI8(self: *TypeStore) TypeId {
-        return self.tI8Locked();
+        return self.mkPrim(.I8, &self.t_i8);
     }
-    /// tI16Locked type system helper.
-    fn tI16Locked(self: *TypeStore) TypeId {
-        if (self.t_i16) |id| return id;
-        const id = self.addLocked(.I16, .{});
-        self.t_i16 = id;
-        return id;
-    }
-    /// tI16 type system helper.
     pub fn tI16(self: *TypeStore) TypeId {
-        return self.tI16Locked();
+        return self.mkPrim(.I16, &self.t_i16);
     }
-    /// tI32Locked type system helper.
-    fn tI32Locked(self: *TypeStore) TypeId {
-        if (self.t_i32) |id| return id;
-        const id = self.addLocked(.I32, .{});
-        self.t_i32 = id;
-        return id;
-    }
-    /// tI32 type system helper.
     pub fn tI32(self: *TypeStore) TypeId {
-        return self.tI32Locked();
+        return self.mkPrim(.I32, &self.t_i32);
     }
-    /// tI64Locked type system helper.
-    fn tI64Locked(self: *TypeStore) TypeId {
-        if (self.t_i64) |id| return id;
-        const id = self.addLocked(.I64, .{});
-        self.t_i64 = id;
-        return id;
-    }
-    /// tI64 type system helper.
     pub fn tI64(self: *TypeStore) TypeId {
-        return self.tI64Locked();
+        return self.mkPrim(.I64, &self.t_i64);
     }
-    /// tU8Locked type system helper.
-    fn tU8Locked(self: *TypeStore) TypeId {
-        if (self.t_u8) |id| return id;
-        const id = self.addLocked(.U8, .{});
-        self.t_u8 = id;
-        return id;
-    }
-    /// tU8 type system helper.
     pub fn tU8(self: *TypeStore) TypeId {
-        return self.tU8Locked();
+        return self.mkPrim(.U8, &self.t_u8);
     }
-    /// tU16Locked type system helper.
-    fn tU16Locked(self: *TypeStore) TypeId {
-        if (self.t_u16) |id| return id;
-        const id = self.addLocked(.U16, .{});
-        self.t_u16 = id;
-        return id;
-    }
-    /// tU16 type system helper.
     pub fn tU16(self: *TypeStore) TypeId {
-        return self.tU16Locked();
+        return self.mkPrim(.U16, &self.t_u16);
     }
-    /// tU32Locked type system helper.
-    fn tU32Locked(self: *TypeStore) TypeId {
-        if (self.t_u32) |id| return id;
-        const id = self.addLocked(.U32, .{});
-        self.t_u32 = id;
-        return id;
-    }
-
-    pub fn tU64(self: *TypeStore) TypeId {
-        return self.tU64Locked();
-    }
-
-    fn tU64Locked(self: *TypeStore) TypeId {
-        if (self.t_u64) |id| return id;
-        const id = self.addLocked(.U64, .{});
-        self.t_u64 = id;
-        return id;
-    }
-
-    /// tU32 type system helper.
     pub fn tU32(self: *TypeStore) TypeId {
-        return self.tU32Locked();
+        return self.mkPrim(.U32, &self.t_u32);
     }
-    /// tF32Locked type system helper.
-    fn tF32Locked(self: *TypeStore) TypeId {
-        if (self.t_f32) |id| return id;
-        const id = self.addLocked(.F32, .{});
-        self.t_f32 = id;
-        return id;
+    pub fn tU64(self: *TypeStore) TypeId {
+        return self.mkPrim(.U64, &self.t_u64);
     }
-    /// tF32 type system helper.
     pub fn tF32(self: *TypeStore) TypeId {
-        return self.tF32Locked();
+        return self.mkPrim(.F32, &self.t_f32);
     }
-    /// tF64Locked type system helper.
-    fn tF64Locked(self: *TypeStore) TypeId {
-        if (self.t_f64) |id| return id;
-        const id = self.addLocked(.F64, .{});
-        self.t_f64 = id;
-        return id;
-    }
-    /// tF64 type system helper.
     pub fn tF64(self: *TypeStore) TypeId {
-        return self.tF64Locked();
+        return self.mkPrim(.F64, &self.t_f64);
     }
-    /// tUsizeLocked type system helper.
-    fn tUsizeLocked(self: *TypeStore) TypeId {
-        if (self.t_usize) |id| return id;
-        const id = self.addLocked(.Usize, .{});
-        self.t_usize = id;
-        return id;
-    }
-    /// tUsize type system helper.
     pub fn tUsize(self: *TypeStore) TypeId {
-        return self.tUsizeLocked();
+        return self.mkPrim(.Usize, &self.t_usize);
     }
-    /// tStringLocked type system helper.
-    fn tStringLocked(self: *TypeStore) TypeId {
-        if (self.t_string) |id| return id;
-        const id = self.addLocked(.String, .{});
-        self.t_string = id;
-        return id;
-    }
-    /// tString type system helper.
     pub fn tString(self: *TypeStore) TypeId {
-        return self.tStringLocked();
+        return self.mkPrim(.String, &self.t_string);
     }
-    /// tAnyLocked type system helper.
-    fn tAnyLocked(self: *TypeStore) TypeId {
-        if (self.t_any) |id| return id;
-        const id = self.addLocked(.Any, .{});
-        self.t_any = id;
-        return id;
-    }
-    /// tAny type system helper.
     pub fn tAny(self: *TypeStore) TypeId {
-        return self.tAnyLocked();
+        return self.mkPrim(.Any, &self.t_any);
     }
-    /// tUndefLocked type system helper.
-    fn tUndefLocked(self: *TypeStore) TypeId {
-        if (self.t_undef) |id| return id;
-        const id = self.addLocked(.Undef, .{});
-        self.t_undef = id;
-        return id;
-    }
-    /// tUndef type system helper.
     pub fn tUndef(self: *TypeStore) TypeId {
-        return self.tUndefLocked();
+        return self.mkPrim(.Undef, &self.t_undef);
     }
-    /// tTypeLocked type system helper.
-    fn tTypeLocked(self: *TypeStore) TypeId {
+    pub fn tNoreturn(self: *TypeStore) TypeId {
+        return self.mkPrim(.Noreturn, &self.t_noreturn);
+    }
+    pub fn tNoReturn(self: *TypeStore) TypeId {
+        return self.tNoreturn();
+    }
+    pub fn tMlirModule(self: *TypeStore) TypeId {
+        return self.mkPrim(.MlirModule, &self.t_mlir_module);
+    }
+    pub fn tTypeError(self: *TypeStore) TypeId {
+        return self.mkPrim(.TypeError, &self.t_type_error);
+    }
+
+    pub fn tType(self: *TypeStore) TypeId {
         if (self.t_type) |id| return id;
-        const id = self.addLocked(.TypeType, .{ .of = self.tAnyLocked() });
+        const id = self.addLocked(.TypeType, .{ .of = self.tAny() });
         self.t_type = id;
         return id;
     }
-    /// tType type system helper.
-    pub fn tType(self: *TypeStore) TypeId {
-        return self.tTypeLocked();
-    }
-    /// tNoreturnLocked type system helper.
-    fn tNoreturnLocked(self: *TypeStore) TypeId {
-        if (self.t_noreturn) |id| return id;
-        const id = self.addLocked(.Noreturn, .{});
-        self.t_noreturn = id;
-        return id;
-    }
-    /// tNoreturn type system helper.
-    pub fn tNoreturn(self: *TypeStore) TypeId {
-        return self.tNoreturnLocked();
-    }
-    /// tNoReturn type system helper.
-    pub fn tNoReturn(self: *TypeStore) TypeId {
-        return self.tNoreturnLocked();
-    }
 
-    /// tMlirModuleLocked type system helper.
-    fn tMlirModuleLocked(self: *TypeStore) TypeId {
-        if (self.t_mlir_module) |id| return id;
-        const id = self.addLocked(.MlirModule, .{});
-        self.t_mlir_module = id;
-        return id;
-    }
-    /// tMlirModule type system helper.
-    pub fn tMlirModule(self: *TypeStore) TypeId {
-        return self.tMlirModuleLocked();
-    }
-
-    /// mkMlirType type system helper.
-    pub fn mkMlirType(self: *TypeStore, src: StrId) TypeId {
-        if (self.findMlirType(src)) |id| return id;
-        return self.addLocked(.MlirType, .{ .src = src });
-    }
-
-    /// mkMlirAttribute type system helper.
-    pub fn mkMlirAttribute(self: *TypeStore, src: StrId) TypeId {
-        if (self.findMlirAttribute(src)) |id| return id;
-        return self.addLocked(.MlirAttribute, .{ .src = src });
-    }
-
-    /// tTypeErrorLocked type system helper.
-    fn tTypeErrorLocked(self: *TypeStore) TypeId {
-        if (self.t_type_error) |id| return id;
-        const id = self.addLocked(.TypeError, .{});
-        self.t_type_error = id;
-        return id;
-    }
-    /// tTypeError type system helper.
-    pub fn tTypeError(self: *TypeStore) TypeId {
-        return self.tTypeErrorLocked();
-    }
-
-    /// Default error set used by synthesized test functions: `error { Fail }`.
     pub fn tTestError(self: *TypeStore) TypeId {
         if (self.t_test_error) |id| return id;
         const fail_name = self.strs.intern("Fail");
@@ -1183,423 +658,232 @@ pub const TypeStore = struct {
         return id;
     }
 
-    // ---- constructors with interning (linear dedup) ----
-    /// mkPtr type system helper.
+    // Interned Constructors
     pub fn mkPtr(self: *TypeStore, elem: TypeId, is_const: bool) TypeId {
-        if (self.findPtr(elem, is_const)) |id| return id;
-        return self.addLocked(.Ptr, .{ .elem = elem, .is_const = is_const });
+        return self.mkInterned(.Ptr, .{ .elem = elem, .is_const = is_const }, struct {
+            fn eq(_: *const TypeStore, r: Rows.Ptr, k: anytype) bool {
+                return r.elem.eq(k.elem) and r.is_const == k.is_const;
+            }
+        });
     }
-    /// mkSlice type system helper.
+
     pub fn mkSlice(self: *TypeStore, elem: TypeId, is_const: bool) TypeId {
-        if (self.findSlice(elem, is_const)) |id| return id;
-        return self.addLocked(.Slice, .{ .elem = elem, .is_const = is_const });
+        return self.mkInterned(.Slice, .{ .elem = elem, .is_const = is_const }, struct {
+            fn eq(_: *const TypeStore, r: Rows.Slice, k: anytype) bool {
+                return r.elem.eq(k.elem) and r.is_const == k.is_const;
+            }
+        });
     }
-    /// mkArray type system helper.
+
     pub fn mkArray(self: *TypeStore, elem: TypeId, len: usize) TypeId {
-        if (self.findArray(elem, len)) |id| return id;
-        return self.addLocked(.Array, .{ .elem = elem, .len = len });
+        return self.mkInterned(.Array, .{ .elem = elem, .len = len }, struct {
+            fn eq(_: *const TypeStore, r: Rows.Array, k: anytype) bool {
+                return r.elem.eq(k.elem) and r.len == k.len;
+            }
+        });
     }
-    /// mkDynArray type system helper.
+
     pub fn mkDynArray(self: *TypeStore, elem: TypeId) TypeId {
-        if (self.findDynArray(elem)) |id| return id;
-        return self.addLocked(.DynArray, .{ .elem = elem });
+        return self.mkInterned(.DynArray, .{ .elem = elem }, struct {
+            fn eq(_: *const TypeStore, r: Rows.DynArray, k: anytype) bool {
+                return r.elem.eq(k.elem);
+            }
+        });
     }
-    /// mkMap type system helper.
+
     pub fn mkMap(self: *TypeStore, key: TypeId, value: TypeId) TypeId {
-        if (self.findMap(key, value)) |id| return id;
-        return self.addLocked(.Map, .{ .key = key, .value = value });
+        return self.mkInterned(.Map, .{ .key = key, .value = value }, struct {
+            fn eq(_: *const TypeStore, r: Rows.Map, k: anytype) bool {
+                return r.key.eq(k.key) and r.value.eq(k.value);
+            }
+        });
     }
-    /// mkAst type system helper.
+
     pub fn mkAst(self: *TypeStore, pkg_name: ast.StrId, filepath: StrId) TypeId {
-        if (self.findAst(pkg_name, filepath)) |id| return id;
-        return self.addLocked(.Ast, .{
-            .pkg_name = pkg_name,
-            .filepath = filepath,
+        return self.mkInterned(.Ast, .{ .pkg_name = pkg_name, .filepath = filepath }, struct {
+            fn eq(_: *const TypeStore, r: Rows.Ast, k: anytype) bool {
+                return r.filepath.eq(k.filepath) and r.pkg_name.eq(k.pkg_name);
+            }
         });
     }
-    /// mkSimd type system helper.
+
     pub fn mkSimd(self: *TypeStore, elem: TypeId, lanes: u16) TypeId {
-        if (self.findSimd(elem, lanes)) |id| return id;
-        return self.addLocked(.Simd, .{ .elem = elem, .lanes = lanes });
-    }
-    /// mkTensor type system helper.
-    pub fn mkTensor(self: *TypeStore, elem: TypeId, dims: []const usize) TypeId {
-        std.debug.assert(dims.len <= max_tensor_rank);
-        if (self.findTensor(elem, dims)) |id| return id;
-        var row_dims = [_]usize{0} ** max_tensor_rank;
-        var i: usize = 0;
-        while (i < dims.len) : (i += 1) row_dims[i] = dims[i];
-        return self.addLocked(.Tensor, .{
-            .elem = elem,
-            .rank = @intCast(dims.len),
-            .dims = row_dims,
+        return self.mkInterned(.Simd, .{ .elem = elem, .lanes = lanes }, struct {
+            fn eq(_: *const TypeStore, r: Rows.Simd, k: anytype) bool {
+                return r.elem.eq(k.elem) and r.lanes == k.lanes;
+            }
         });
     }
-    /// mkOptional type system helper.
+
     pub fn mkOptional(self: *TypeStore, elem: TypeId) TypeId {
-        if (self.findOptional(elem)) |id| return id;
-        return self.addLocked(.Optional, .{ .elem = elem });
+        return self.mkInterned(.Optional, .{ .elem = elem }, struct {
+            fn eq(_: *const TypeStore, r: Rows.Optional, k: anytype) bool {
+                return r.elem.eq(k.elem);
+            }
+        });
     }
-    /// mkFuture type system helper.
+
     pub fn mkFuture(self: *TypeStore, elem: TypeId) TypeId {
-        if (self.findFuture(elem)) |id| return id;
-        return self.addLocked(.Future, .{ .elem = elem });
+        return self.mkInterned(.Future, .{ .elem = elem }, struct {
+            fn eq(_: *const TypeStore, r: Rows.Future, k: anytype) bool {
+                return r.elem.eq(k.elem);
+            }
+        });
     }
-    /// isOptionalPointer type system helper.
-    pub fn isOptionalPointer(self: *TypeStore, ty: TypeId) bool {
-        if (self.index.kinds.items[ty.toRaw()] != .Optional) return false;
-        const elem = self.get(.Optional, ty).elem;
-        return self.index.kinds.items[elem.toRaw()] == .Ptr;
-    }
-    /// mkTuple type system helper.
-    pub fn mkTuple(self: *TypeStore, elems: []const TypeId) TypeId {
-        if (self.findTuple(elems)) |id| return id;
-        const r = self.type_pool.pushMany(self.gpa, elems);
-        return self.addLocked(.Tuple, .{ .elems = r });
-    }
-    /// mkFunction type system helper.
-    pub fn mkFunction(self: *TypeStore, params: []const TypeId, result: TypeId, is_variadic: bool, is_pure: bool, is_extern: bool) TypeId {
-        if (self.findFunction(params, result, is_variadic, is_pure, is_extern)) |id| return id;
 
-        // Copy params to a temporary buffer to avoid use-after-free if params is a slice of self.type_pool
-        const params_copy = self.gpa.alloc(TypeId, params.len) catch @panic("OOM");
-        defer self.gpa.free(params_copy);
-        @memcpy(params_copy, params);
-
-        const r = self.type_pool.pushMany(self.gpa, params_copy);
-        return self.addLocked(.Function, .{ .params = r, .result = result, .is_variadic = is_variadic, .is_pure = is_pure, .is_extern = is_extern });
-    }
-    /// EnumMemberArg struct definition used by the compiler.
-    pub const EnumMemberArg = struct { name: StrId, value: i64 };
-    /// mkEnum type system helper.
-    pub fn mkEnum(self: *TypeStore, members: []const EnumMemberArg, tag_type: TypeId) TypeId {
-        var ids = self.gpa.alloc(EnumMemberId, members.len) catch @panic("OOM");
-        defer self.gpa.free(ids);
-        var i: usize = 0;
-        while (i < members.len) : (i += 1) {
-            const mid = self.addEnumMemberLocked(.{ .name = members[i].name, .value = members[i].value });
-            ids[i] = mid;
-        }
-        const r = self.enum_member_pool.pushMany(self.gpa, ids);
-        return self.addLocked(.Enum, .{ .members = r, .tag_type = tag_type });
-    }
-    /// mkVariant type system helper.
-    pub fn mkVariant(self: *TypeStore, variants: []const StructFieldArg) TypeId {
-        if (self.findVariant(variants)) |id| return id;
-        var ids = self.gpa.alloc(FieldId, variants.len) catch @panic("OOM");
-        defer self.gpa.free(ids);
-        var i: usize = 0;
-        while (i < variants.len) : (i += 1) {
-            const fid = self.addFieldLocked(.{ .name = variants[i].name, .ty = variants[i].ty });
-            ids[i] = fid;
-        }
-        const r = self.field_pool.pushMany(self.gpa, ids);
-        return self.addLocked(.Variant, .{ .variants = r });
-    }
-    /// mkErrorSet type system helper.
-    pub fn mkErrorSet(self: *TypeStore, value_ty: TypeId, error_ty: TypeId) TypeId {
-        if (self.findErrorSet(value_ty, error_ty)) |id| return id;
-        return self.addLocked(.ErrorSet, .{ .value_ty = value_ty, .error_ty = error_ty });
-    }
-    /// mkTypeType type system helper.
     pub fn mkTypeType(self: *TypeStore, of: TypeId) TypeId {
-        if (self.findTypeType(of)) |id| return id;
-        return self.addLocked(.TypeType, .{ .of = of });
-    }
-    /// StructFieldArg struct definition used by the compiler.
-    pub const StructFieldArg = struct { name: StrId, ty: TypeId };
-    /// mkStruct type system helper.
-    pub fn mkStruct(self: *TypeStore, fields: []const StructFieldArg, provenance: u64) TypeId {
-        // Build interning key arrays
-        if (self.findStruct(fields, provenance)) |id| return id;
-        var ids = self.gpa.alloc(FieldId, fields.len) catch @panic("OOM");
-        defer self.gpa.free(ids);
-        var i: usize = 0;
-        while (i < fields.len) : (i += 1) {
-            const fid = self.addFieldLocked(.{ .name = fields[i].name, .ty = fields[i].ty });
-            ids[i] = fid;
-        }
-        const r = self.field_pool.pushMany(self.gpa, ids);
-        return self.addLocked(.Struct, .{ .fields = r, .provenance = provenance });
-    }
-    /// mkUnion type system helper.
-    pub fn mkUnion(self: *TypeStore, fields: []const StructFieldArg) TypeId {
-        var ids = self.gpa.alloc(FieldId, fields.len) catch @panic("OOM");
-        defer self.gpa.free(ids);
-        var i: usize = 0;
-        while (i < fields.len) : (i += 1) {
-            const fid = self.addFieldLocked(.{ .name = fields[i].name, .ty = fields[i].ty });
-            ids[i] = fid;
-        }
-        const r = self.field_pool.pushMany(self.gpa, ids);
-        return self.addLocked(.Union, .{ .fields = r });
-    }
-    /// mkError type system helper.
-    pub fn mkError(self: *TypeStore, fields: []const StructFieldArg) TypeId {
-        var ids = self.gpa.alloc(FieldId, fields.len) catch @panic("OOM");
-        defer self.gpa.free(ids);
-        var i: usize = 0;
-        while (i < fields.len) : (i += 1) {
-            const fid = self.addFieldLocked(.{ .name = fields[i].name, .ty = fields[i].ty });
-            ids[i] = fid;
-        }
-        const r = self.field_pool.pushMany(self.gpa, ids);
-        return self.addLocked(.Error, .{ .variants = r });
+        return self.mkInterned(.TypeType, .{ .of = of }, struct {
+            fn eq(_: *const TypeStore, r: Rows.TypeType, k: anytype) bool {
+                return r.of.eq(k.of);
+            }
+        });
     }
 
-    // ---- finders ----
-    /// findPtr type system helper.
-    fn findPtr(self: *TypeStore, elem: TypeId, is_const: bool) ?TypeId {
-        return self.findMatch(.Ptr, struct { e: TypeId, c: bool }{ .e = elem, .c = is_const }, struct {
-            /// eq type system helper.
-            fn eq(s: *const TypeStore, row: Rows.Ptr, key: anytype) bool {
-                _ = s;
-                return row.elem.eq(key.e) and row.is_const == key.c;
+    pub fn mkMlirType(self: *TypeStore, src: StrId) TypeId {
+        return self.mkInterned(.MlirType, .{ .src = src }, struct {
+            fn eq(_: *const TypeStore, r: Rows.MlirType, k: anytype) bool {
+                return r.src.eq(k.src);
             }
         });
     }
-    /// findSlice type system helper.
-    fn findSlice(self: *TypeStore, elem: TypeId, is_const: bool) ?TypeId {
-        return self.findMatch(.Slice, struct { e: TypeId, c: bool }{ .e = elem, .c = is_const }, struct {
-            /// eq type system helper.
-            fn eq(s: *const TypeStore, row: Rows.Slice, key: anytype) bool {
-                _ = s;
-                return row.elem.eq(key.e) and row.is_const == key.c;
+
+    pub fn mkMlirAttribute(self: *TypeStore, src: StrId) TypeId {
+        return self.mkInterned(.MlirAttribute, .{ .src = src }, struct {
+            fn eq(_: *const TypeStore, r: Rows.MlirAttribute, k: anytype) bool {
+                return r.src.eq(k.src);
             }
         });
     }
-    /// findDynArray type system helper.
-    fn findDynArray(self: *TypeStore, elem: TypeId) ?TypeId {
-        return self.findMatch(.DynArray, elem, struct {
-            /// eq type system helper.
-            fn eq(s: *const TypeStore, row: Rows.DynArray, key: TypeId) bool {
-                _ = s;
-                return row.elem.eq(key);
+
+    pub fn mkErrorSet(self: *TypeStore, value_ty: TypeId, error_ty: TypeId) TypeId {
+        return self.mkInterned(.ErrorSet, .{ .value_ty = value_ty, .error_ty = error_ty }, struct {
+            fn eq(_: *const TypeStore, r: Rows.ErrorSet, k: anytype) bool {
+                return r.value_ty.eq(k.value_ty) and r.error_ty.eq(k.error_ty);
             }
         });
     }
-    /// findArray type system helper.
-    fn findArray(self: *TypeStore, elem: TypeId, len: usize) ?TypeId {
-        return self.findMatch(.Array, struct { e: TypeId, l: usize }{ .e = elem, .l = len }, struct {
-            /// eq type system helper.
-            fn eq(s: *const TypeStore, row: Rows.Array, key: anytype) bool {
-                _ = s;
-                return row.elem.eq(key.e) and row.len == key.l;
-            }
-        });
-    }
-    /// findTensor type system helper.
-    fn findTensor(self: *TypeStore, elem: TypeId, dims: []const usize) ?TypeId {
-        return self.findMatch(.Tensor, struct { e: TypeId, d: []const usize }{ .e = elem, .d = dims }, struct {
-            /// eq type system helper.
-            fn eq(_: *const TypeStore, row: Rows.Tensor, key: anytype) bool {
-                if (!row.elem.eq(key.e)) return false;
-                if (row.rank != key.d.len) return false;
-                var i: usize = 0;
-                while (i < row.rank) : (i += 1) {
-                    if (row.dims[i] != key.d[i]) return false;
-                }
+
+    pub fn mkTensor(self: *TypeStore, elem: TypeId, dims: []const usize) TypeId {
+        var row_dims = [_]usize{0} ** max_tensor_rank;
+        for (dims, 0..) |d, i| row_dims[i] = d;
+        const key = Rows.Tensor{ .elem = elem, .rank = @as(u8, @intCast(dims.len)), .dims = row_dims };
+
+        return self.mkInterned(.Tensor, key, struct {
+            fn eq(_: *const TypeStore, r: Rows.Tensor, k: anytype) bool {
+                if (!r.elem.eq(k.elem) or r.rank != k.rank) return false;
+                for (r.dims[0..r.rank], k.dims[0..k.rank]) |a, b| if (a != b) return false;
                 return true;
             }
         });
     }
-    /// findMap type system helper.
-    fn findMap(self: *TypeStore, key: TypeId, value: TypeId) ?TypeId {
-        return self.findMatch(.Map, struct { k: TypeId, v: TypeId }{ .k = key, .v = value }, struct {
-            /// eq type system helper.
-            fn eq(s: *const TypeStore, row: Rows.Map, k: anytype) bool {
-                _ = s;
-                return row.key.eq(k.k) and row.value.eq(k.v);
-            }
-        });
+
+    pub fn isOptionalPointer(self: *TypeStore, ty: TypeId) bool {
+        if (self.getKind(ty) != .Optional) return false;
+        return self.getKind(self.get(.Optional, ty).elem) == .Ptr;
     }
-    /// findAst type system helper.
-    fn findAst(self: *TypeStore, pkg_name: ast.StrId, filepath: StrId) ?TypeId {
-        return self.findMatch(.Ast, struct { pkg: ast.StrId, filepath: StrId }{
-            .pkg = pkg_name,
-            .filepath = filepath,
-        }, struct {
-            /// eq type system helper.
-            fn eq(_: *const TypeStore, row: Rows.Ast, key: anytype) bool {
-                return row.filepath.eq(key.filepath) and row.pkg_name.eq(key.pkg);
-            }
-        });
-    }
-    /// findMlirType type system helper.
-    fn findMlirType(self: *TypeStore, src: StrId) ?TypeId {
-        return self.findMatch(.MlirType, src, struct {
-            /// eq type system helper.
-            fn eq(_: *const TypeStore, row: Rows.MlirType, key: StrId) bool {
-                return row.src.eq(key);
-            }
-        });
-    }
-    /// findMlirAttribute type system helper.
-    fn findMlirAttribute(self: *TypeStore, src: StrId) ?TypeId {
-        return self.findMatch(.MlirAttribute, src, struct {
-            /// eq type system helper.
-            fn eq(_: *const TypeStore, row: Rows.MlirAttribute, key: StrId) bool {
-                return row.src.eq(key);
-            }
-        });
-    }
-    /// findSimd type system helper.
-    fn findSimd(self: *TypeStore, elem: TypeId, lanes: u16) ?TypeId {
-        return self.findMatch(.Simd, struct { e: TypeId, l: u16 }{ .e = elem, .l = lanes }, struct {
-            /// eq type system helper.
-            fn eq(_: *const TypeStore, row: Rows.Simd, key: anytype) bool {
-                return row.elem.eq(key.e) and row.lanes == key.l;
-            }
-        });
-    }
-    /// findOptional type system helper.
-    fn findOptional(self: *TypeStore, elem: TypeId) ?TypeId {
-        return self.findMatch(.Optional, elem, struct {
-            /// eq type system helper.
-            fn eq(s: *const TypeStore, row: Rows.Optional, key: TypeId) bool {
-                _ = s;
-                return row.elem.eq(key);
-            }
-        });
-    }
-    /// findFuture type system helper.
-    fn findFuture(self: *TypeStore, elem: TypeId) ?TypeId {
-        return self.findMatch(.Future, elem, struct {
-            /// eq type system helper.
-            fn eq(s: *const TypeStore, row: Rows.Future, key: TypeId) bool {
-                _ = s;
-                return row.elem.eq(key);
-            }
-        });
-    }
-    /// findTuple type system helper.
-    fn findTuple(self: *TypeStore, elems: []const TypeId) ?TypeId {
+
+    pub fn mkTuple(self: *TypeStore, elems: []const TypeId) TypeId {
         return self.findMatch(.Tuple, elems, struct {
-            /// eq type system helper.
-            fn eq(s: *const TypeStore, row: Rows.Tuple, key: []const TypeId) bool {
-                const ids = s.type_pool.slice(row.elems);
-                if (ids.len != key.len) return false;
-                var i: usize = 0;
-                while (i < ids.len) : (i += 1) if (!ids[i].eq(key[i])) return false;
+            fn eq(s: *const TypeStore, r: Rows.Tuple, k: []const TypeId) bool {
+                const ids = s.type_pool.slice(r.elems);
+                if (ids.len != k.len) return false;
+                for (ids, k) |a, b| if (!a.eq(b)) return false;
                 return true;
             }
-        });
-    }
-    /// findFunction type system helper.
-    fn findFunction(self: *TypeStore, params: []const TypeId, result: TypeId, is_variadic: bool, is_pure: bool, is_extern: bool) ?TypeId {
-        return self.findMatch(.Function, struct { p: []const TypeId, r: TypeId, v: bool, pure: bool, ext: bool }{ .p = params, .r = result, .v = is_variadic, .pure = is_pure, .ext = is_extern }, struct {
-            /// eq type system helper.
-            fn eq(s: *const TypeStore, row: Rows.Function, key: anytype) bool {
-                if (!row.result.eq(key.r) or row.is_variadic != key.v or row.is_pure != key.pure or row.is_extern != key.ext) return false;
-                const ids = s.type_pool.slice(row.params);
-                if (ids.len != key.p.len) return false;
-                var i: usize = 0;
-                while (i < ids.len) : (i += 1) if (!ids[i].eq(key.p[i])) return false;
-                return true;
-            }
-        });
+        }) orelse self.addLocked(.Tuple, .{ .elems = self.type_pool.pushMany(self.arena.allocator(), elems) });
     }
 
-    /// findVariant type system helper.
-    fn findVariant(self: *TypeStore, variants: []const StructFieldArg) ?TypeId {
-        // Compare by name + type sequence
-        // Key that pairs variant field names with their types for equality checks.
-        const key_names_and_tys = struct { names: []const StrId, tys: []const TypeId };
-        var names = self.gpa.alloc(StrId, variants.len) catch @panic("OOM");
-        defer self.gpa.free(names);
-        var tys = self.gpa.alloc(TypeId, variants.len) catch @panic("OOM");
-        defer self.gpa.free(tys);
-        var i: usize = 0;
-        while (i < variants.len) : (i += 1) {
-            names[i] = variants[i].name;
-            tys[i] = variants[i].ty;
+    pub fn mkFunction(self: *TypeStore, params: []const TypeId, result: TypeId, is_variadic: bool, is_pure: bool, is_extern: bool) TypeId {
+        const key = .{ .p = params, .r = result, .v = is_variadic, .pure = is_pure, .ext = is_extern };
+        return self.findMatch(.Function, key, struct {
+            fn eq(s: *const TypeStore, r: Rows.Function, k: anytype) bool {
+                if (!r.result.eq(k.r) or r.is_variadic != k.v or r.is_pure != k.pure or r.is_extern != k.ext) return false;
+                const ids = s.type_pool.slice(r.params);
+                if (ids.len != k.p.len) return false;
+                for (ids, k.p) |a, b| if (!a.eq(b)) return false;
+                return true;
+            }
+        }) orelse blk: {
+            const copy = self.arena.allocator().alloc(TypeId, params.len) catch @panic("OOM");
+            @memcpy(copy, params);
+            break :blk self.addLocked(.Function, .{ .params = self.type_pool.pushMany(self.arena.allocator(), copy), .result = result, .is_variadic = is_variadic, .is_pure = is_pure, .is_extern = is_extern });
+        };
+    }
+
+    pub const StructFieldArg = struct { name: StrId, ty: TypeId };
+    pub const EnumMemberArg = struct { name: StrId, value: i64 };
+
+    pub fn mkEnum(self: *TypeStore, members: []const EnumMemberArg, tag_type: TypeId) TypeId {
+        const ids = self.arena.allocator().alloc(EnumMemberId, members.len) catch @panic("OOM");
+        for (members, 0..) |m, i| ids[i] = self.addEnumMember(.{ .name = m.name, .value = m.value });
+        return self.addLocked(.Enum, .{ .members = self.enum_member_pool.pushMany(self.arena.allocator(), ids), .tag_type = tag_type });
+    }
+
+    fn mkFields(self: *TypeStore, fields: []const StructFieldArg) ![]FieldId {
+        const ids = try self.arena.allocator().alloc(FieldId, fields.len);
+        for (fields, 0..) |f, i| ids[i] = self.addField(.{ .name = f.name, .ty = f.ty });
+        return ids;
+    }
+
+    // Generic match logic for fields (struct/union/variant/error)
+    fn findFields(self: *TypeStore, pool_range: anytype, fields: []const StructFieldArg) bool {
+        const ids = self.field_pool.slice(pool_range);
+        if (ids.len != fields.len) return false;
+        for (ids, 0..) |fid, i| {
+            const f = self.Field.get(fid);
+            if (!f.name.eq(fields[i].name) or !f.ty.eq(fields[i].ty)) return false;
         }
-        const key_val = key_names_and_tys{ .names = names, .tys = tys };
-        return self.findMatch(.Variant, key_val, struct {
-            /// eq type system helper.
-            fn eq(s: *TypeStore, row: Rows.Variant, k: anytype) bool {
-                const ids = s.field_pool.slice(row.variants);
-                if (ids.len != k.names.len) return false;
-                var j: usize = 0;
-                while (j < ids.len) : (j += 1) {
-                    const f = s.Field.get(ids[j]);
-                    if (!f.name.eq(k.names[j])) return false;
-                    if (!f.ty.eq(k.tys[j])) return false;
-                }
-                return true;
-            }
-        });
-    }
-    /// findErrorSet type system helper.
-    fn findErrorSet(self: *TypeStore, value_ty: TypeId, error_ty: TypeId) ?TypeId {
-        return self.findMatch(.ErrorSet, struct { v: TypeId, e: TypeId }{ .v = value_ty, .e = error_ty }, struct {
-            /// eq type system helper.
-            fn eq(s: *const TypeStore, row: Rows.ErrorSet, k: anytype) bool {
-                _ = s;
-                return row.value_ty.eq(k.v) and row.error_ty.eq(k.e);
-            }
-        });
+        return true;
     }
 
-    /// findTypeType type system helper.
-    fn findTypeType(self: *TypeStore, of: TypeId) ?TypeId {
-        return self.findMatch(.TypeType, of, struct {
-            /// eq type system helper.
-            fn eq(_: *const TypeStore, row: Rows.TypeType, key: TypeId) bool {
-                return row.of.eq(key);
+    pub fn mkStruct(self: *TypeStore, fields: []const StructFieldArg, provenance: u64) TypeId {
+        const key = .{ .fields = fields, .prov = provenance };
+        return self.findMatch(.Struct, key, struct {
+            fn eq(s: *TypeStore, r: Rows.Struct, k: anytype) bool {
+                return r.provenance == k.prov and s.findFields(r.fields, k.fields);
             }
-        });
-    }
-    /// findStruct type system helper.
-    fn findStruct(self: *TypeStore, fields: []const StructFieldArg, provenance: u64) ?TypeId {
-        // Compare by name + type sequence
-        // Key that pairs struct field names with their types for equality checks.
-        const key_names_and_tys = struct { names: []const StrId, tys: []const TypeId, prov: u64 };
-        var names = self.gpa.alloc(StrId, fields.len) catch @panic("OOM");
-        defer self.gpa.free(names);
-        var tys = self.gpa.alloc(TypeId, fields.len) catch @panic("OOM");
-        defer self.gpa.free(tys);
-        var i: usize = 0;
-        while (i < fields.len) : (i += 1) {
-            names[i] = fields[i].name;
-            tys[i] = fields[i].ty;
-        }
-        const key_val = key_names_and_tys{ .names = names, .tys = tys, .prov = provenance };
-        return self.findMatch(.Struct, key_val, struct {
-            /// eq type system helper.
-            fn eq(s: *TypeStore, row: Rows.Struct, k: anytype) bool {
-                if (row.provenance != k.prov) return false;
-                const ids = s.field_pool.slice(row.fields);
-                if (ids.len != k.names.len) return false;
-                var j: usize = 0;
-                while (j < ids.len) : (j += 1) {
-                    const f = s.Field.get(ids[j]);
-                    if (!f.name.eq(k.names[j])) return false;
-                    if (!f.ty.eq(k.tys[j])) return false;
-                }
-                return true;
-            }
-        });
+        }) orelse self.addLocked(.Struct, .{ .fields = self.field_pool.pushMany(self.arena.allocator(), self.mkFields(fields) catch @panic("OOM")), .provenance = provenance });
     }
 
-    /// findMatch type system helper.
+    pub fn mkUnion(self: *TypeStore, fields: []const StructFieldArg) TypeId {
+        return self.findMatch(.Union, fields, struct {
+            fn eq(s: *TypeStore, r: Rows.Union, k: anytype) bool {
+                return s.findFields(r.fields, k);
+            }
+        }) orelse self.addLocked(.Union, .{ .fields = self.field_pool.pushMany(self.arena.allocator(), self.mkFields(fields) catch @panic("OOM")) });
+    }
+
+    pub fn mkError(self: *TypeStore, fields: []const StructFieldArg) TypeId {
+        return self.findMatch(.Error, fields, struct {
+            fn eq(s: *TypeStore, r: Rows.Error, k: anytype) bool {
+                return s.findFields(r.variants, k);
+            }
+        }) orelse self.addLocked(.Error, .{ .variants = self.field_pool.pushMany(self.arena.allocator(), self.mkFields(fields) catch @panic("OOM")) });
+    }
+
+    pub fn mkVariant(self: *TypeStore, variants: []const StructFieldArg) TypeId {
+        return self.findMatch(.Variant, variants, struct {
+            fn eq(s: *TypeStore, r: Rows.Variant, k: anytype) bool {
+                return s.findFields(r.variants, k);
+            }
+        }) orelse self.addLocked(.Variant, .{ .variants = self.field_pool.pushMany(self.arena.allocator(), self.mkFields(variants) catch @panic("OOM")) });
+    }
+
     fn findMatch(self: *TypeStore, comptime K: TypeKind, key: anytype, comptime Helper: type) ?TypeId {
-        // Scan all types and find first matching row of kind K
         const kinds = self.index.kinds.items;
         const rows = self.index.rows.items;
-        var i: usize = 0;
-        while (i < kinds.len) : (i += 1) {
-            if (kinds[i] != K) continue;
-            const row_idx = rows[i];
+        for (kinds, 0..) |k, i| {
+            if (k != K) continue;
             const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
-            const row = tbl.get(.{ .index = row_idx });
-            if (Helper.eq(self, row, key)) return TypeId.fromRaw(@intCast(i));
+            if (Helper.eq(self, tbl.get(.{ .index = rows[i] }), key)) return TypeId.fromRaw(@intCast(i));
         }
         return null;
     }
 
-    // ---- formatting ----
-    /// fmt type system helper.
+    fn mkInterned(self: *TypeStore, comptime K: TypeKind, key: RowT(K), comptime Comparator: type) TypeId {
+        return self.findMatch(K, key, Comparator) orelse self.addLocked(K, key);
+    }
+
     pub fn fmt(self: *TypeStore, id: TypeId, w: anytype) !void {
         const k = self.getKind(id);
         switch (k) {
@@ -1623,20 +907,19 @@ pub const TypeStore = struct {
             .MlirModule => try w.print("mlir.module", .{}),
             .MlirAttribute => try w.print("mlir.attribute", .{}),
             .MlirType => try w.print("mlir.type", .{}),
+            .TypeError => try w.print("<type error>", .{}),
             .Complex => {
-                const r = self.get(.Complex, id);
                 try w.print("complex@", .{});
-                try self.fmt(r.elem, w);
+                try self.fmt(self.get(.Complex, id).elem, w);
             },
             .Tensor => {
                 const r = self.get(.Tensor, id);
                 try w.print("tensor{}@", .{r.rank});
                 try self.fmt(r.elem, w);
                 try w.print("[", .{});
-                var i: u8 = 0;
-                while (i < r.rank) : (i += 1) {
+                for (r.dims[0..r.rank], 0..) |d, i| {
                     if (i != 0) try w.print(" x ", .{});
-                    try w.print("{}", .{r.dims[i]});
+                    try w.print("{}", .{d});
                 }
                 try w.print("]", .{});
             },
@@ -1646,14 +929,12 @@ pub const TypeStore = struct {
                 try self.fmt(r.elem, w);
             },
             .Ptr => {
-                const r = self.get(.Ptr, id);
                 try w.print("*", .{});
-                try self.fmt(r.elem, w);
+                try self.fmt(self.get(.Ptr, id).elem, w);
             },
             .Slice => {
-                const r = self.get(.Slice, id);
                 try w.print("[]", .{});
-                try self.fmt(r.elem, w);
+                try self.fmt(self.get(.Slice, id).elem, w);
             },
             .Array => {
                 const r = self.get(.Array, id);
@@ -1661,29 +942,24 @@ pub const TypeStore = struct {
                 try self.fmt(r.elem, w);
             },
             .DynArray => {
-                const r = self.get(.DynArray, id);
                 try w.print("dyn[]", .{});
-                try self.fmt(r.elem, w);
+                try self.fmt(self.get(.DynArray, id).elem, w);
             },
             .Optional => {
-                const r = self.get(.Optional, id);
                 try w.print("?", .{});
-                try self.fmt(r.elem, w);
+                try self.fmt(self.get(.Optional, id).elem, w);
             },
             .Future => {
-                const r = self.get(.Future, id);
                 try w.print("future<", .{});
-                try self.fmt(r.elem, w);
+                try self.fmt(self.get(.Future, id).elem, w);
                 try w.print(">", .{});
             },
             .Tuple => {
-                const r = self.get(.Tuple, id);
                 try w.print("(", .{});
-                const ids = self.type_pool.slice(r.elems);
-                var i: usize = 0;
-                while (i < ids.len) : (i += 1) {
+                const ids = self.type_pool.slice(self.get(.Tuple, id).elems);
+                for (ids, 0..) |e, i| {
                     if (i != 0) try w.print(", ", .{});
-                    try self.fmt(ids[i], w);
+                    try self.fmt(e, w);
                 }
                 try w.print(")", .{});
             },
@@ -1696,30 +972,22 @@ pub const TypeStore = struct {
             },
             .Function => {
                 const r = self.get(.Function, id);
-                // print kind as 'fn' for pure, 'proc' otherwise
-                if (r.is_pure) {
-                    try w.print("fn(", .{});
-                } else {
-                    try w.print("proc(", .{});
-                }
+                try w.print("{s}(", .{if (r.is_pure) "fn" else "proc"});
                 const ids = self.type_pool.slice(r.params);
-                var i: usize = 0;
-                while (i < ids.len) : (i += 1) {
+                for (ids, 0..) |p, i| {
                     if (i != 0) try w.print(", ", .{});
-                    try self.fmt(ids[i], w);
+                    try self.fmt(p, w);
                 }
                 try w.print(") ", .{});
                 try self.fmt(r.result, w);
                 if (r.is_variadic) try w.print(" variadic", .{});
             },
             .Struct => {
-                const r = self.get(.Struct, id);
                 try w.print("struct {{ ", .{});
-                const ids = self.field_pool.slice(r.fields);
-                var i: usize = 0;
-                while (i < ids.len) : (i += 1) {
+                const ids = self.field_pool.slice(self.get(.Struct, id).fields);
+                for (ids, 0..) |fid, i| {
                     if (i != 0) try w.print(", ", .{});
-                    const f = self.Field.get(ids[i]);
+                    const f = self.Field.get(fid);
                     try w.print("{s}: ", .{self.strs.get(f.name)});
                     try self.fmt(f.ty, w);
                 }
@@ -1731,48 +999,29 @@ pub const TypeStore = struct {
                 try self.fmt(r.tag_type, w);
                 try w.print(") {{ ", .{});
                 const ids = self.enum_member_pool.slice(r.members);
-                var i: usize = 0;
-                while (i < ids.len) : (i += 1) {
+                for (ids, 0..) |mid, i| {
                     if (i != 0) try w.print(", ", .{});
-                    const member = self.EnumMember.get(ids[i]);
-                    try w.print("{s} = {}", .{ self.strs.get(member.name), member.value });
+                    const m = self.EnumMember.get(mid);
+                    try w.print("{s} = {}", .{ self.strs.get(m.name), m.value });
                 }
                 try w.print(" }}", .{});
             },
-            .Variant => {
-                const r = self.get(.Variant, id);
-                try w.print("variant {{ ", .{});
-                const ids = self.field_pool.slice(r.variants);
-                var i: usize = 0;
-                while (i < ids.len) : (i += 1) {
+            .Variant, .Error, .Union => |kk| {
+                try w.print("{s} {{ ", .{switch (kk) {
+                    .Union => "union",
+                    .Error => "error",
+                    .Variant => "variant",
+                    else => unreachable,
+                }});
+                const r = switch (kk) {
+                    .Variant => self.get(.Variant, id).variants,
+                    .Error => self.get(.Error, id).variants,
+                    else => self.get(.Union, id).fields,
+                };
+                const ids = self.field_pool.slice(r);
+                for (ids, 0..) |fid, i| {
                     if (i != 0) try w.print(", ", .{});
-                    const f = self.Field.get(ids[i]);
-                    try w.print("{s}: ", .{self.strs.get(f.name)});
-                    try self.fmt(f.ty, w);
-                }
-                try w.print(" }}", .{});
-            },
-            .Error => {
-                const r = self.get(.Error, id);
-                try w.print("error {{ ", .{});
-                const ids = self.field_pool.slice(r.variants);
-                var i: usize = 0;
-                while (i < ids.len) : (i += 1) {
-                    if (i != 0) try w.print(", ", .{});
-                    const f = self.Field.get(ids[i]);
-                    try w.print("{s}: ", .{self.strs.get(f.name)});
-                    try self.fmt(f.ty, w);
-                }
-                try w.print(" }}", .{});
-            },
-            .Union => {
-                const r = self.get(.Union, id);
-                try w.print("union {{ ", .{});
-                const ids = self.field_pool.slice(r.fields);
-                var i: usize = 0;
-                while (i < ids.len) : (i += 1) {
-                    if (i != 0) try w.print(", ", .{});
-                    const f = self.Field.get(ids[i]);
+                    const f = self.Field.get(fid);
                     try w.print("{s}: ", .{self.strs.get(f.name)});
                     try self.fmt(f.ty, w);
                 }
@@ -1780,90 +1029,43 @@ pub const TypeStore = struct {
             },
             .ErrorSet => {
                 const r = self.get(.ErrorSet, id);
-                try w.print("error", .{});
-                try w.print("(", .{});
+                try w.print("error(", .{});
                 try self.fmt(r.error_ty, w);
                 try w.print(", ", .{});
                 try self.fmt(r.value_ty, w);
                 try w.print(")", .{});
             },
             .TypeType => {
-                const r = self.get(.TypeType, id);
                 try w.print("type(", .{});
-                try self.fmt(r.of, w);
+                try self.fmt(self.get(.TypeType, id).of, w);
                 try w.print(")", .{});
             },
             .Ast => {
                 const r = self.get(.Ast, id);
-                try w.print("ast(", .{});
-                const name = self.strs.get(r.pkg_name);
-                try w.print("{s}", .{name});
-                const filepath = self.strs.get(r.filepath);
-                try w.print("#{s}", .{filepath});
-                try w.print(")", .{});
+                try w.print("ast({s}#{s})", .{ self.strs.get(r.pkg_name), self.strs.get(r.filepath) });
             },
-            .TypeError => try w.print("<type error>", .{}),
         }
     }
 
-    /// Format a type for use in diagnostic messages.
-    /// Returns a concise, human-readable string representation.
-    /// Caller owns returned memory.
-    pub fn formatTypeForDiagnostic(
-        self: *TypeStore,
-        type_id: TypeId,
-        options: FormatOptions,
-        writer: anytype,
-    ) !void {
+    pub fn formatTypeForDiagnostic(self: *TypeStore, type_id: TypeId, options: FormatOptions, writer: anytype) !void {
         try self.fmtDiagnostic(type_id, writer, options, 0);
     }
 
-    /// Internal function for diagnostic-friendly type formatting
-    fn fmtDiagnostic(
-        self: *TypeStore,
-        type_id: TypeId,
-        writer: anytype,
-        options: FormatOptions,
-        depth: u8,
-    ) !void {
-        // Prevent infinite recursion
-        if (depth >= options.max_depth) {
-            try writer.print("...", .{});
-            return;
-        }
-
-        if (options.prefer_names) {
-            if (self.getQualifiedName(type_id)) |name| {
-                try writer.print("{s}", .{self.strs.get(name)});
-                return;
-            }
-        }
+    fn fmtDiagnostic(self: *TypeStore, type_id: TypeId, writer: anytype, options: FormatOptions, depth: u8) !void {
+        if (depth >= options.max_depth) return writer.print("...", .{});
+        if (options.prefer_names) if (self.getQualifiedName(type_id)) |name| return writer.print("{s}", .{self.strs.get(name)});
 
         const kind = self.getKind(type_id);
-
         switch (kind) {
-            // Primitives: use existing lowercase format
             .Void, .Bool, .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .F64, .Usize, .String, .Any, .Noreturn, .Undef, .MlirModule, .MlirAttribute, .MlirType, .TypeType, .TypeError, .Ast => try self.fmt(type_id, writer),
-
-            // Pointers: add const support
             .Ptr => {
                 const r = self.get(.Ptr, type_id);
-                if (options.show_const and r.is_const) {
-                    try writer.print("*const ", .{});
-                } else {
-                    try writer.print("*", .{});
-                }
+                try writer.print("{s}", .{if (options.show_const and r.is_const) "*const " else "*"});
                 try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
             },
-
-            // Slices, Arrays, DynArrays, Optional: delegate with depth tracking
             .Slice => {
                 const r = self.get(.Slice, type_id);
-                if (options.show_const and r.is_const) {
-                    try writer.print("[]const ", .{});
-                } else {
-                    try writer.print("[]", .{});
-                }
+                try writer.print("{s}", .{if (options.show_const and r.is_const) "[]const " else "[]"});
                 try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
             },
             .Array => {
@@ -1887,49 +1089,34 @@ pub const TypeStore = struct {
                 try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
                 try writer.print(">", .{});
             },
-
-            // Complex types
             .Complex => {
                 const r = self.get(.Complex, type_id);
                 try writer.print("complex@", .{});
                 try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
-            },
-            .Tensor => {
-                const r = self.get(.Tensor, type_id);
-                try writer.print("tensor<", .{});
-                var i: u8 = 0;
-                while (i < r.rank) : (i += 1) {
-                    try writer.print("{}x", .{r.dims[i]});
-                }
-                try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
-                try writer.print(">", .{});
             },
             .Simd => {
                 const r = self.get(.Simd, type_id);
                 try writer.print("simd{}@", .{r.lanes});
                 try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
             },
-
-            // Tuples: with truncation
+            .Tensor => {
+                const r = self.get(.Tensor, type_id);
+                try writer.print("tensor<", .{});
+                for (r.dims[0..r.rank]) |d| try writer.print("{}x", .{d});
+                try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
+                try writer.print(">", .{});
+            },
             .Tuple => {
-                const r = self.get(.Tuple, type_id);
                 try writer.print("(", .{});
-                const ids = self.type_pool.slice(r.elems);
-                const show_count = @min(ids.len, options.max_fields);
-
-                for (ids[0..show_count], 0..) |elem_id, idx| {
-                    if (idx > 0) try writer.print(", ", .{});
-                    try self.fmtDiagnostic(elem_id, writer, options, depth + 1);
+                const ids = self.type_pool.slice(self.get(.Tuple, type_id).elems);
+                const limit = @min(ids.len, options.max_fields);
+                for (ids[0..limit], 0..) |e, i| {
+                    if (i > 0) try writer.print(", ", .{});
+                    try self.fmtDiagnostic(e, writer, options, depth + 1);
                 }
-
-                if (ids.len > show_count) {
-                    try writer.print(", ... ({d} more)", .{ids.len - show_count});
-                }
-
+                if (ids.len > limit) try writer.print(", ... ({d} more)", .{ids.len - limit});
                 try writer.print(")", .{});
             },
-
-            // Maps
             .Map => {
                 const r = self.get(.Map, type_id);
                 try writer.print("map[", .{});
@@ -1937,139 +1124,72 @@ pub const TypeStore = struct {
                 try writer.print("] ", .{});
                 try self.fmtDiagnostic(r.value, writer, options, depth + 1);
             },
-
-            // Functions: with parameter truncation
             .Function => {
                 const r = self.get(.Function, type_id);
-                const kind_str = if (r.is_pure) "fn" else "proc";
-                try writer.print("{s}(", .{kind_str});
-
+                try writer.print("{s}(", .{if (r.is_pure) "fn" else "proc"});
                 const params = self.type_pool.slice(r.params);
-                const show_count = @min(params.len, options.max_params);
-
-                for (params[0..show_count], 0..) |param, idx| {
-                    if (idx > 0) try writer.print(", ", .{});
-                    try self.fmtDiagnostic(param, writer, options, depth + 1);
+                const limit = @min(params.len, options.max_params);
+                for (params[0..limit], 0..) |p, i| {
+                    if (i > 0) try writer.print(", ", .{});
+                    try self.fmtDiagnostic(p, writer, options, depth + 1);
                 }
-
-                if (params.len > show_count) {
-                    try writer.print(", ... ({d} more)", .{params.len - show_count});
-                }
-
+                if (params.len > limit) try writer.print(", ... ({d} more)", .{params.len - limit});
                 try writer.print(") ", .{});
                 try self.fmtDiagnostic(r.result, writer, options, depth + 1);
-
                 if (r.is_variadic) try writer.print(" variadic", .{});
             },
-
-            // Structs: with field truncation (type names will be added in Phase 3)
             .Struct => {
-                const r = self.get(.Struct, type_id);
                 try writer.print("struct {{ ", .{});
-                const fields = self.field_pool.slice(r.fields);
-                const show_count = @min(fields.len, options.max_fields);
-
-                for (fields[0..show_count], 0..) |field_id, idx| {
-                    if (idx > 0) try writer.print(", ", .{});
-                    const f = self.Field.get(field_id);
+                const fields = self.field_pool.slice(self.get(.Struct, type_id).fields);
+                const limit = @min(fields.len, options.max_fields);
+                for (fields[0..limit], 0..) |fid, i| {
+                    if (i > 0) try writer.print(", ", .{});
+                    const f = self.Field.get(fid);
                     try writer.print("{s}: ", .{self.strs.get(f.name)});
                     try self.fmtDiagnostic(f.ty, writer, options, depth + 1);
                 }
-
-                if (fields.len > show_count) {
-                    try writer.print(", ... ({d} more)", .{fields.len - show_count});
-                }
-
+                if (fields.len > limit) try writer.print(", ... ({d} more)", .{fields.len - limit});
                 try writer.print(" }}", .{});
             },
-
-            // Enums: with member truncation
             .Enum => {
                 const r = self.get(.Enum, type_id);
                 try writer.print("enum(", .{});
                 try self.fmtDiagnostic(r.tag_type, writer, options, depth + 1);
                 try writer.print(") {{ ", .{});
                 const members = self.enum_member_pool.slice(r.members);
-                const show_count = @min(members.len, options.max_fields);
-
-                for (members[0..show_count], 0..) |member_id, idx| {
-                    if (idx > 0) try writer.print(", ", .{});
-                    const member = self.EnumMember.get(member_id);
-                    try writer.print("{s}", .{self.strs.get(member.name)});
+                const limit = @min(members.len, options.max_fields);
+                for (members[0..limit], 0..) |mid, i| {
+                    if (i > 0) try writer.print(", ", .{});
+                    try writer.print("{s}", .{self.strs.get(self.EnumMember.get(mid).name)});
                 }
-
-                if (members.len > show_count) {
-                    try writer.print(", ... ({d} more)", .{members.len - show_count});
-                }
-
+                if (members.len > limit) try writer.print(", ... ({d} more)", .{members.len - limit});
                 try writer.print(" }}", .{});
             },
-
-            // Variants: with truncation
-            .Variant => {
-                const r = self.get(.Variant, type_id);
-                try writer.print("variant {{ ", .{});
-                const variants = self.field_pool.slice(r.variants);
-                const show_count = @min(variants.len, options.max_fields);
-
-                for (variants[0..show_count], 0..) |variant_id, idx| {
-                    if (idx > 0) try writer.print(", ", .{});
-                    const v = self.Field.get(variant_id);
-                    try writer.print("{s}", .{self.strs.get(v.name)});
+            .Variant, .Error, .Union => |kk| {
+                try writer.print("{s} {{ ", .{switch (kk) {
+                    .Union => "union",
+                    .Error => "error",
+                    .Variant => "variant",
+                    else => unreachable,
+                }});
+                const range = switch (kk) {
+                    .Variant => self.get(.Variant, type_id).variants,
+                    .Error => self.get(.Error, type_id).variants,
+                    else => self.get(.Union, type_id).fields,
+                };
+                const fields = self.field_pool.slice(range);
+                const limit = @min(fields.len, options.max_fields);
+                for (fields[0..limit], 0..) |fid, i| {
+                    if (i > 0) try writer.print(", ", .{});
+                    try writer.print("{s}", .{self.strs.get(self.Field.get(fid).name)});
                 }
-
-                if (variants.len > show_count) {
-                    try writer.print(", ... ({d} more)", .{variants.len - show_count});
-                }
-
+                if (fields.len > limit) try writer.print(", ... ({d} more)", .{fields.len - limit});
                 try writer.print(" }}", .{});
             },
-
-            // Errors: with truncation
-            .Error => {
-                const r = self.get(.Error, type_id);
-                try writer.print("error {{ ", .{});
-                const errors = self.field_pool.slice(r.variants);
-                const show_count = @min(errors.len, options.max_fields);
-
-                for (errors[0..show_count], 0..) |error_id, idx| {
-                    if (idx > 0) try writer.print(", ", .{});
-                    const e = self.Field.get(error_id);
-                    try writer.print("{s}", .{self.strs.get(e.name)});
-                }
-
-                if (errors.len > show_count) {
-                    try writer.print(", ... ({d} more)", .{errors.len - show_count});
-                }
-
-                try writer.print(" }}", .{});
-            },
-
-            // ErrorSet
             .ErrorSet => {
                 const r = self.get(.ErrorSet, type_id);
                 try writer.print("!", .{});
                 try self.fmtDiagnostic(r.value_ty, writer, options, depth + 1);
-            },
-
-            // Union
-            .Union => {
-                const r = self.get(.Union, type_id);
-                try writer.print("union {{ ", .{});
-                const fields = self.field_pool.slice(r.fields);
-                const show_count = @min(fields.len, options.max_fields);
-
-                for (fields[0..show_count], 0..) |field_id, idx| {
-                    if (idx > 0) try writer.print(", ", .{});
-                    const f = self.Field.get(field_id);
-                    try writer.print("{s}", .{self.strs.get(f.name)});
-                }
-
-                if (fields.len > show_count) {
-                    try writer.print(", ... ({d} more)", .{fields.len - show_count});
-                }
-
-                try writer.print(" }}", .{});
             },
         }
     }

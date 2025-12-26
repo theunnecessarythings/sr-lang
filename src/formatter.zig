@@ -5,8 +5,6 @@ const compile = @import("compile.zig");
 const diag = @import("diagnostics.zig");
 const Loc = @import("lexer.zig").Token.Loc;
 
-const indent_chunk: []const u8 = "                ";
-
 /// Format a single source buffer and return the formatted text.
 pub fn formatSource(gpa: std.mem.Allocator, source: [:0]const u8, file_path: []const u8) ![]u8 {
     var ctx: compile.Context = .init(gpa);
@@ -39,6 +37,8 @@ pub fn formatSource(gpa: std.mem.Allocator, source: [:0]const u8, file_path: []c
     return try fmt.format();
 }
 
+const spaces = " " ** 256;
+
 /// Tracks formatter-specific state while printing a CST program.
 const Formatter = struct {
     /// Allocator used to build intermediate buffers.
@@ -55,8 +55,6 @@ const Formatter = struct {
     comments: []const cst.Comment,
     /// Location table used to resolve node positions.
     locs: *cst.LocStore,
-    /// Prefix newline counts for fast blank-line detection.
-    newline_counts: []u32 = &[_]u32{},
 
     /// Builder that accumulates the emitted bytes.
     builder: std.ArrayList(u8) = .{},
@@ -76,8 +74,6 @@ const Formatter = struct {
         self.last_written_loc = 0;
         self.comment_idx = 0;
         try self.builder.ensureTotalCapacity(self.gpa, self.source.len + 1);
-        self.newline_counts = try self.buildNewlineCounts();
-        defer self.gpa.free(self.newline_counts);
         errdefer self.builder.deinit(self.gpa);
 
         try self.printProgram();
@@ -97,9 +93,9 @@ const Formatter = struct {
         if (!self.needs_indent) return;
         var remaining = self.indent;
         while (remaining > 0) {
-            const chunk_size = if (remaining < indent_chunk.len) remaining else indent_chunk.len;
-            try self.builder.appendSlice(self.gpa, indent_chunk[0..chunk_size]);
-            remaining -= chunk_size;
+            const chunk = @min(remaining, spaces.len);
+            try self.builder.appendSlice(self.gpa, spaces[0..chunk]);
+            remaining -= chunk;
         }
         self.needs_indent = false;
     }
@@ -111,21 +107,16 @@ const Formatter = struct {
     }
 
     /// Return true if the last emitted character is a newline.
-    fn lastCharIsNewline(self: *Formatter) bool {
+    inline fn lastCharIsNewline(self: *Formatter) bool {
         return self.builder.items.len > 0 and self.builder.items[self.builder.items.len - 1] == '\n';
     }
 
     /// Return true when the builder ends with two consecutive newlines.
     fn endsWithDoubleNewline(self: *Formatter) bool {
-        return self.builder.items.len >= 2 and
-            self.builder.items[self.builder.items.len - 1] == '\n' and
-            self.builder.items[self.builder.items.len - 2] == '\n';
-    }
-
-    /// Format text into the current line after ensuring indentation.
-    fn printf(self: *Formatter, comptime fmt: []const u8, args: anytype) !void {
-        try self.ws();
-        try std.fmt.format(self.builder.writer(self.gpa), fmt, args);
+        const len = self.builder.items.len;
+        return len >= 2 and
+            self.builder.items[len - 1] == '\n' and
+            self.builder.items[len - 2] == '\n';
     }
 
     /// Append a literal slice after obeying the current indentation.
@@ -149,18 +140,11 @@ const Formatter = struct {
         return self.locs.get(loc).end;
     }
 
-    /// Track `loc` as the most recently emitted AST fragment.
-    fn updateLastWritten(self: *Formatter, loc: cst.LocId) void {
-        const end = self.locEnd(loc);
-        if (end > self.last_written_loc) self.last_written_loc = end;
-    }
-
     /// Emit comments that precede byte position `pos`.
     fn emitCommentsBefore(self: *Formatter, pos: usize) !void {
         try self.flushComments(pos);
     }
 
-    // Scans backwards in the source to determine if the comment is on a new line.
     /// Return true if the comment at `comment_start` starts on a fresh line.
     fn isLineComment(self: *Formatter, comment_start: usize) bool {
         var i: usize = comment_start;
@@ -185,7 +169,6 @@ const Formatter = struct {
             const gap_has_blank = self.gapHasExtraBlank(self.last_written_loc, loc.start);
 
             if (is_line_comment) {
-                // Only add newline if we're not at the very start of the file
                 if (self.builder.items.len > 0 and !self.lastCharIsNewline()) {
                     try self.newline();
                 }
@@ -197,23 +180,19 @@ const Formatter = struct {
                 try self.ws();
             } else {
                 // Trailing comment: Ensure exactly one space separator
-                if (self.builder.items.len > 0 and
-                    self.builder.items[self.builder.items.len - 1] != ' ' and
-                    self.builder.items[self.builder.items.len - 1] != '\n')
-                {
-                    try self.builder.append(self.gpa, ' ');
+                if (self.builder.items.len > 0) {
+                    const last = self.builder.items[self.builder.items.len - 1];
+                    if (last != ' ' and last != '\n') {
+                        try self.builder.append(self.gpa, ' ');
+                    }
                 }
             }
 
             try self.printCommentBody(c, loc);
 
             switch (c.kind) {
-                .line, .doc, .container_doc => {
-                    try self.newline();
-                },
-                .block => {
-                    // Inline block comments do not force a newline
-                },
+                .line, .doc, .container_doc => try self.newline(),
+                .block => {},
             }
 
             self.last_written_loc = loc.end;
@@ -237,30 +216,21 @@ const Formatter = struct {
                 if (!std.mem.startsWith(u8, text, "//!")) try self.builder.appendSlice(self.gpa, "//!");
                 try self.builder.appendSlice(self.gpa, text);
             },
-            .block => {
-                try self.builder.appendSlice(self.gpa, text);
-            },
+            .block => try self.builder.appendSlice(self.gpa, text),
         }
-    }
-
-    fn buildNewlineCounts(self: *Formatter) ![]u32 {
-        const len = self.source.len + 1;
-        var counts = try self.gpa.alloc(u32, len);
-        var total: u32 = 0;
-        counts[0] = 0;
-        for (self.source, 0..) |byte, idx| {
-            if (byte == '\n') total += 1;
-            counts[idx + 1] = total;
-        }
-        return counts;
     }
 
     /// Return whether `source[start..end]` contains at least two blank lines.
     fn gapHasExtraBlank(self: *Formatter, start: usize, end: usize) bool {
         if (start >= end or end > self.source.len) return false;
-        const start_count = self.newline_counts[start];
-        const end_count = self.newline_counts[end];
-        return end_count - start_count >= 2;
+        var newlines: u32 = 0;
+        for (self.source[start..end]) |b| {
+            if (b == '\n') {
+                newlines += 1;
+                if (newlines >= 2) return true;
+            }
+        }
+        return false;
     }
 
     // ------------------------------------------------------------
@@ -275,13 +245,12 @@ const Formatter = struct {
 
             if (std.mem.eql(u8, text, "package")) {
                 try self.emitCommentsBefore(pkg_loc.start);
-                try self.printf("package {s}", .{self.s(self.program.package_name.unwrap())});
+                try self.printLiteral("package ");
+                try self.printLiteral(self.s(self.program.package_name.unwrap()));
 
-                // Find the end of the line to handle any inline comments
                 var line_end = pkg_loc.end;
                 while (line_end < self.source.len and self.source[line_end] != '\n') : (line_end += 1) {}
 
-                // Emit any comments on the same line as the package declaration
                 try self.flushComments(line_end);
                 self.last_written_loc = line_end;
 
@@ -308,18 +277,9 @@ const Formatter = struct {
 
             var needs_blank = false;
             if (i > 0) {
-                // Rule: Blank line when transitioning from imports to other declarations
-                if (prev_kind == 1 and kind != 1) {
-                    needs_blank = true;
-                }
-                // Rule: Blank line between functions with bodies (not extern declarations)
-                if (has_body and prev_has_body) {
-                    needs_blank = true;
-                }
-                // Rule: Respect manual blank lines in source
-                if (self.gapHasExtraBlank(self.last_written_loc, start_loc)) {
-                    needs_blank = true;
-                }
+                if (prev_kind == 1 and kind != 1) needs_blank = true;
+                if (has_body and prev_has_body) needs_blank = true;
+                if (self.gapHasExtraBlank(self.last_written_loc, start_loc)) needs_blank = true;
             }
 
             if (i > 0) {
@@ -350,9 +310,7 @@ const Formatter = struct {
         const row = self.exprs.Decl.get(id);
         try self.emitCommentsBefore(self.locStart(row.loc));
 
-        if (try self.tryPrintTestDecl(row)) {
-            return;
-        }
+        if (try self.tryPrintTestDecl(row)) return;
 
         if (!row.lhs.isNone()) {
             try self.printExpr(row.lhs.unwrap());
@@ -396,7 +354,9 @@ const Formatter = struct {
 
         const test_name = self.testNameFromAttrs(fn_node.attrs) orelse return false;
 
-        try self.printf("test {s} ", .{test_name});
+        try self.printLiteral("test ");
+        try self.printLiteral(test_name);
+        try self.printLiteral(" ");
         try self.printExpr(fn_node.body.unwrap());
         return true;
     }
@@ -499,9 +459,6 @@ const Formatter = struct {
         return std.mem.indexOfScalar(u8, body, '\n') != null;
     }
 
-    /// Emit `body` inside `{ ... }`, choosing inline vs block formatting.
-    /// - Inline: `{ <trimmed> }`
-    /// - Block:  `{\n<indented lines>\n}`
     fn printMlirBody(self: *Formatter, body_raw: []const u8) !void {
         const body_trimmed = trimAsciiSpace(body_raw);
 
@@ -512,7 +469,6 @@ const Formatter = struct {
             return;
         }
 
-        // Multiline: reindent lines relative to current formatter indent.
         try self.printLiteral(" {");
         try self.newline();
 
@@ -523,19 +479,15 @@ const Formatter = struct {
         while (it.next()) |line_raw| {
             const line = std.mem.trimRight(u8, line_raw, " \t\r");
             if (line.len == 0) {
-                // Preserve blank lines
                 try self.newline();
                 continue;
             }
             try self.ws();
-            // Avoid double-indenting if the literal already contains indentation.
-            // We only strip leading ASCII whitespace from the literal line itself.
             const stripped = std.mem.trimLeft(u8, line, " \t");
             try self.printLiteral(stripped);
             try self.newline();
         }
 
-        // Close brace aligned with current indentation level.
         try self.ws();
         try self.printLiteral("}");
     }
@@ -547,7 +499,6 @@ const Formatter = struct {
     pub fn printExpr(self: *Formatter, id: cst.ExprId) anyerror!void {
         const kind = self.exprs.kind(id);
 
-        // Auto-update cursor at the end of the expression
         defer {
             @setEvalBranchQuota(100000);
             const loc = exprLocFromId(self.exprs, id, kind);
@@ -563,7 +514,6 @@ const Formatter = struct {
 
                 try self.printLiteral("{");
 
-                // Update cursor past '{'
                 if (block_loc.start + 1 > self.last_written_loc) {
                     self.last_written_loc = block_loc.start + 1;
                 }
@@ -578,7 +528,6 @@ const Formatter = struct {
                     try self.emitCommentsBefore(start);
 
                     if (!self.lastCharIsNewline()) try self.newline();
-                    // Preserve blank lines inside blocks
                     if (self.gapHasExtraBlank(self.last_written_loc, start)) {
                         if (!self.endsWithDoubleNewline()) try self.newline();
                     }
@@ -601,21 +550,23 @@ const Formatter = struct {
             },
             .Literal => {
                 const node = self.exprs.get(.Literal, id);
-                try self.printf("{s}", .{self.s(node.value)});
+                try self.printLiteral(self.s(node.value));
             },
             .Ident => {
                 const node = self.exprs.get(.Ident, id);
-                try self.printf("{s}", .{self.s(node.name)});
+                try self.printLiteral(self.s(node.name));
             },
             .Prefix => {
                 const node = self.exprs.get(.Prefix, id);
-                try self.printf("{s}", .{prefixOpStr(node.op)});
+                try self.printLiteral(prefixOpStr(node.op));
                 try self.printExpr(node.right);
             },
             .Infix => {
                 const node = self.exprs.get(.Infix, id);
                 try self.printExpr(node.left);
-                try self.printf(" {s} ", .{infixOpStr(node.op)});
+                try self.printLiteral(" ");
+                try self.printLiteral(infixOpStr(node.op));
+                try self.printLiteral(" ");
                 try self.printExpr(node.right);
             },
             .Deref => {
@@ -731,13 +682,13 @@ const Formatter = struct {
             .FieldAccess => {
                 const node = self.exprs.get(.FieldAccess, id);
                 try self.printExpr(node.parent);
-                try self.printf(".{s}", .{self.s(node.field)});
+                try self.printLiteral(".");
+                try self.printLiteral(self.s(node.field));
             },
             .StructLit => {
                 const node = self.exprs.get(.StructLit, id);
                 if (!node.ty.isNone()) {
                     try self.printExpr(node.ty.unwrap());
-                    // try self.printLiteral(" "); // Removed space
                 }
                 const fields = self.exprs.sfv_pool.slice(node.fields);
                 if (node.trailing_comma and fields.len > 0) {
@@ -750,7 +701,8 @@ const Formatter = struct {
                         if (!self.lastCharIsNewline()) try self.newline();
                         try self.ws();
                         if (!field.name.isNone()) {
-                            try self.printf("{s}: ", .{self.s(field.name.unwrap())});
+                            try self.printLiteral(self.s(field.name.unwrap()));
+                            try self.printLiteral(": ");
                         }
                         try self.printExpr(field.value);
                         try self.printLiteral(",");
@@ -771,7 +723,8 @@ const Formatter = struct {
                         if (i > 0) try self.printLiteral(", ");
                         const field = self.exprs.StructFieldValue.get(fid);
                         if (!field.name.isNone()) {
-                            try self.printf("{s}: ", .{self.s(field.name.unwrap())});
+                            try self.printLiteral(self.s(field.name.unwrap()));
+                            try self.printLiteral(": ");
                         }
                         try self.printExpr(field.value);
                     }
@@ -800,7 +753,8 @@ const Formatter = struct {
                     try self.printLiteral(" ");
                     try self.printExpr(node.body.unwrap());
                 } else if (!node.raw_asm.isNone()) {
-                    try self.printf(" asm {s}", .{self.s(node.raw_asm.unwrap())});
+                    try self.printLiteral(" asm ");
+                    try self.printLiteral(self.s(node.raw_asm.unwrap()));
                 }
             },
             .Comptime => {
@@ -821,13 +775,13 @@ const Formatter = struct {
 
             .Mlir => {
                 const node = self.exprs.get(.Mlir, id);
-                const k = switch (node.kind) {
-                    .Module => "",
-                    .Attribute => " attribute",
-                    .Type => " type",
-                    .Operation => " op",
-                };
-                try self.printf("mlir{s}", .{k});
+                try self.printLiteral("mlir");
+                switch (node.kind) {
+                    .Module => {},
+                    .Attribute => try self.printLiteral(" attribute"),
+                    .Type => try self.printLiteral(" type"),
+                    .Operation => try self.printLiteral(" op"),
+                }
                 if (!node.args.isNone()) {
                     const args = self.exprs.expr_pool.slice(node.args.asRange());
                     try self.printLiteral("(");
@@ -888,7 +842,10 @@ const Formatter = struct {
             },
             .While => {
                 const node = self.exprs.get(.While, id);
-                if (!node.label.isNone()) try self.printf("{s}: ", .{self.s(node.label.unwrap())});
+                if (!node.label.isNone()) {
+                    try self.printLiteral(self.s(node.label.unwrap()));
+                    try self.printLiteral(": ");
+                }
                 try self.printLiteral("while ");
                 if (node.is_pattern) {
                     try self.printLiteral("is ");
@@ -905,7 +862,10 @@ const Formatter = struct {
             },
             .For => {
                 const node = self.exprs.get(.For, id);
-                if (!node.label.isNone()) try self.printf("{s}: ", .{self.s(node.label.unwrap())});
+                if (!node.label.isNone()) {
+                    try self.printLiteral(self.s(node.label.unwrap()));
+                    try self.printLiteral(": ");
+                }
                 try self.printLiteral("for ");
                 try self.printPattern(node.pattern);
                 try self.printLiteral(" in ");
@@ -940,7 +900,10 @@ const Formatter = struct {
             .Break => {
                 const node = self.exprs.get(.Break, id);
                 try self.printLiteral("break");
-                if (!node.label.isNone()) try self.printf(" :{s}", .{self.s(node.label.unwrap())});
+                if (!node.label.isNone()) {
+                    try self.printLiteral(" :");
+                    try self.printLiteral(self.s(node.label.unwrap()));
+                }
                 if (!node.value.isNone()) {
                     try self.printLiteral(" ");
                     try self.printExpr(node.value.unwrap());
@@ -949,7 +912,10 @@ const Formatter = struct {
             .Continue => {
                 const node = self.exprs.get(.Continue, id);
                 try self.printLiteral("continue");
-                if (!node.label.isNone()) try self.printf(" :{s}", .{self.s(node.label.unwrap())});
+                if (!node.label.isNone()) {
+                    try self.printLiteral(" :");
+                    try self.printLiteral(self.s(node.label.unwrap()));
+                }
             },
             .Unreachable => {
                 _ = self.exprs.get(.Unreachable, id);
@@ -1037,13 +1003,17 @@ const Formatter = struct {
                 try self.printExpr(node.expr);
                 try self.printLiteral(" catch ");
                 if (!node.binding_name.isNone()) {
-                    try self.printf("|{s}| ", .{self.s(node.binding_name.unwrap())});
+                    try self.printLiteral("|");
+                    try self.printLiteral(self.s(node.binding_name.unwrap()));
+                    try self.printLiteral("| ");
                 }
                 try self.printExpr(node.handler);
             },
             .Import => {
                 const node = self.exprs.get(.Import, id);
-                try self.printf("import \"{s}\"", .{self.s(node.path)});
+                try self.printLiteral("import \"");
+                try self.printLiteral(self.s(node.path));
+                try self.printLiteral("\"");
             },
             .TypeOf => {
                 const node = self.exprs.get(.TypeOf, id);
@@ -1144,7 +1114,7 @@ const Formatter = struct {
                         if (!self.lastCharIsNewline()) try self.newline();
                         try self.ws();
                         try self.printAttrs(field.attrs, .Before);
-                        try self.printf("{s}", .{self.s(field.name)});
+                        try self.printLiteral(self.s(field.name));
                         if (!field.value.isNone()) {
                             try self.printLiteral(" = ");
                             try self.printExpr(field.value.unwrap());
@@ -1164,7 +1134,7 @@ const Formatter = struct {
                         if (i > 0) try self.printLiteral(", ");
                         const field = self.exprs.EnumField.get(eid);
                         try self.printAttrs(field.attrs, .Before);
-                        try self.printf("{s}", .{self.s(field.name)});
+                        try self.printLiteral(self.s(field.name));
                         if (!field.value.isNone()) {
                             try self.printLiteral(" = ");
                             try self.printExpr(field.value.unwrap());
@@ -1350,7 +1320,6 @@ const Formatter = struct {
                 }
                 try self.printLiteral(",");
 
-                // Find the end of the line to handle any inline comments
                 var line_end = self.locEnd(param.loc);
                 while (line_end < self.source.len and self.source[line_end] != '\n') : (line_end += 1) {}
                 try self.flushComments(line_end);
@@ -1389,7 +1358,8 @@ const Formatter = struct {
     fn printStructField(self: *Formatter, id: cst.StructFieldId) !void {
         const field = self.exprs.StructField.get(id);
         try self.printAttrs(field.attrs, .Before);
-        try self.printf("{s}: ", .{self.s(field.name)});
+        try self.printLiteral(self.s(field.name));
+        try self.printLiteral(": ");
         try self.printExpr(field.ty);
         if (!field.value.isNone()) {
             try self.printLiteral(" = ");
@@ -1401,7 +1371,7 @@ const Formatter = struct {
     fn printVariantField(self: *Formatter, id: cst.VariantFieldId) !void {
         const field = self.exprs.VariantField.get(id);
         try self.printAttrs(field.attrs, .Before);
-        try self.printf("{s}", .{self.s(field.name)});
+        try self.printLiteral(self.s(field.name));
         switch (field.ty_tag) {
             .none => {},
             .Tuple => {
@@ -1460,7 +1430,7 @@ const Formatter = struct {
     fn printExprs(self: *Formatter, r: cst.RangeOf(cst.ExprId), sep: []const u8) !void {
         const ids = self.exprs.expr_pool.slice(r);
         for (ids, 0..) |eid, i| {
-            if (i > 0) try self.printf("{s}", .{sep});
+            if (i > 0) try self.printLiteral(sep);
             try self.printExpr(eid);
         }
     }
@@ -1484,7 +1454,7 @@ const Formatter = struct {
             if (i > 0) try self.printLiteral(", ");
             const attr = self.exprs.Attribute.get(aid);
             try self.ws();
-            try self.printf("{s}", .{self.s(attr.name)});
+            try self.printLiteral(self.s(attr.name));
             if (!attr.value.isNone()) {
                 try self.printLiteral(" = ");
                 try self.printExpr(attr.value.unwrap());
@@ -1512,14 +1482,14 @@ const Formatter = struct {
                 for (segs, 0..) |sid, i| {
                     if (i > 0) try self.printLiteral(".");
                     const seg = self.pats.PathSeg.get(sid);
-                    try self.printf("{s}", .{self.s(seg.name)});
+                    try self.printLiteral(self.s(seg.name));
                 }
             },
             .Binding => {
                 const node = self.pats.get(.Binding, id);
                 if (node.by_ref) try self.printLiteral("ref ");
                 if (node.is_mut) try self.printLiteral("mut ");
-                try self.printf("{s}", .{self.s(node.name)});
+                try self.printLiteral(self.s(node.name));
             },
             .Parenthesized => {
                 const node = self.pats.get(.Parenthesized, id);
@@ -1622,7 +1592,8 @@ const Formatter = struct {
             },
             .At => {
                 const node = self.pats.get(.At, id);
-                try self.printf("{s} @ ", .{self.s(node.binder)});
+                try self.printLiteral(self.s(node.binder));
+                try self.printLiteral(" @ ");
                 try self.printPattern(node.pattern);
             },
         }
@@ -1634,14 +1605,15 @@ const Formatter = struct {
         for (segs, 0..) |sid, i| {
             if (i > 0) try self.printLiteral(".");
             const seg = self.pats.PathSeg.get(sid);
-            try self.printf("{s}", .{self.s(seg.name)});
+            try self.printLiteral(self.s(seg.name));
         }
     }
 
     /// Print a pattern field entry (name + nested pattern).
     fn printPatternField(self: *Formatter, id: cst.PatFieldId) !void {
         const field = self.pats.StructField.get(id);
-        try self.printf("{s}: ", .{self.s(field.name)});
+        try self.printLiteral(self.s(field.name));
+        try self.printLiteral(": ");
         try self.printPattern(field.pattern);
     }
 };
@@ -1712,3 +1684,4 @@ fn infixOpStr(op: cst.InfixOp) []const u8 {
         .contains => "in",
     };
 }
+

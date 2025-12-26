@@ -2,7 +2,6 @@ const std = @import("std");
 const lib = @import("compiler");
 const lsp = @import("lsp.zig");
 
-/// ANSI escape sequences used for colored CLI output.
 const Colors = struct {
     pub const reset = "\x1b[0m";
     pub const bold = "\x1b[1m";
@@ -19,67 +18,41 @@ const ProgressContext = struct {
     prev_line_length: usize,
 };
 
-fn reportProgress(
-    context: ?*anyopaque,
-    stage: lib.pipeline.ProgressStage,
-    index: usize,
-    total: usize,
-) void {
-    if (context) |ctx| {
-        const payload: *ProgressContext = @ptrCast(@alignCast(ctx));
-        const stage_name = lib.pipeline.stageName(stage);
-        const stage_color = if (payload.use_colors) Colors.cyan else "";
-        const bold = if (payload.use_colors) Colors.bold else "";
-        const reset = if (payload.use_colors) Colors.reset else "";
-        var line_buf: [128]u8 = undefined;
-        const line_slice = std.fmt.bufPrint(
-            &line_buf,
-            "[{d}/{d}] {s}",
-            .{ index, total, stage_name },
-        ) catch return;
-        const line_len = line_slice.len;
-        _ = payload.writer.print("\r", .{}) catch {};
-        if (payload.use_colors) {
-            _ = payload.writer.print("\x1b[2K", .{}) catch {};
-            _ = payload.writer.print("{s}{s}{s}{s}", .{
-                stage_color,
-                bold,
-                line_slice,
-                reset,
-            }) catch {};
+fn reportProgress(ctx: ?*anyopaque, stage: lib.pipeline.ProgressStage, index: usize, total: usize) void {
+    if (ctx) |c| {
+        const p: *ProgressContext = @ptrCast(@alignCast(c));
+        var buf: [128]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "[{d}/{d}] {s}", .{ index, total, lib.pipeline.stageName(stage) }) catch return;
+        _ = p.writer.write("\r") catch {};
+        if (p.use_colors) {
+            _ = p.writer.print("\x1b[2K{s}{s}{s}{s}", .{ Colors.cyan, Colors.bold, line, Colors.reset }) catch {};
         } else {
-            _ = payload.writer.writeAll(line_slice) catch {};
-            const prev_len = payload.prev_line_length;
-            if (prev_len > line_len) {
-                var remaining = prev_len - line_len;
-                var pad_buf: [64]u8 = undefined;
-                while (remaining > 0) {
-                    const chunk = if (remaining < pad_buf.len) remaining else pad_buf.len;
-                    @memset(pad_buf[0..chunk], ' ');
-                    _ = payload.writer.writeAll(pad_buf[0..chunk]) catch {};
-                    remaining -= chunk;
+            _ = p.writer.write(line) catch {};
+            if (p.prev_line_length > line.len) {
+                var pad: [64]u8 = undefined;
+                @memset(&pad, ' ');
+                var rem = p.prev_line_length - line.len;
+                while (rem > 0) {
+                    const n = @min(rem, pad.len);
+                    _ = p.writer.write(pad[0..n]) catch {};
+                    rem -= n;
                 }
             }
-            payload.prev_line_length = line_len;
+            p.prev_line_length = line.len;
         }
-        payload.writer.flush() catch {};
+        p.writer.flush() catch {};
     }
 }
 
 fn finalizeProgress(ctx: *ProgressContext, finalized: *bool, keep_line: bool) void {
     if (finalized.*) return;
-    if (keep_line) {
-        _ = ctx.writer.print("\n", .{}) catch {};
-    } else {
-        _ = ctx.writer.print("\r\x1b[2K", .{}) catch {};
-    }
+    _ = ctx.writer.write(if (keep_line) "\n" else "\r\x1b[2K") catch {};
     _ = ctx.writer.flush() catch {};
     finalized.* = true;
 }
 
-/// Stores parsed CLI options before dispatching to the requested command.
 const CliArgs = struct {
-    subcommand: Subcommand,
+    subcommand: Subcommand = .unknown,
     filename: ?[]const u8 = null,
     output_path: ?[]const u8 = null,
     emit_tir: bool = false,
@@ -92,342 +65,190 @@ const CliArgs = struct {
     tir_prune_unused: bool = true,
     tir_warn_unused: bool = false,
 
-    /// Supported subcommands exposed through the CLI.
-    const Subcommand = enum {
-        compile,
-        run,
-        check,
-        ast,
-        cst,
-        tir,
-        tir_liveness,
-        help,
-        lex,
-        interpret,
-        mlir,
-        mlir_passes,
-        llvm_passes,
-        test_mode,
-        unknown,
-        repl,
-        pretty_print,
-        json_ast,
-        server,
-        lsp,
-        format,
-    };
+    const Subcommand = enum { compile, run, check, ast, cst, tir, tir_liveness, help, lex, interpret, mlir, mlir_passes, llvm_passes, test_mode, unknown, repl, pretty_print, json_ast, server, lsp, format };
 };
 
-/// Print the CLI usage message and supported commands/options.
-fn printUsage(writer: anytype, exec_name: []const u8) !void {
-    try writer.print(
-        "{s}Usage:{s} {s} <command> [options] <file>\n\n",
-        .{ Colors.bold, Colors.reset, exec_name },
-    );
-
-    try writer.print(
-        "{s}Commands:{s}\n",
-        .{ Colors.bold, Colors.reset },
-    );
-    try writer.print("  {s}compile{s} <file>      Compile a source file to an executable.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}run{s}     <file>      Compile and immediately run a source file.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}test{s}    <file>      Compile and run all test declarations (ignores user main).\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}check{s}   <file>      Parse and perform semantic checks on a source file.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}ast{s}     <file>      Print the Abstract Syntax Tree (AST) of a source file.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}cst{s}     <file>      Print the Concrete Syntax Tree (CST) of a source file.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}tir{s}     <file>      Print the Typed Intermediate Representation (TIR) of a source file.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}tir-liveness{s} <file> Analyze and dump TIR liveness per block.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}interpret{s} <file>  Run the comptime interpreter stage to evaluate comptime blocks.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}mlir{s}     <file>      Print the MLIR representation of a source file.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}mlir_passes{s} <file>  Run MLIR pipeline (print after passes).\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}llvm_passes{s} <file>  Run LLVM IR pipeline (print after passes).\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}pretty-print{s} <file> Format and print the source file.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}format{s} <file>        Reformat a source file in-place.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}json-ast{s}     <file> Print the Abstract Syntax Tree (AST) of a source file as JSON.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}server{s}              Run a server for AST Explorer.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}lsp{s}                Start the language server.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}help{s}                Display this help message.\n\n", .{ Colors.cyan, Colors.reset });
-
-    try writer.print(
-        "{s}Options:{s}\n",
-        .{ Colors.bold, Colors.reset },
-    );
-    try writer.print("  {s}--output{s} <path>    Specify the output path for compiled executables.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}--emit-tir{s}         Emit TIR to stdout during compilation.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}--emit-mlir{s}        Emit MLIR IR to stdout during compilation.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}--run-mlir{s}         Run MLIR JIT after compilation (for testing).\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}--no-color{s}         Disable colored output for diagnostics.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}--verbose{s}          Enable verbose output.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}--debug{s}            Enable debug info generation.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}--tir-prune-unused{s}  Remove unreachable functions/globals before MLIR.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}--tir-warn-unused{s}   Emit warnings for unused functions.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}-O<level>{s}           Set optimization level (0, 1, 2, 3, s, z).\n\n", .{ Colors.cyan, Colors.reset });
+fn printUsage(writer: anytype, exec: []const u8) !void {
+    const b = Colors.bold;
+    const r = Colors.reset;
+    const c = Colors.cyan;
+    try writer.print("{s}Usage:{s} {s} <command> [options] <file>\n\n", .{ b, r, exec });
+    try writer.print("{s}Commands:{s}\n", .{ b, r });
+    try writer.print("  {s}compile{s}       Compile a source file to an executable.\n", .{ c, r });
+    try writer.print("  {s}run{s}           Compile and immediately run a source file.\n", .{ c, r });
+    try writer.print("  {s}test{s}          Compile and run all test declarations.\n", .{ c, r });
+    try writer.print("  {s}check{s}         Perform semantic checks.\n", .{ c, r });
+    try writer.print("  {s}ast{s}           Print Abstract Syntax Tree (AST).\n", .{ c, r });
+    try writer.print("  {s}cst{s}           Print Concrete Syntax Tree (CST).\n", .{ c, r });
+    try writer.print("  {s}tir{s}           Print Typed IR (TIR).\n", .{ c, r });
+    try writer.print("  {s}tir-liveness{s}  Dump TIR liveness analysis.\n", .{ c, r });
+    try writer.print("  {s}interpret{s}     Run comptime interpreter.\n", .{ c, r });
+    try writer.print("  {s}mlir{s}          Print MLIR representation.\n", .{ c, r });
+    try writer.print("  {s}mlir_passes{s}   Run MLIR passes and print.\n", .{ c, r });
+    try writer.print("  {s}llvm_passes{s}   Run LLVM passes and print.\n", .{ c, r });
+    try writer.print("  {s}pretty-print{s}  Format and print source.\n", .{ c, r });
+    try writer.print("  {s}format{s}        Reformat source in-place.\n", .{ c, r });
+    try writer.print("  {s}json-ast{s}      Print AST as JSON.\n", .{ c, r });
+    try writer.print("  {s}server{s}        Run AST Explorer server.\n", .{ c, r });
+    try writer.print("  {s}lsp{s}           Start Language Server.\n", .{ c, r });
+    try writer.print("  {s}help{s}          Display this message.\n\n", .{ c, r });
+    try writer.print("{s}Options:{s}\n", .{ b, r });
+    try writer.print("  {s}--output{s} <path>        Output path.\n", .{ c, r });
+    try writer.print("  {s}--emit-tir{s}             Emit TIR to stdout.\n", .{ c, r });
+    try writer.print("  {s}--emit-mlir{s}            Emit MLIR to stdout.\n", .{ c, r });
+    try writer.print("  {s}--run-mlir{s}             Run MLIR JIT.\n", .{ c, r });
+    try writer.print("  {s}--no-color{s}             Disable colors.\n", .{ c, r });
+    try writer.print("  {s}--verbose{s}              Enable verbose output.\n", .{ c, r });
+    try writer.print("  {s}--debug{s}                Enable debug info.\n", .{ c, r });
+    try writer.print("  {s}--tir-prune-unused{s}     Prune unused TIR.\n", .{ c, r });
+    try writer.print("  {s}--tir-warn-unused{s}      Warn on unused TIR.\n", .{ c, r });
+    try writer.print("  {s}-O<level>{s}              Optimization level (0,1,2,3,s,z).\n\n", .{ c, r });
     try writer.flush();
 }
 
-/// Launch the interactive REPL session.
-fn repl(
-    allocator: std.mem.Allocator,
-    err_writer: anytype,
-    out_writer: anytype,
-) !void {
-    try err_writer.print("{s}Welcome to the REPL! Type your code and press Ctrl-D to evaluate.{s}\n", .{ Colors.green, Colors.reset });
-    var context: lib.compile.Context = .init(allocator);
-    defer context.deinit();
-
-    var pipeline: lib.pipeline.Pipeline = .init(allocator, &context);
-
-    var in_buf: [4096]u8 = undefined;
-
-    var stdin = std.fs.File.stdin().readerStreaming(&in_buf);
-    var source_lines = std.ArrayList([]const u8){};
-    defer source_lines.deinit(allocator);
+fn repl(gpa: std.mem.Allocator, err_w: anytype, out_w: anytype) !void {
+    try err_w.print("{s}Welcome to the REPL! Type code, Ctrl-D to evaluate.{s}\n", .{ Colors.green, Colors.reset });
+    var ctx = lib.compile.Context.init(gpa);
+    defer ctx.deinit();
+    var pipeline = lib.pipeline.Pipeline.init(gpa, &ctx);
+    var buf: [4096]u8 = undefined;
+    var stdin = std.fs.File.stdin().readerStreaming(&buf);
+    var lines = std.ArrayList([]const u8){};
+    defer lines.deinit(gpa);
 
     while (true) {
-        try err_writer.print("{s}>>> {s}", .{ Colors.blue, Colors.reset });
-        try err_writer.flush();
-        const line = stdin.interface.takeDelimiterExclusive('\n') catch |err| switch (err) {
-            error.EndOfStream => break, // clean EOF
-            else => return err,
-        };
-        if (line.len == 0) continue; // Ignore empty lines
-        try source_lines.append(allocator, try allocator.dupe(u8, line));
-        try source_lines.append(allocator, "\n");
+        try err_w.print("{s}>>> {s}", .{ Colors.blue, Colors.reset });
+        try err_w.flush();
+        const line = stdin.interface.takeDelimiterExclusive('\n') catch |e| if (e == error.EndOfStream) break else return e;
+        if (line.len == 0) continue;
+        try lines.append(gpa, try gpa.dupe(u8, line));
+        try lines.append(gpa, "\n");
     }
-    const source = try std.mem.concatWithSentinel(allocator, u8, source_lines.items, 0);
-    std.debug.print("{s}Input source:{s}\n{s}\n", .{ Colors.bold, Colors.reset, source });
+    const src = try std.mem.concatWithSentinel(gpa, u8, lines.items, 0);
+    defer gpa.free(src);
+    std.debug.print("{s}Input:{s}\n{s}\n", .{ Colors.bold, Colors.reset, src });
 
-    const result = try pipeline.run(source, &.{}, .repl, null, null);
-    const main_pkg = result.compilation_unit.?.packages.getPtr("main") orelse return error.NoMainPackage;
-    var cst_program = main_pkg.sources.entries.get(0).value.cst.?;
-    const hir = main_pkg.sources.entries.get(0).value.ast.?;
-    const tir_mod = main_pkg.sources.entries.get(0).value.tir.?;
+    const res = try pipeline.run(src, &.{}, .repl, null, null);
+    const main_pkg = res.compilation_unit.?.packages.getPtr("main") orelse return error.NoMainPackage;
+    var ent = main_pkg.sources.entries.get(0).value;
 
-    // Print results based on the 'result' struct
-    var cst_printer: lib.cst.DodPrinter = .init(out_writer, &cst_program.exprs, &cst_program.pats);
-    std.debug.print("{s}Concrete Syntax Tree (CST){s}\n", .{ Colors.bold, Colors.green });
-    try cst_printer.printProgram(&cst_program.program);
-    var ast_printer: lib.ast.AstPrinter = .init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
-    std.debug.print("{s}Abstract Syntax Tree (AST){s}\n", .{ Colors.bold, Colors.cyan });
-    try ast_printer.printUnit(&hir.unit);
-    var tir_printer: lib.tir.TirPrinter = .init(out_writer, tir_mod);
-    std.debug.print("{s}Typed Intermediate Representation (TIR){s}\n", .{ Colors.bold, Colors.yellow });
-    try tir_printer.print();
-    if (result.mlir_module) |mlir_module| {
-        std.debug.print("{s}{s}MLIR Module\n", .{ Colors.bold, Colors.green });
-        var op = mlir_module.getOperation();
-        op.dump();
+    var cst_p = lib.cst.DodPrinter.init(out_w, &ent.cst.?.exprs, &ent.cst.?.pats);
+    std.debug.print("{s}CST{s}\n", .{ Colors.bold, Colors.green });
+    try cst_p.printProgram(&ent.cst.?.program);
+    var ast_p = lib.ast.AstPrinter.init(out_w, &ent.ast.?.exprs, &ent.ast.?.stmts, &ent.ast.?.pats);
+    std.debug.print("{s}AST{s}\n", .{ Colors.bold, Colors.cyan });
+    try ast_p.printUnit(&ent.ast.?.unit);
+    var tir_p = lib.tir.TirPrinter.init(out_w, ent.tir.?);
+    std.debug.print("{s}TIR{s}\n", .{ Colors.bold, Colors.yellow });
+    try tir_p.print();
+    if (res.mlir_module) |m| {
+        std.debug.print("{s}MLIR{s}\n", .{ Colors.bold, Colors.green });
+        m.getOperation().dump();
     }
     std.debug.print("{s}\n", .{Colors.reset});
-    try out_writer.flush();
-    defer allocator.free(source);
+    try out_w.flush();
 }
 
-/// Start the AST explorer HTTP server on localhost.
-fn server(
-    allocator: std.mem.Allocator,
-    err_writer: anytype,
-) !void {
-    // Listen on localhost:8080 (can tweak if needed)
+fn server(allocator: std.mem.Allocator, _: anytype) !void {
     const addr = try std.net.Address.parseIp4("127.0.0.1", 8000);
     var tcp = try addr.listen(.{ .reuse_address = true });
     defer tcp.deinit();
+    std.debug.print("AST server on http://127.0.0.1:8000\n", .{});
 
-    std.debug.print("AST server listening on http://127.0.0.1:8000\n", .{});
-
-    accept_loop: while (true) {
-        const conn = tcp.accept() catch |e| {
-            std.debug.print("accept error: {s}\n", .{@errorName(e)});
-            continue :accept_loop;
-        };
+    while (true) {
+        var conn = tcp.accept() catch continue;
         defer conn.stream.close();
-
-        // HTTP over the accepted TCP stream (Zig 0.15.1 style: operate on I/O streams)
-        var recv_buf: [4096]u8 = undefined;
-        var send_buf: [4096]u8 = undefined;
-        var conn_reader = conn.stream.reader(&recv_buf);
-        var conn_writer = conn.stream.writer(&send_buf);
-        var http: std.http.Server = .init(conn_reader.interface(), &conn_writer.interface);
-
-        request_loop: while (http.reader.state == .ready) {
-            var req = http.receiveHead() catch |err| switch (err) {
-                error.HttpConnectionClosing => break :request_loop,
-                else => {
-                    std.debug.print("receiveHead error: {s}\n", .{@errorName(err)});
-                    break :request_loop;
-                },
-            };
-
-            // Basic CORS / preflight support
+        var rbuf: [4096]u8 = undefined;
+        var wbuf: [4096]u8 = undefined;
+        var reader = conn.stream.reader(&rbuf);
+        var writer = conn.stream.writer(&wbuf);
+        var http = std.http.Server.init(reader.interface(), &writer.interface);
+        while (http.reader.state == .ready) {
+            var req = http.receiveHead() catch break;
             if (req.head.method == .OPTIONS) {
-                try req.respond("", .{
-                    .status = .no_content,
-                    .extra_headers = &.{
-                        .{ .name = "access-control-allow-origin", .value = "*" },
-                        .{ .name = "access-control-allow-headers", .value = "content-type" },
-                        .{ .name = "access-control-allow-methods", .value = "POST, OPTIONS" },
-                    },
-                });
-                continue :request_loop;
+                try req.respond("", .{ .status = .no_content, .extra_headers = &.{ .{ .name = "access-control-allow-origin", .value = "*" }, .{ .name = "access-control-allow-headers", .value = "content-type" } } });
+                continue;
             }
-
             if (req.head.method != .POST) {
-                try req.respond("Only POST is supported\n", .{
-                    .status = .method_not_allowed,
-                    .extra_headers = &.{
-                        .{ .name = "content-type", .value = "text/plain; charset=utf-8" },
-                        .{ .name = "access-control-allow-origin", .value = "*" },
-                    },
-                });
-                continue :request_loop;
+                try req.respond("Only POST\n", .{ .status = .method_not_allowed });
+                continue;
             }
-
-            // Read request body (source text)
-            var body_reader_buf: [4096]u8 = undefined;
-            var body_reader = req.readerExpectNone(&body_reader_buf);
-            const content_length = req.head.content_length orelse {
-                std.debug.print("Missing Content-Length\n", .{});
-                try req.respond("Missing Content-Length\n", .{
-                    .status = .length_required,
-                    .extra_headers = &.{
-                        .{ .name = "content-type", .value = "text/plain; charset=utf-8" },
-                        .{ .name = "access-control-allow-origin", .value = "*" },
-                    },
-                });
-                continue :request_loop;
+            var bbuf: [4096]u8 = undefined;
+            const len = req.head.content_length orelse {
+                try req.respond("No Length\n", .{ .status = .length_required });
+                continue;
             };
-
-            const body = body_reader.readAlloc(allocator, content_length) catch |e| {
-                std.debug.print("read body error: {s}\n", .{@errorName(e)});
-                try req.respond("Failed to read body\n", .{
-                    .status = .bad_request,
-                    .extra_headers = &.{
-                        .{ .name = "content-type", .value = "text/plain; charset=utf-8" },
-                        .{ .name = "access-control-allow-origin", .value = "*" },
-                    },
-                });
-                continue :request_loop;
+            const body = req.readerExpectNone(&bbuf).readAlloc(allocator, len) catch {
+                try req.respond("Read Fail\n", .{ .status = .bad_request });
+                continue;
             };
             defer allocator.free(body);
+            const src = try allocator.dupeZ(u8, body);
+            defer allocator.free(src);
 
-            // Null-terminate for the compiler pipeline
-            const source = try allocator.dupeZ(u8, body);
-            defer allocator.free(source);
+            var ctx = lib.compile.Context.init(allocator);
+            defer ctx.deinit();
+            var pipe = lib.pipeline.Pipeline.init(allocator, &ctx);
+            const res = try pipe.run(src, &.{}, .ast, null, null);
 
-            var context: lib.compile.Context = .init(allocator);
-            defer context.deinit();
-
-            var pipeline: lib.pipeline.Pipeline = .init(allocator, &context); // Create pipeline here
-
-            const result = try pipeline.run(source, &.{}, .ast, null, null); // Run the pipeline to AST
-
-            // If there are diagnostics, emit them to stderr and return 400
-            if (context.diags.anyErrors()) {
-                try context.diags.emitStyled(&context, err_writer, true);
-                try req.respond("Semantic errors\n", .{
-                    .status = .bad_request,
-                    .extra_headers = &.{
-                        .{ .name = "content-type", .value = "text/plain; charset=utf-8" },
-                        .{ .name = "access-control-allow-origin", .value = "*" },
-                    },
-                });
-                continue :request_loop;
+            if (ctx.diags.anyErrors()) {
+                try req.respond("Errors\n", .{ .status = .bad_request, .extra_headers = &.{.{ .name = "access-control-allow-origin", .value = "*" }} });
+                continue;
             }
-
-            // Print HIR as JSON into an allocating writer buffer
-            var json_buf: std.Io.Writer.Allocating = .init(allocator);
-            defer json_buf.deinit();
-            const main_pkg = result.compilation_unit.?.packages.getPtr("main") orelse return error.NoMainPackage;
-            const ast = main_pkg.sources.entries.get(0).value.ast.?;
-
-            var json_printer: lib.json_printer.JsonPrinter = .init(
-                &json_buf.writer,
-                &ast.exprs, // Use result.ast
-                &ast.stmts, // Use result.ast
-                &ast.pats, // Use result.ast
-            );
-            try json_printer.printUnit(&ast.unit); // Use result.ast
-
-            const json = try json_buf.toOwnedSlice();
+            var jbuf = std.Io.Writer.Allocating.init(allocator);
+            defer jbuf.deinit();
+            const ast = res.compilation_unit.?.packages.getPtr("main").?.sources.entries.get(0).value.ast.?;
+            var jp = lib.json_printer.JsonPrinter.init(&jbuf.writer, &ast.exprs, &ast.stmts, &ast.pats);
+            try jp.printUnit(&ast.unit);
+            const json = try jbuf.toOwnedSlice();
             defer allocator.free(json);
-
-            // Respond with JSON
-            try req.respond(json, .{
-                .status = .ok,
-                .extra_headers = &.{
-                    .{ .name = "content-type", .value = "application/json" },
-                    .{ .name = "access-control-allow-origin", .value = "*" },
-                },
-            });
+            try req.respond(json, .{ .status = .ok, .extra_headers = &.{ .{ .name = "content-type", .value = "application/json" }, .{ .name = "access-control-allow-origin", .value = "*" } } });
         }
     }
 }
 
-/// Compile/interpret `filename` according to `mode` and emit artifacts.
-fn process_file(
-    compiler_ctx: *lib.compile.Context,
-    allocator: std.mem.Allocator,
-    filename: []const u8,
-    cli_args: *CliArgs,
-    err_writer: anytype,
-    out_writer: anytype,
-    link_args: []const []const u8,
-) anyerror!void {
-    var abs_filename_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_filename = std.fs.cwd().realpath(filename, &abs_filename_buf) catch filename;
+fn process_file(ctx: *lib.compile.Context, alloc: std.mem.Allocator, file: []const u8, args: *CliArgs, err_w: anytype, out_w: anytype, link: []const []const u8) !void {
+    var abuf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs_path = std.fs.cwd().realpath(file, &abuf) catch file;
 
-    if (cli_args.subcommand == .format or cli_args.subcommand == .pretty_print) {
-        const src = try std.fs.cwd().readFileAlloc(allocator, abs_filename, 10 * 1024 * 1024);
-        defer allocator.free(src);
-        const source_z = try std.mem.concatWithSentinel(allocator, u8, &.{src}, 0);
-        defer allocator.free(source_z);
-        const formatted = try lib.formatter.formatSource(allocator, source_z, abs_filename);
-        defer allocator.free(formatted);
-        if (cli_args.subcommand == .pretty_print) {
-            try out_writer.writeAll(formatted);
-            try out_writer.flush();
+    if (args.subcommand == .format or args.subcommand == .pretty_print) {
+        const src = try std.fs.cwd().readFileAlloc(alloc, abs_path, 10 << 20);
+        defer alloc.free(src);
+        const zsrc = try std.mem.concatWithSentinel(alloc, u8, &.{src}, 0);
+        defer alloc.free(zsrc);
+        const fmt = try lib.formatter.formatSource(alloc, zsrc, abs_path);
+        defer alloc.free(fmt);
+        if (args.subcommand == .pretty_print) {
+            try out_w.writeAll(fmt);
+            try out_w.flush();
         } else {
-            var file = try std.fs.cwd().createFile(abs_filename, .{ .truncate = true });
-            defer file.close();
-            try file.writeAll(formatted);
+            var f = try std.fs.cwd().createFile(abs_path, .{ .truncate = true });
+            defer f.close();
+            try f.writeAll(fmt);
         }
         return;
     }
 
-    var pipeline: lib.pipeline.Pipeline = .init(allocator, compiler_ctx);
-    pipeline.tir_prune_unused = cli_args.tir_prune_unused;
-    pipeline.tir_warn_unused = cli_args.tir_warn_unused;
-    pipeline.debug_info = cli_args.debug_info;
-    lib.codegen.enable_debug_info = cli_args.debug_info;
+    var pipe = lib.pipeline.Pipeline.init(alloc, ctx);
+    pipe.tir_prune_unused = args.tir_prune_unused;
+    pipe.tir_warn_unused = args.tir_warn_unused;
+    pipe.debug_info = args.debug_info;
+    lib.codegen.enable_debug_info = args.debug_info;
 
-    const should_show_progress = cli_args.subcommand == .compile or cli_args.subcommand == .run;
-    var progress_active = false;
-    var progress_arg: ?*lib.pipeline.ProgressReporter = null;
-    var progress_reporter: lib.pipeline.ProgressReporter = undefined;
-    var progress_ctx: ProgressContext = undefined;
-    var progress_finalized = false;
-    if (should_show_progress) {
-        progress_active = true;
-        progress_ctx = ProgressContext{
-            .writer = err_writer,
-            .use_colors = !cli_args.no_color,
-            .prev_line_length = 0,
-        };
-        progress_reporter = lib.pipeline.ProgressReporter{
-            .callback = reportProgress,
-            .context = &progress_ctx,
-        };
-        progress_arg = &progress_reporter;
-    }
-    if (cli_args.verbose) {
-        try err_writer.print("Compiling {s}...\n", .{abs_filename});
-    }
-    const result_or_err = pipeline.run(abs_filename, link_args, switch (cli_args.subcommand) {
+    var prog_ctx = ProgressContext{ .writer = err_w, .use_colors = !args.no_color, .prev_line_length = 0 };
+    var prog_rep = lib.pipeline.ProgressReporter{ .callback = reportProgress, .context = &prog_ctx };
+    var prog_done = false;
+    const use_prog = (args.subcommand == .compile or args.subcommand == .run) and !args.verbose;
+    const prog_ptr = if (use_prog) &prog_rep else null;
+
+    if (args.verbose) try err_w.print("Compiling {s}...\n", .{abs_path});
+
+    const mode: lib.pipeline.Pipeline.Mode = switch (args.subcommand) {
         .compile => .compile,
         .run => .run,
         .test_mode => .test_mode,
         .check => .check,
-        .ast => .ast,
+        .ast, .pretty_print, .json_ast => .ast,
         .cst => .parse,
         .tir => .tir,
         .tir_liveness => .tir_liveness,
@@ -436,312 +257,168 @@ fn process_file(
         .interpret => .interpret,
         .mlir_passes => .passes,
         .llvm_passes => .llvm_passes,
-        .pretty_print => .ast,
-        .json_ast => .ast,
-        .format => unreachable,
         else => unreachable,
-    }, progress_arg, cli_args.optimization_level);
-
-    if (cli_args.emit_tir) {
-        for (compiler_ctx.compilation_unit.packages.values()) |pkg| {
-            for (pkg.sources.values()) |entry| {
-                if (entry.tir) |tir| {
-                    var tir_printer: lib.tir.TirPrinter = .init(out_writer, tir);
-                    tir_printer.print() catch {};
-                }
-            }
-        }
-        try out_writer.flush();
-    }
-
-    const result = result_or_err catch |err| {
-        if (progress_active) finalizeProgress(&progress_ctx, &progress_finalized, true);
-        return err;
     };
 
-    // For 'check' command, stop after semantic checks
-    if (cli_args.subcommand == .check) {
-        for (result.compilation_unit.?.packages.values()) |pkg| {
-            for (pkg.sources.values()) |entry| {
-                const hir = entry.ast.?;
-                var printer: lib.ast.AstPrinter = .init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
-                try printer.printUnit(&hir.unit);
-            }
-        }
-        if (compiler_ctx.diags.count() > 0) {
-            try compiler_ctx.diags.emitStyled(compiler_ctx, err_writer, !cli_args.no_color);
-        }
-        try out_writer.flush();
-        return;
-    }
-    if (cli_args.subcommand == .ast) {
-        for (result.compilation_unit.?.packages.values()) |pkg| {
-            for (pkg.sources.values()) |entry| {
-                const hir = entry.ast.?;
-                var printer: lib.ast.AstPrinter = .init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
-                try printer.printUnit(&hir.unit);
-            }
-        }
-        if (compiler_ctx.diags.count() > 0) {
-            try compiler_ctx.diags.emitStyled(compiler_ctx, err_writer, !cli_args.no_color);
-        }
-        try out_writer.flush();
-        return;
-    }
-    if (cli_args.subcommand == .cst) {
-        for (result.compilation_unit.?.packages.values()) |pkg| {
-            for (pkg.sources.values()) |entry| {
-                var cst = entry.cst.?;
-                var cst_printer: lib.cst.DodPrinter = .init(out_writer, &cst.exprs, &cst.pats);
-                try cst_printer.printProgram(&cst.program);
-            }
-        }
-        if (compiler_ctx.diags.count() > 0) {
-            try compiler_ctx.diags.emitStyled(compiler_ctx, err_writer, !cli_args.no_color);
-        }
-        try out_writer.flush();
-        return;
-    }
-    if (cli_args.subcommand == .interpret) {
-        if (compiler_ctx.diags.count() > 0) {
-            try compiler_ctx.diags.emitStyled(compiler_ctx, err_writer, !cli_args.no_color);
-        }
-        try out_writer.flush();
-        return;
-    }
+    const res = pipe.run(abs_path, link, mode, prog_ptr, args.optimization_level) catch |e| {
+        if (use_prog) finalizeProgress(&prog_ctx, &prog_done, true);
+        if (ctx.diags.anyErrors()) try ctx.diags.emitStyled(ctx, err_w, !args.no_color);
+        return e;
+    };
+    if (use_prog) finalizeProgress(&prog_ctx, &prog_done, false);
 
-    // For 'json-ast' command, print AST as JSON and exit
-    if (cli_args.subcommand == .json_ast) {
-        for (result.compilation_unit.?.packages.values()) |pkg| {
-            for (pkg.sources.values()) |entry| {
-                const hir = entry.ast.?;
-                var json_printer: lib.json_printer.JsonPrinter = .init(
-                    out_writer,
-                    &hir.exprs,
-                    &hir.stmts,
-                    &hir.pats,
-                );
-                try json_printer.printUnit(&hir.unit);
-            }
-        }
-        if (compiler_ctx.diags.count() > 0) {
-            try compiler_ctx.diags.emitStyled(compiler_ctx, err_writer, !cli_args.no_color);
-        }
-        try out_writer.flush();
-        return;
-    }
-
-    // For 'tir' command, print TIR and exit
-    if (cli_args.subcommand == .tir) {
-        for (result.compilation_unit.?.packages.values()) |pkg| {
-            for (pkg.sources.values()) |entry| {
-                const tir = entry.tir.?;
-                var tir_printer: lib.tir.TirPrinter = .init(out_writer, tir);
-                try tir_printer.print();
-            }
-        }
-        if (compiler_ctx.diags.count() > 0) {
-            try compiler_ctx.diags.emitStyled(compiler_ctx, err_writer, !cli_args.no_color);
-        }
-        try out_writer.flush();
-        return;
-    }
-
-    if (compiler_ctx.diags.count() > 0) {
-        try compiler_ctx.diags.emitStyled(compiler_ctx, err_writer, !cli_args.no_color);
-    }
-    // For 'run', launch the compiled program after showing diagnostics
-    if (cli_args.subcommand == .run) {
-        lib.compile.run();
-    } else if (cli_args.subcommand == .test_mode) {
-        const status = lib.compile.runWithStatus() catch {
-            try err_writer.print("{s}Error:{s} failed to run test harness.\n", .{ Colors.red, Colors.reset });
-            return;
+    if (args.emit_tir) {
+        for (ctx.compilation_unit.packages.values()) |pkg| for (pkg.sources.values()) |e| if (e.tir) |t| {
+            var tp = lib.tir.TirPrinter.init(out_w, t);
+            tp.print() catch {};
         };
-        const total = result.test_count;
-        const fails: usize = @intCast(status);
-        const passed = if (fails > total) 0 else total - fails;
-        try out_writer.print("{s}tests:{s} {d} passed; {d} failed\n", .{ Colors.bold, Colors.reset, passed, fails });
-        if (status != 0) std.process.exit(status);
+        try out_w.flush();
     }
-    if (cli_args.verbose) {
-        try err_writer.print("{s}Compilation successful for {s}.{s}\n", .{ Colors.green, filename, Colors.reset });
+
+    switch (args.subcommand) {
+        .check => if (ctx.diags.count() > 0) try ctx.diags.emitStyled(ctx, err_w, !args.no_color),
+        .ast => {
+            for (res.compilation_unit.?.packages.values()) |pkg| {
+                for (pkg.sources.values()) |e| {
+                    var p = lib.ast.AstPrinter.init(out_w, &e.ast.?.exprs, &e.ast.?.stmts, &e.ast.?.pats);
+                    try p.printUnit(&e.ast.?.unit);
+                }
+            }
+            try out_w.flush();
+        },
+        .cst => {
+            for (res.compilation_unit.?.packages.values()) |pkg| {
+                for (pkg.sources.values()) |*e| {
+                    var p = lib.cst.DodPrinter.init(out_w, &e.cst.?.exprs, &e.cst.?.pats);
+                    try p.printProgram(&e.cst.?.program);
+                }
+            }
+            try out_w.flush();
+        },
+        .json_ast => {
+            for (res.compilation_unit.?.packages.values()) |pkg| {
+                for (pkg.sources.values()) |e| {
+                    var p = lib.json_printer.JsonPrinter.init(out_w, &e.ast.?.exprs, &e.ast.?.stmts, &e.ast.?.pats);
+                    try p.printUnit(&e.ast.?.unit);
+                }
+            }
+            try out_w.flush();
+        },
+        .tir => {
+            for (res.compilation_unit.?.packages.values()) |pkg| for (pkg.sources.values()) |e| if (e.tir) |t| {
+                var p = lib.tir.TirPrinter.init(out_w, t);
+                try p.print();
+            };
+            try out_w.flush();
+        },
+        .run => lib.compile.run(),
+        .test_mode => {
+            const status = lib.compile.runWithStatus() catch {
+                try err_w.print("{s}Error:{s} Test harness failed.\n", .{ Colors.red, Colors.reset });
+                return;
+            };
+            const fails: usize = @intCast(status);
+            try out_w.print("{s}tests:{s} {d} passed; {d} failed\n", .{ Colors.bold, Colors.reset, if (fails > res.test_count) 0 else res.test_count - fails, fails });
+            if (status != 0) std.process.exit(status);
+        },
+        else => {},
     }
+    if (ctx.diags.count() > 0 and args.subcommand != .check) try ctx.diags.emitStyled(ctx, err_w, !args.no_color);
+    if (args.verbose) try err_w.print("{s}Success: {s}.{s}\n", .{ Colors.green, file, Colors.reset });
 }
 
-/// Entry point handling CLI args and dispatching pipeline modes.
 pub fn main() !void {
     const gpa = std.heap.page_allocator;
-    var args_iter = std.process.args();
-    const exec_name = args_iter.next().?;
+    var iter = std.process.args();
+    const exec = iter.next().?;
+    var args = CliArgs{};
+    var link = std.ArrayList([]const u8){};
+    defer link.deinit(gpa);
 
-    var cli_args: CliArgs = .{ .subcommand = .unknown };
-    var filename_found = false;
+    const cmds = std.StaticStringMap(CliArgs.Subcommand).initComptime(.{
+        .{ "compile", .compile },
+        .{ "run", .run },
+        .{ "test", .test_mode },
+        .{ "check", .check },
+        .{ "ast", .ast },
+        .{ "cst", .cst },
+        .{ "tir", .tir },
+        .{ "tir-liveness", .tir_liveness },
+        .{ "mlir", .mlir },
+        .{ "mlir_passes", .mlir_passes },
+        .{ "llvm_passes", .llvm_passes },
+        .{ "interpret", .interpret },
+        .{ "pretty-print", .pretty_print },
+        .{ "format", .format },
+        .{ "lex", .lex },
+        .{ "help", .help },
+        .{ "repl", .repl },
+        .{ "json-ast", .json_ast },
+        .{ "server", .server },
+        .{ "lsp", .lsp },
+    });
 
-    var buffer: [1024]u8 = undefined;
-    var err = std.fs.File.stderr().writer(&buffer);
-    var writer = &err.interface;
+    var obuf: [1024]u8 = undefined;
+    var ebuf: [1024]u8 = undefined;
+    var stdout = std.fs.File.stdout().writer(&obuf);
+    var stderr = std.fs.File.stderr().writer(&ebuf);
+    const out_w = &stdout.interface;
+    const err_w = &stderr.interface;
 
-    var link_args_list: std.ArrayList([]const u8) = .empty;
-    defer link_args_list.deinit(gpa);
-
-    while (args_iter.next()) |arg| {
+    while (iter.next()) |arg| {
         if (std.mem.startsWith(u8, arg, "--")) {
-            if (std.mem.eql(u8, arg, "--output")) {
-                cli_args.output_path = args_iter.next().?;
-            } else if (std.mem.eql(u8, arg, "--emit-tir")) {
-                cli_args.emit_tir = true;
-            } else if (std.mem.eql(u8, arg, "--emit-mlir")) {
-                cli_args.emit_mlir = true;
-            } else if (std.mem.eql(u8, arg, "--run-mlir")) {
-                cli_args.run_mlir = true;
-            } else if (std.mem.eql(u8, arg, "--no-color")) {
-                cli_args.no_color = true;
-            } else if (std.mem.eql(u8, arg, "--tir-prune-unused")) {
-                cli_args.tir_prune_unused = true;
-            } else if (std.mem.eql(u8, arg, "--tir-warn-unused")) {
-                cli_args.tir_warn_unused = true;
-            } else if (std.mem.eql(u8, arg, "--verbose")) {
-                cli_args.verbose = true;
-            } else if (std.mem.eql(u8, arg, "--debug")) {
-                cli_args.debug_info = true;
-            } else {
-                // Unknown option
-                try writer.print("{s}Error:{s} Unknown option '{s}'\n", .{ Colors.red, Colors.reset, arg });
-                try printUsage(writer, exec_name);
+            if (std.mem.eql(u8, arg, "--output")) args.output_path = iter.next().? else if (std.mem.eql(u8, arg, "--emit-tir")) args.emit_tir = true else if (std.mem.eql(u8, arg, "--emit-mlir")) args.emit_mlir = true else if (std.mem.eql(u8, arg, "--run-mlir")) args.run_mlir = true else if (std.mem.eql(u8, arg, "--no-color")) args.no_color = true else if (std.mem.eql(u8, arg, "--tir-prune-unused")) args.tir_prune_unused = true else if (std.mem.eql(u8, arg, "--tir-warn-unused")) args.tir_warn_unused = true else if (std.mem.eql(u8, arg, "--verbose")) args.verbose = true else if (std.mem.eql(u8, arg, "--debug")) args.debug_info = true else {
+                try err_w.print("{s}Error:{s} Unknown '{s}'\n", .{ Colors.red, Colors.reset, arg });
+                try printUsage(err_w, exec);
                 std.process.exit(1);
             }
         } else if (std.mem.startsWith(u8, arg, "-O")) {
-            if (arg.len > 2) {
-                cli_args.optimization_level = arg[2..];
-            } else {
-                cli_args.optimization_level = args_iter.next();
-            }
+            args.optimization_level = if (arg.len > 2) arg[2..] else iter.next();
+        } else if (std.mem.startsWith(u8, arg, "-l") or std.mem.startsWith(u8, arg, "-L") or std.mem.startsWith(u8, arg, "-Wl,")) {
+            if (arg.len == 2) {
+                if (iter.next()) |n| try link.append(gpa, try std.fmt.allocPrint(gpa, "{s}{s}", .{ arg, n }));
+            } else try link.append(gpa, arg);
+        } else if (std.mem.endsWith(u8, arg, ".o") or std.mem.endsWith(u8, arg, ".a") or std.mem.endsWith(u8, arg, ".so")) {
+            try link.append(gpa, arg);
+        } else if (cmds.get(arg)) |cmd| {
+            args.subcommand = cmd;
         } else {
-            // Positional argument - should be subcommand or filename
-            if (cli_args.subcommand == .unknown) {
-                if (std.mem.eql(u8, arg, "compile")) {
-                    cli_args.subcommand = .compile;
-                } else if (std.mem.eql(u8, arg, "run")) {
-                    cli_args.subcommand = .run;
-                } else if (std.mem.eql(u8, arg, "test")) {
-                    cli_args.subcommand = .test_mode;
-                } else if (std.mem.eql(u8, arg, "check")) {
-                    cli_args.subcommand = .check;
-                } else if (std.mem.eql(u8, arg, "ast")) {
-                    cli_args.subcommand = .ast;
-                } else if (std.mem.eql(u8, arg, "cst")) {
-                    cli_args.subcommand = .cst;
-                } else if (std.mem.eql(u8, arg, "tir")) {
-                    cli_args.subcommand = .tir;
-                } else if (std.mem.eql(u8, arg, "tir-liveness")) {
-                    cli_args.subcommand = .tir_liveness;
-                } else if (std.mem.eql(u8, arg, "mlir")) {
-                    cli_args.subcommand = .mlir;
-                } else if (std.mem.eql(u8, arg, "mlir_passes")) {
-                    cli_args.subcommand = .mlir_passes;
-                } else if (std.mem.eql(u8, arg, "interpret")) {
-                    cli_args.subcommand = .interpret;
-                } else if (std.mem.eql(u8, arg, "llvm_passes")) {
-                    cli_args.subcommand = .llvm_passes;
-                } else if (std.mem.eql(u8, arg, "pretty-print")) {
-                    cli_args.subcommand = .pretty_print;
-                } else if (std.mem.eql(u8, arg, "format")) {
-                    cli_args.subcommand = .format;
-                } else if (std.mem.eql(u8, arg, "lex")) {
-                    cli_args.subcommand = .lex;
-                } else if (std.mem.eql(u8, arg, "help")) {
-                    cli_args.subcommand = .help;
-                } else if (std.mem.eql(u8, arg, "repl")) {
-                    cli_args.subcommand = .repl;
-                } else if (std.mem.eql(u8, arg, "json-ast")) {
-                    cli_args.subcommand = .json_ast;
-                } else if (std.mem.eql(u8, arg, "server")) {
-                    cli_args.subcommand = .server;
-                } else if (std.mem.eql(u8, arg, "lsp")) {
-                    cli_args.subcommand = .lsp;
-                } else {
-                    // Assume it's a filename if no subcommand yet
-                    cli_args.filename = arg;
-                    filename_found = true;
-                }
-            } else if (!filename_found) {
-                cli_args.filename = arg;
-                filename_found = true;
-            } else {
-                // Treat additional args as linker args if they look like -l/-L or -Wl,
-                if (std.mem.startsWith(u8, arg, "-l") or std.mem.startsWith(u8, arg, "-L") or std.mem.startsWith(u8, arg, "-Wl,")) {
-                    try link_args_list.append(gpa, arg);
-                } else if (std.mem.eql(u8, arg, "-l") or std.mem.eql(u8, arg, "-L")) {
-                    if (args_iter.next()) |next| {
-                        const combined = try std.fmt.allocPrint(gpa, "{s}{s}", .{ arg, next });
-                        try link_args_list.append(gpa, combined);
-                    } else {
-                        try writer.print("{s}Error:{s} Missing value after '{s}'.\n", .{ Colors.red, Colors.reset, arg });
-                        std.process.exit(1);
-                    }
-                } else {
-                    // Treat any additional arg as a linker argument (e.g., a direct .so/.a/.o path)
-                    try link_args_list.append(gpa, arg);
-                }
-            }
+            args.filename = arg;
         }
     }
 
-    var compiler_ctx: lib.compile.Context = .init(gpa);
-    defer compiler_ctx.deinit();
-
-    var out_buf: [1024]u8 = undefined;
-    var out = std.fs.File.stdout().writer(&out_buf);
-    const out_writer = &out.interface;
-
-    switch (cli_args.subcommand) {
-        .unknown => {
-            if (cli_args.filename) |filename| {
-                // If only a filename is provided without a subcommand, default to 'compile'
-                cli_args.subcommand = .compile;
-                process_file(&compiler_ctx, gpa, filename, &cli_args, writer, out_writer, link_args_list.items) catch |e| {
-                    if (compiler_ctx.diags.anyErrors()) {
-                        try compiler_ctx.diags.emitStyled(&compiler_ctx, writer, !cli_args.no_color);
-                    }
-                    return e;
-                };
-            } else {
-                try printUsage(writer, exec_name);
-                std.process.exit(1);
-            }
-        },
-        .help => {
-            try printUsage(out_writer, exec_name);
-        },
-        .compile, .mlir, .mlir_passes, .llvm_passes, .run, .test_mode, .check, .ast, .cst, .tir, .tir_liveness, .lex, .pretty_print, .json_ast, .format => {
-            if (cli_args.filename == null) {
-                try writer.print("{s}Error:{s} Missing source file for '{s}' command.\n", .{ Colors.red, Colors.reset, @tagName(cli_args.subcommand) });
-                try printUsage(writer, exec_name);
-                std.process.exit(1);
-            }
-            process_file(&compiler_ctx, gpa, cli_args.filename.?, &cli_args, writer, out_writer, link_args_list.items) catch |e| {
-                if (compiler_ctx.diags.anyErrors()) {
-                    try compiler_ctx.diags.emitStyled(&compiler_ctx, writer, !cli_args.no_color);
-                }
-                return e;
-            };
-        },
-        .interpret => {
-            if (cli_args.filename == null) {
-                try writer.print("{s}Error:{s} Missing source file for '{s}' command.\n", .{ Colors.red, Colors.reset, @tagName(cli_args.subcommand) });
-                try printUsage(writer, exec_name);
-                std.process.exit(1);
-            }
-            process_file(&compiler_ctx, gpa, cli_args.filename.?, &cli_args, writer, out_writer, link_args_list.items) catch |e| {
-                if (compiler_ctx.diags.anyErrors()) {
-                    try compiler_ctx.diags.emitStyled(&compiler_ctx, writer, !cli_args.no_color);
-                }
-                return e;
-            };
-        },
-        .repl => try repl(gpa, writer, out_writer),
-        .server => try server(gpa, writer),
-        .lsp => try lsp.run(gpa),
+    if (args.subcommand == .unknown) {
+        if (args.filename) |_| args.subcommand = .compile else {
+            try printUsage(err_w, exec);
+            std.process.exit(1);
+        }
     }
+    if (args.subcommand == .help) {
+        try printUsage(out_w, exec);
+        return;
+    }
+    if (args.subcommand == .repl) {
+        try repl(gpa, err_w, out_w);
+        return;
+    }
+    if (args.subcommand == .server) {
+        try server(gpa, err_w);
+        return;
+    }
+    if (args.subcommand == .lsp) {
+        try lsp.run(gpa);
+        return;
+    }
+
+    if (args.filename == null) {
+        try err_w.print("{s}Error:{s} Missing file for '{s}'\n", .{ Colors.red, Colors.reset, @tagName(args.subcommand) });
+        std.process.exit(1);
+    }
+
+    var ctx = lib.compile.Context.init(gpa);
+    defer ctx.deinit();
+    process_file(&ctx, gpa, args.filename.?, &args, err_w, out_w, link.items) catch |e| {
+        if (ctx.diags.anyErrors()) try ctx.diags.emitStyled(&ctx, err_w, !args.no_color);
+        return e;
+    };
 }

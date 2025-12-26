@@ -420,9 +420,10 @@ pub const Tokenizer = struct {
 
     /// Initialize the tokenizer over `source`, returning the initial state for `file_id`.
     pub fn init(source: [:0]const u8, file_id: u32, mode: Mode) Tokenizer {
+        const start: usize = if (source.len >= 3 and source[0] == 0xEF and source[1] == 0xBB and source[2] == 0xBF) 3 else 0;
         return .{
             .buffer = source,
-            .index = if (std.mem.startsWith(u8, source, "\xEF\xBB\xBF")) 3 else 0,
+            .index = start,
             .mode = mode,
             .file_id = file_id,
         };
@@ -646,7 +647,7 @@ pub const Tokenizer = struct {
                     },
 
                     ' ', '\t' => {
-                        self.advance();
+                        while (self.curr() == ' ' or self.curr() == '\t') self.advance();
                         result.loc.start = self.index;
                         continue :state .start;
                     },

@@ -7,113 +7,56 @@ const Value = comptime_mod.ComptimeValue;
 const Sequence = comptime_mod.Sequence;
 const StructField = comptime_mod.StructField;
 const StructValue = comptime_mod.StructValue;
-const RangeValue = comptime_mod.RangeValue;
 const MapEntry = comptime_mod.MapEntry;
 const MapValue = comptime_mod.MapValue;
-/// Key identifying a method implementation by owner type + method name.
-const MethodKey = struct {
-    /// Owner type or module for this method entry.
-    owner: ast.StrId,
-    /// Method identifier within the owner.
-    method: ast.StrId,
-};
-/// Mapping from method signatures to AST expression IDs.
-const MethodMap = std.AutoHashMap(MethodKey, ast.ExprId);
 const FunctionValue = comptime_mod.FunctionValue;
-/// Helper type for comparing numeric values regardless of int/float representation.
-const NumericValue = union(enum) {
-    Int: i128,
-    Float: f64,
-};
 
-/// Represents a single runtime binding (name → comptime value).
-pub const Binding = struct {
-    /// Interned identifier for the bound name.
-    name: ast.StrId,
-    /// Stored comptime value for the binding.
-    value: Value,
-};
+const MethodKey = struct { owner: ast.StrId, method: ast.StrId };
+const FunctionKey = struct { decl_id: ast.DeclId, bindings_hash: u64 };
 
-/// Identifies a specialized function by its declaration and bound arguments.
-const FunctionKey = struct {
-    /// Declaration ID of the specialized function.
-    decl_id: ast.DeclId,
-    /// Hash of the binding snapshot driving the specialization.
-    bindings_hash: u64,
-};
+pub const Binding = struct { name: ast.StrId, value: Value };
 
-/// Compare two function specialization keys for equality.
-fn keysEqual(a: FunctionKey, b: FunctionKey) bool {
-    return a.decl_id.eq(b.decl_id) and a.bindings_hash == b.bindings_hash;
-}
-
-/// Cache entry for a function specialization computed via its bindings.
-const FunctionSpecializationEntry = struct {
-    /// Signature that identifies this specialization.
-    key: FunctionKey,
-    /// Expression ID of the specialized function body.
-    func_expr: ast.ExprId,
-    /// Snapshot of bindings captured when the specialization was created.
-    bindings: BindingSnapshot,
-
-    /// Release resources held by this specialization entry.
-    fn destroy(self: *FunctionSpecializationEntry, allocator: std.mem.Allocator) void {
-        self.bindings.destroy(allocator);
-    }
-};
-
-/// Result of specializing a function: the runtime function + binding snapshot.
 pub const SpecializationResult = struct {
-    /// Runtime `FunctionValue` that represents the specialized body.
     func: FunctionValue,
-    /// Binding snapshot captured when the specialization was produced.
     snapshot: BindingSnapshot,
 };
 
-/// Immutable snapshot of bindings captured for memoizing function calls.
 pub const BindingSnapshot = struct {
-    /// Ordered list of bound names/values.
-    bindings: std.ArrayList(Binding),
-    /// Hash of the bindings used for quick lookup.
+    bindings: std.ArrayListUnmanaged(Binding),
     hash: u64,
 
-    /// Lookup a binding by its name inside the snapshot.
     pub fn lookup(self: *BindingSnapshot, name: ast.StrId) ?*Binding {
-        for (self.bindings.items) |*binding| if (binding.name.eq(name)) return binding;
+        for (self.bindings.items) |*b| if (b.name.eq(name)) return b;
         return null;
     }
 
-    /// Release all owned values and reset the hash.
     pub fn destroy(self: *BindingSnapshot, allocator: std.mem.Allocator) void {
-        for (self.bindings.items) |*binding| binding.value.destroy(allocator);
+        for (self.bindings.items) |*b| b.value.destroy(allocator);
         self.bindings.deinit(allocator);
         self.hash = 0;
     }
 };
 
-/// Light-weight interpreter used during `comptime` evaluation.
-pub const Interpreter = struct {
-    /// Allocator used for overriding temporaries and stored values.
-    allocator: std.mem.Allocator,
-    /// AST unit being interpreted.
-    ast: *ast.Ast,
-    /// Symbol table for resolver requiring package-level context.
-    symtab: ?*@import("symbols.zig").SymbolStore,
-    /// Compilation unit used for import resolution and exports.
-    compilation_unit: ?*@import("package.zig").CompilationUnit,
-    /// Top-level binding list managed by the interpreter.
-    bindings: std.ArrayList(Binding),
-    /// Registered methods available for dispatch.
-    method_table: MethodMap,
-    /// Cached function specializations keyed by binding states.
-    specializations: std.AutoHashMap(u128, FunctionSpecializationEntry),
+const FunctionSpecializationEntry = struct {
+    key: FunctionKey,
+    func_expr: ast.ExprId,
+    bindings: BindingSnapshot,
+    fn destroy(self: *FunctionSpecializationEntry, alloc: std.mem.Allocator) void {
+        self.bindings.destroy(alloc);
+    }
+};
 
-    /// Optional callback to retrieve the symbol table for a given file ID (used for imports).
-    get_module_symtab: ?*const fn (ctx: *anyopaque, file_id: u32) ?*@import("symbols.zig").SymbolStore = null,
-    /// Context pointer passed to `get_module_symtab`.
+pub const Interpreter = struct {
+    allocator: std.mem.Allocator,
+    ast: *ast.Ast,
+    symtab: ?*@import("symbols.zig").SymbolStore,
+    compilation_unit: ?*@import("package.zig").CompilationUnit,
+    bindings: std.ArrayListUnmanaged(Binding) = .{},
+    method_table: std.AutoHashMap(MethodKey, ast.ExprId),
+    specializations: std.AutoHashMap(u128, FunctionSpecializationEntry),
+    get_module_symtab: ?*const fn (*anyopaque, u32) ?*@import("symbols.zig").SymbolStore = null,
     checker_context: *anyopaque = undefined,
 
-    /// Errors that the interpreter can emit when the AST is malformed or runtime errors occur.
     pub const Error = error{
         UnsupportedExpr,
         InvalidStatement,
@@ -129,1204 +72,755 @@ pub const Interpreter = struct {
         InvalidIndexAccess,
     };
 
-    /// Initialize an interpreter for `ast_unit` with optional `symtab`/`compilation_unit`.
     pub fn init(
         allocator: std.mem.Allocator,
         ast_unit: *ast.Ast,
         symtab: ?*@import("symbols.zig").SymbolStore,
-        compilation_unit: ?*@import("package.zig").CompilationUnit,
-        get_module_symtab: ?*const fn (ctx: *anyopaque, file_id: u32) ?*@import("symbols.zig").SymbolStore,
-        checker_context: *anyopaque,
-    ) anyerror!Interpreter {
+        comp_unit: ?*@import("package.zig").CompilationUnit,
+        get_sym: ?*const fn (*anyopaque, u32) ?*@import("symbols.zig").SymbolStore,
+        ctx: *anyopaque,
+    ) !Interpreter {
         var interp = Interpreter{
             .allocator = allocator,
             .ast = ast_unit,
             .symtab = symtab,
-            .compilation_unit = compilation_unit,
-            .get_module_symtab = get_module_symtab,
-            .checker_context = checker_context,
-            .bindings = std.ArrayList(Binding).empty,
-            .method_table = .init(allocator),
-            .specializations = .init(allocator),
+            .compilation_unit = comp_unit,
+            .get_module_symtab = get_sym,
+            .checker_context = ctx,
+            .method_table = std.AutoHashMap(MethodKey, ast.ExprId).init(allocator),
+            .specializations = std.AutoHashMap(u128, FunctionSpecializationEntry).init(allocator),
         };
-        var success = false;
-        defer if (!success) interp.method_table.deinit();
-        defer if (!success) interp.specializations.deinit();
         try interp.registerMethods();
-        success = true;
         return interp;
     }
 
-    /// Release all owned bindings, methods, and specialization caches.
     pub fn deinit(self: *Interpreter) void {
-        for (self.bindings.items) |*binding| binding.value.destroy(self.allocator);
+        for (self.bindings.items) |*b| b.value.destroy(self.allocator);
         self.bindings.deinit(self.allocator);
         self.method_table.deinit();
         var iter = self.specializations.iterator();
-        while (iter.next()) |entry| entry.value_ptr.*.destroy(self.allocator);
+        while (iter.next()) |entry| entry.value_ptr.destroy(self.allocator);
         self.specializations.deinit();
     }
 
-    /// Evaluate the AST expression `expr` and return its runtime value.
     pub fn evalExpr(self: *Interpreter, expr: ast.ExprId) anyerror!Value {
-        return switch (self.ast.kind(expr)) {
-            .Literal => self.evalLiteral(self.ast.exprs.get(.Literal, expr)),
-            .NullLit => Value{ .Void = {} },
-            .UndefLit => Value{ .Void = {} },
-            .Ident => self.evalIdent(expr, self.ast.exprs.get(.Ident, expr)),
-            .Import => self.evalImport(expr),
-            .Block => self.evalBlock(self.ast.exprs.get(.Block, expr)),
-            .ComptimeBlock => {
-                const block_row = self.ast.exprs.get(.ComptimeBlock, expr);
-                const block_expr = self.ast.exprs.get(.Block, block_row.block);
-                return try self.evalBlock(block_expr);
+        const k = self.ast.kind(expr);
+        // Fast-path common expressions
+        if (k == .Ident) return self.evalIdent(expr);
+        if (k == .Literal) return self.evalLiteral(self.ast.exprs.get(.Literal, expr));
+
+        switch (k) {
+            .NullLit, .UndefLit, .Await => return Value{ .Void = {} },
+            .Import => return self.evalImport(expr),
+            .Block => return self.evalBlock(self.ast.exprs.get(.Block, expr)),
+            .ComptimeBlock => return self.evalBlock(self.ast.exprs.get(.Block, self.ast.exprs.get(.ComptimeBlock, expr).block)),
+            .Binary => return self.evalBinary(self.ast.exprs.get(.Binary, expr)),
+            .Unary => return self.evalUnary(self.ast.exprs.get(.Unary, expr)),
+            .If => return self.evalIf(self.ast.exprs.get(.If, expr)),
+            .FunctionLit => return Value{ .Function = .{ .expr = expr, .ast = self.ast } },
+            .ArrayLit => return self.evalSequence(self.ast.exprs.get(.ArrayLit, expr).elems),
+            .TupleLit => return self.evalSequence(self.ast.exprs.get(.TupleLit, expr).elems),
+            .MapLit => return self.evalMapLit(self.ast.exprs.get(.MapLit, expr)),
+            .Call => return self.evalCall(self.ast.exprs.get(.Call, expr)),
+            .FieldAccess => return self.evalFieldAccess(self.ast.exprs.get(.FieldAccess, expr)),
+            .IndexAccess => return self.evalIndexAccess(self.ast.exprs.get(.IndexAccess, expr)),
+            .StructLit => return self.evalStructLit(self.ast.exprs.get(.StructLit, expr)),
+            .Range => return self.evalRange(self.ast.exprs.get(.Range, expr)),
+            .Match => return self.evalMatch(self.ast.exprs.get(.Match, expr)),
+            .For => return self.evalFor(self.ast.exprs.get(.For, expr)),
+            .While => return self.evalWhile(self.ast.exprs.get(.While, expr)),
+            .Return => return self.evalReturn(self.ast.exprs.get(.Return, expr)),
+            .Cast => return self.evalCast(self.ast.exprs.get(.Cast, expr)),
+            .Deref => return self.evalDeref(self.ast.exprs.get(.Deref, expr)),
+            .Catch => return self.evalWrappable(self.ast.exprs.get(.Catch, expr).expr),
+            .OptionalUnwrap => return self.evalWrappable(self.ast.exprs.get(.OptionalUnwrap, expr).expr),
+            .ErrUnwrap => return self.evalWrappable(self.ast.exprs.get(.ErrUnwrap, expr).expr),
+            .Defer => {
+                var defer_val = try self.evalExpr(self.ast.exprs.get(.Defer, expr).expr);
+                defer_val.destroy(self.allocator);
+                return Value{ .Void = {} };
             },
-            .Binary => self.evalBinary(self.ast.exprs.get(.Binary, expr)),
-            .Unary => self.evalUnary(self.ast.exprs.get(.Unary, expr)),
-            .If => self.evalIf(self.ast.exprs.get(.If, expr)),
-            .FunctionLit => self.evalFunctionLit(expr),
-            .ArrayLit => self.evalSequence(self.ast.exprs.get(.ArrayLit, expr).elems),
-            .TupleLit => self.evalSequence(self.ast.exprs.get(.TupleLit, expr).elems),
-            .MapLit => self.evalMapLit(self.ast.exprs.get(.MapLit, expr)),
-            .Call => self.evalCall(self.ast.exprs.get(.Call, expr)),
-            .FieldAccess => self.evalFieldAccess(self.ast.exprs.get(.FieldAccess, expr)),
-            .IndexAccess => self.evalIndexAccess(self.ast.exprs.get(.IndexAccess, expr)),
-            .StructLit => self.evalStructLit(self.ast.exprs.get(.StructLit, expr)),
-            .Range => self.evalRange(self.ast.exprs.get(.Range, expr)),
-            .Match => self.evalMatch(self.ast.exprs.get(.Match, expr)),
-            .For => self.evalFor(self.ast.exprs.get(.For, expr)),
-            .While => self.evalWhile(self.ast.exprs.get(.While, expr)),
-            .Return => self.evalReturn(self.ast.exprs.get(.Return, expr)),
-            .EnumType => self.evalEnumType(self.ast.exprs.get(.EnumType, expr)),
-            .ArrayType => self.evalArrayType(self.ast.exprs.get(.ArrayType, expr)),
-            .DynArrayType => self.evalDynArrayType(self.ast.exprs.get(.DynArrayType, expr)),
-            .SliceType => self.evalSliceType(self.ast.exprs.get(.SliceType, expr)),
-            .MapType => self.evalMapType(self.ast.exprs.get(.MapType, expr)),
-            .OptionalType => self.evalOptionalType(self.ast.exprs.get(.OptionalType, expr)),
-            .VariantType => self.evalVariantType(self.ast.exprs.get(.VariantType, expr)),
-            .ErrorType => self.evalVariantType(self.ast.exprs.get(.ErrorType, expr)),
-            .ErrorSetType => self.evalErrorSetType(self.ast.exprs.get(.ErrorSetType, expr)),
-            .StructType => self.evalStructType(self.ast.exprs.get(.StructType, expr)),
-            .UnionType => self.evalUnionType(self.ast.exprs.get(.UnionType, expr)),
-            .Cast => self.evalCast(self.ast.exprs.get(.Cast, expr)),
-            .PointerType => self.evalPointerType(self.ast.exprs.get(.PointerType, expr)),
-            .Deref => self.evalDeref(self.ast.exprs.get(.Deref, expr)),
-            .SimdType => self.evalSimdType(self.ast.exprs.get(.SimdType, expr)),
-            .TensorType => self.evalTensorType(self.ast.exprs.get(.TensorType, expr)),
-            .TypeType => Value{ .Type = self.ast.type_info.store.tType() },
-            .AnyType => Value{ .Type = self.ast.type_info.store.tAny() },
-            .NoreturnType => Value{ .Type = self.ast.type_info.store.tNoreturn() },
-            .Catch => self.evalCatch(self.ast.exprs.get(.Catch, expr)),
-            .OptionalUnwrap => self.evalOptionalUnwrap(self.ast.exprs.get(.OptionalUnwrap, expr)),
-            .ErrUnwrap => self.evalErrUnwrap(self.ast.exprs.get(.ErrUnwrap, expr)),
-            .Defer => self.evalDefer(self.ast.exprs.get(.Defer, expr)),
-            .TypeOf => self.evalTypeOf(self.ast.exprs.get(.TypeOf, expr)),
-            .MlirBlock => self.evalMlirBlock(expr),
-            .Await => Value{ .Void = {} },
-            else => std.debug.panic("Unsupported expr: {}", .{self.ast.kind(expr)}),
-        };
+            .TypeOf => return self.evalTypeOf(self.ast.exprs.get(.TypeOf, expr)),
+            .MlirBlock => return self.evalMlirBlock(expr),
+            // Type Expressions
+            .EnumType => return self.evalEnumType(self.ast.exprs.get(.EnumType, expr)),
+            .StructType => return self.evalStructType(self.ast.exprs.get(.StructType, expr)),
+            .UnionType => return self.evalUnionType(self.ast.exprs.get(.UnionType, expr)),
+            .VariantType => return self.evalVariantType(self.ast.exprs.get(.VariantType, expr)),
+            .ArrayType, .DynArrayType, .SliceType, .MapType, .OptionalType, .ErrorSetType, .PointerType, .SimdType, .TensorType, .TypeType, .AnyType, .NoreturnType, .ErrorType => return self.evalTypeExpr(k, expr),
+            else => return Error.UnsupportedExpr,
+        }
     }
 
-    /// Evaluate an MLIR block by interpolating splices into the string.
-    fn evalMlirBlock(self: *Interpreter, expr: ast.ExprId) anyerror!Value {
+    fn evalTypeExpr(self: *Interpreter, kind: ast.ExprKind, expr: ast.ExprId) !Value {
+        const ts = self.ast.type_info.store;
+        return Value{ .Type = switch (kind) {
+            .ArrayType => ts.mkArray(try self.typeIdFromTypeExpr(self.ast.exprs.get(.ArrayType, expr).elem), @intCast((try self.expectInt(try self.evalExpr(self.ast.exprs.get(.ArrayType, expr).size))))),
+            .DynArrayType => ts.mkDynArray(try self.typeIdFromTypeExpr(self.ast.exprs.get(.DynArrayType, expr).elem)),
+            .SliceType => blk: {
+                const r = self.ast.exprs.get(.SliceType, expr);
+                break :blk ts.mkSlice(try self.typeIdFromTypeExpr(r.elem), r.is_const);
+            },
+            .MapType => blk: {
+                const r = self.ast.exprs.get(.MapType, expr);
+                break :blk ts.mkMap(try self.typeIdFromTypeExpr(r.key), try self.typeIdFromTypeExpr(r.value));
+            },
+            .OptionalType => ts.mkOptional(try self.typeIdFromTypeExpr(self.ast.exprs.get(.OptionalType, expr).elem)),
+            .ErrorSetType => blk: {
+                const r = self.ast.exprs.get(.ErrorSetType, expr);
+                break :blk ts.mkErrorSet(try self.typeIdFromTypeExpr(r.value), try self.typeIdFromTypeExpr(r.err));
+            },
+            .PointerType => blk: {
+                const r = self.ast.exprs.get(.PointerType, expr);
+                var val = try self.evalExpr(r.elem);
+                defer val.destroy(self.allocator);
+                if (val != .Type) return Error.InvalidType;
+                break :blk ts.mkPtr(val.Type, r.is_const);
+            },
+            .SimdType => blk: {
+                const r = self.ast.exprs.get(.SimdType, expr);
+                const l = try self.expectInt(try self.evalExpr(r.lanes));
+                break :blk ts.mkSimd(try self.typeIdFromTypeExpr(r.elem), @intCast(l));
+            },
+            .TypeType => ts.tType(),
+            .AnyType => ts.tAny(),
+            .NoreturnType => ts.tNoreturn(),
+            .ErrorType => return self.evalVariantType(self.ast.exprs.get(.ErrorType, expr)),
+            .TensorType => return self.evalTensorType(self.ast.exprs.get(.TensorType, expr)),
+            else => unreachable,
+        } };
+    }
+
+    fn evalWrappable(self: *Interpreter, expr: ast.ExprId) !Value {
+        var val = try self.evalExpr(expr);
+        defer val.destroy(self.allocator);
+        return self.cloneValue(val);
+    }
+
+    fn evalMlirBlock(self: *Interpreter, expr: ast.ExprId) !Value {
         const block = self.ast.exprs.get(.MlirBlock, expr);
-        const pieces = self.ast.exprs.mlir_piece_pool.slice(block.pieces);
-
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayListUnmanaged(u8){};
         defer buf.deinit(self.allocator);
-        const writer = buf.writer(self.allocator);
-
-        for (pieces) |pid| {
+        const w = buf.writer(self.allocator);
+        for (self.ast.exprs.mlir_piece_pool.slice(block.pieces)) |pid| {
             const piece = self.ast.exprs.MlirPiece.get(pid);
             switch (piece.kind) {
-                .literal => {
-                    const text = self.ast.exprs.strs.get(piece.text);
-                    try buf.appendSlice(self.allocator, text);
-                },
+                .literal => try buf.appendSlice(self.allocator, self.ast.exprs.strs.get(piece.text)),
                 .splice => {
-                    // Splice: lookup binding and format it
-                    if (try self.lookup(piece.text)) |val| {
-                        var temp_val = val;
-                        defer temp_val.destroy(self.allocator);
-
-                        switch (temp_val) {
-                            .Type => |ty| try self.ast.type_info.store.fmt(ty, writer),
-                            .Int => |i| try writer.print("{}", .{i}),
-                            .Float => |f| try writer.print("{}", .{f}),
-                            .Bool => |b| try writer.print("{}", .{b}),
-                            .String => |s| try writer.print("{s}", .{s}),
-                            else => return Error.InvalidType, // Unsupported splice value
-                        }
-                    } else return Error.BindingNotFound;
+                    var v = try self.lookup(piece.text) orelse return Error.BindingNotFound;
+                    defer v.destroy(self.allocator);
+                    switch (v) {
+                        .Type => |t| try self.ast.type_info.store.fmt(t, w),
+                        .Int => |i| try w.print("{}", .{i}),
+                        .Float => |f| try w.print("{}", .{f}),
+                        .Bool => |b| try w.print("{}", .{b}),
+                        .String => |s| try w.print("{s}", .{s}),
+                        else => return Error.InvalidType,
+                    }
                 },
             }
         }
-
-        const final_str = self.ast.type_info.store.strs.intern(buf.items);
-
-        return switch (block.kind) {
-            .Type => Value{ .Type = self.ast.type_info.store.mkMlirType(final_str) },
-            .Attribute => Value{ .Type = self.ast.type_info.store.mkMlirAttribute(final_str) },
-            .Module => Value{ .Type = self.ast.type_info.store.tMlirModule() },
-            else => Value{ .Void = {} },
-        };
+        const s = self.ast.type_info.store.strs.intern(buf.items);
+        const ts = self.ast.type_info.store;
+        return Value{ .Type = switch (block.kind) {
+            .Type => ts.mkMlirType(s),
+            .Attribute => ts.mkMlirAttribute(s),
+            .Module => ts.tMlirModule(),
+            .Operation => ts.mkMlirAttribute(s),
+        } };
     }
 
-    /// Insert or replace `value` into the interpreter’s binding table under `name`.
     pub fn bind(self: *Interpreter, name: ast.StrId, value: Value) !void {
         try self.setBinding(name, value);
     }
 
-    /// Retrieve a binding value by `name`, cloning it for the caller.
-    pub fn lookup(self: *Interpreter, name: ast.StrId) anyerror!?Value {
-        for (self.bindings.items) |binding| {
-            if (binding.name.eq(name)) return try self.cloneValue(binding.value);
+    pub fn lookup(self: *Interpreter, name: ast.StrId) !?Value {
+        if (self.findBinding(name)) |b| return try self.cloneValue(b.value);
+        return null;
+    }
+
+    fn evalBlock(self: *Interpreter, block: ast.Rows.Block) !Value {
+        var last: Value = .{ .Void = {} };
+        for (self.ast.stmts.stmt_pool.slice(block.items)) |sid| {
+            if (try self.evalStatement(sid, &last)) |ret| {
+                last.destroy(self.allocator);
+                return ret;
+            }
+        }
+        return last;
+    }
+
+    fn evalStatement(self: *Interpreter, stmt_id: ast.StmtId, last: *Value) !?Value {
+        switch (self.ast.kind(stmt_id)) {
+            .Expr => {
+                last.destroy(self.allocator);
+                last.* = try self.evalExpr(self.ast.stmts.get(.Expr, stmt_id).expr);
+            },
+            .Decl => {
+                const r = self.ast.stmts.get(.Decl, stmt_id);
+                const d = self.ast.exprs.Decl.get(r.decl);
+                if (d.pattern.isNone()) return Error.InvalidStatement;
+                const pid = d.pattern.unwrap();
+                if (self.ast.kind(pid) == .Binding) {
+                    try self.setBinding(self.ast.pats.get(.Binding, pid).name, try self.evalExpr(d.value));
+                } else return Error.InvalidStatement;
+            },
+            .Assign => {
+                const r = self.ast.stmts.get(.Assign, stmt_id);
+                if (self.ast.kind(r.left) != .Ident) return Error.InvalidStatement;
+                try self.setBinding(self.ast.exprs.get(.Ident, r.left).name, try self.evalExpr(r.right));
+            },
+            .Return => {
+                const r = self.ast.stmts.get(.Return, stmt_id);
+                return if (!r.value.isNone()) try self.evalExpr(r.value.unwrap()) else Value{ .Void = {} };
+            },
+            else => return Error.InvalidStatement,
         }
         return null;
     }
 
-    /// Evaluate a block of statements, returning the last value or void.
-    fn evalBlock(self: *Interpreter, block: ast.Rows.Block) anyerror!Value {
-        var last_value: ?Value = null;
-        const stmts = self.ast.stmts.stmt_pool.slice(block.items);
-        for (stmts) |stmt_id| {
-            if (try self.evalStatement(stmt_id, &last_value)) |value| {
-                if (last_value) |*prev| prev.destroy(self.allocator);
-                return value;
-            }
-        }
-        if (last_value) |value| return value;
-        return Value{ .Void = {} };
+    fn evalCast(self: *Interpreter, row: ast.Rows.Cast) !Value {
+        const val = try self.evalExpr(row.expr);
+        const t = self.typeIdFromTypeExpr(row.ty) catch return val;
+        const k = self.ast.type_info.store.getKind(t);
+        return switch (val) {
+            .Float => |f| if (isIntType(k)) Value{ .Int = @intFromFloat(f) } else val,
+            .Int => |i| if (k == .F32 or k == .F64) Value{ .Float = @floatFromInt(i) } else val,
+            else => val,
+        };
+    }
+    inline fn isIntType(k: types.TypeKind) bool {
+        return switch (k) {
+            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => true,
+            else => false,
+        };
     }
 
-    /// Execute a statement, updating `last_value` when expression statements occur.
-    fn evalStatement(self: *Interpreter, stmt_id: ast.StmtId, last_value: *?Value) anyerror!?Value {
-        switch (self.ast.kind(stmt_id)) {
-            .Expr => {
-                const row = self.ast.stmts.get(.Expr, stmt_id);
-                const result = try self.evalExpr(row.expr);
-                if (last_value.*) |*prev| prev.destroy(self.allocator);
-                last_value.* = result;
-                return null;
-            },
-            .Decl => {
-                const row = self.ast.stmts.get(.Decl, stmt_id);
-                const decl = self.ast.exprs.Decl.get(row.decl);
-                if (decl.pattern.isNone()) return Error.InvalidStatement;
-                const pat_id = decl.pattern.unwrap();
-                if (self.ast.kind(pat_id) != .Binding) return Error.InvalidStatement;
-                const binding = self.ast.pats.get(.Binding, pat_id);
-                const value = try self.evalExpr(decl.value);
-                try self.setBinding(binding.name, value);
-                return null;
-            },
-            .Assign => {
-                const row = self.ast.stmts.get(.Assign, stmt_id);
-                try self.evalAssignment(row);
-                return null;
-            },
-            .Return => {
-                const row = self.ast.stmts.get(.Return, stmt_id);
-                if (row.value.isNone()) return Value{ .Void = {} };
-                return try self.evalExpr(row.value.unwrap());
-            },
-            else => return Error.InvalidStatement,
-        }
-    }
-
-    /// Return a `FunctionValue` that refers back to `expr`.
-    fn evalFunctionLit(self: *Interpreter, expr: ast.ExprId) anyerror!Value {
-        return Value{ .Function = .{ .expr = expr, .ast = self.ast } };
-    }
-
-    /// Evaluate an assignment statement and update the corresponding binding.
-    fn evalAssignment(self: *Interpreter, row: ast.StmtRows.Assign) anyerror!void {
-        if (self.ast.kind(row.left) != .Ident) return Error.InvalidStatement;
-        const ident = self.ast.exprs.get(.Ident, row.left);
-        const value = try self.evalExpr(row.right);
-        try self.setBinding(ident.name, value);
-    }
-
-    /// Evaluate a cast expression by delegating to its inner expression.
-    fn evalCast(self: *Interpreter, row: ast.Rows.Cast) anyerror!Value {
-        const value = try self.evalExpr(row.expr);
-        const target_ty = self.typeIdFromTypeExpr(row.ty) catch return value;
-        const ts = self.ast.type_info.store;
-        const target_kind = ts.getKind(target_ty);
-
-        switch (value) {
-            .Float => |f| {
-                // Simple check for integer target types
-                const is_int = switch (target_kind) {
-                    .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => true,
-                    else => false,
-                };
-                if (is_int) {
-                    return Value{ .Int = @as(i128, @intFromFloat(f)) };
-                }
-            },
-            .Int => |i| {
-                if (target_kind == .F32 or target_kind == .F64) {
-                    return Value{ .Float = @as(f64, @floatFromInt(i)) };
-                }
-            },
-            else => {},
-        }
-        return value;
-    }
-
-    /// Evaluate a `catch` expression and clone the result.
-    fn evalCatch(self: *Interpreter, row: ast.Rows.Catch) anyerror!Value {
-        var value = try self.evalExpr(row.expr);
-        const result = try self.cloneValue(value);
-        value.destroy(self.allocator);
-        return result;
-    }
-
-    /// Evaluate `optional.unwrap` by cloning the underlying value.
-    fn evalOptionalUnwrap(self: *Interpreter, row: ast.Rows.OptionalUnwrap) anyerror!Value {
-        var value = try self.evalExpr(row.expr);
-        const result = try self.cloneValue(value);
-        value.destroy(self.allocator);
-        return result;
-    }
-
-    /// Evaluate a `defer` block by executing the expression and discarding the result.
-    fn evalDefer(self: *Interpreter, row: ast.Rows.Defer) anyerror!Value {
-        var value = try self.evalExpr(row.expr);
-        value.destroy(self.allocator);
-        return Value{ .Void = {} };
-    }
-
-    /// Evaluate `err` propagation by cloning the underlying success value.
-    fn evalErrUnwrap(self: *Interpreter, row: ast.Rows.ErrUnwrap) anyerror!Value {
-        var value = try self.evalExpr(row.expr);
-        const result = try self.cloneValue(value);
-        value.destroy(self.allocator);
-        return result;
-    }
-
-    /// Evaluate `typeof(expr)` by returning the stored compile-time type.
-    fn evalTypeOf(self: *Interpreter, row: ast.Rows.TypeOf) anyerror!Value {
+    fn evalTypeOf(self: *Interpreter, row: ast.Rows.TypeOf) !Value {
         const idx = row.expr.toRaw();
-        if (idx < self.ast.type_info.expr_types.items.len) {
-            if (self.ast.type_info.expr_types.items[idx]) |type_id| {
-                return Value{ .Type = type_id };
-            }
-        }
+        const tys = self.ast.type_info.expr_types.items;
+        if (idx < tys.len) if (tys[idx]) |t| return Value{ .Type = t };
         return Error.InvalidType;
     }
-
-    /// Evaluate a pointer type expression, returning its `TypeId`.
-    fn evalPointerType(self: *Interpreter, row: ast.Rows.PointerType) anyerror!Value {
-        var elem_value = try self.evalExpr(row.elem);
-        defer elem_value.destroy(self.allocator);
-        return switch (elem_value) {
-            .Type => |elem_ty| {
-                const ts = self.ast.type_info.store;
-                return Value{ .Type = ts.mkPtr(elem_ty, row.is_const) };
-            },
-            else => Error.InvalidType,
-        };
+    fn evalDeref(self: *Interpreter, row: ast.Rows.Deref) !Value {
+        var ptr = try self.evalExpr(row.expr);
+        defer ptr.destroy(self.allocator);
+        return if (ptr == .Pointer) self.cloneValue(ptr.Pointer.*) else Error.InvalidType;
     }
 
-    /// Evaluate a dereference expression by unwrapping the pointer value.
-    fn evalDeref(self: *Interpreter, row: ast.Rows.Deref) anyerror!Value {
-        var ptr_value = try self.evalExpr(row.expr);
-        defer ptr_value.destroy(self.allocator);
-        return switch (ptr_value) {
-            .Pointer => |target| try self.cloneValue(target.*),
-            else => Error.InvalidType,
-        };
-    }
-
-    /// Evaluate a `simd` type expression and return its `TypeId`.
-    fn evalSimdType(self: *Interpreter, row: ast.Rows.SimdType) anyerror!Value {
-        const elem_ty = try self.typeIdFromTypeExpr(row.elem);
-        var lanes_value = try self.evalExpr(row.lanes);
-        defer lanes_value.destroy(self.allocator);
-        const lanes = switch (lanes_value) {
-            .Int => |val| std.math.cast(u16, val) orelse return Error.InvalidType,
-            else => return Error.InvalidType,
-        };
-        const ts = self.ast.type_info.store;
-        return Value{ .Type = ts.mkSimd(elem_ty, lanes) };
-    }
-
-    /// Evaluate a `tensor` type expression, collecting each dimension.
-    fn evalTensorType(self: *Interpreter, row: ast.Rows.TensorType) anyerror!Value {
-        const elem_ty = try self.typeIdFromTypeExpr(row.elem);
-        const shape_exprs = self.ast.exprs.expr_pool.slice(row.shape);
-        const ts = self.ast.type_info.store;
-
-        var dims = try std.ArrayList(usize).initCapacity(self.allocator, shape_exprs.len);
+    fn evalTensorType(self: *Interpreter, row: ast.Rows.TensorType) !Value {
+        const elem = try self.typeIdFromTypeExpr(row.elem);
+        var dims = std.ArrayList(usize){};
         defer dims.deinit(self.allocator);
-
-        var idx: usize = 0;
-        while (idx < shape_exprs.len) : (idx += 1) {
-            const dim_expr_id = shape_exprs[idx];
-
-            // Check for spread syntax `..expr` (Range with no start)
-            var is_spread = false;
-            var expr_to_eval = dim_expr_id;
-
-            if (self.ast.kind(dim_expr_id) == .Range) {
-                const rng = self.ast.exprs.get(.Range, dim_expr_id);
+        for (self.ast.exprs.expr_pool.slice(row.shape)) |eid| {
+            var tgt = eid;
+            var spread = false;
+            if (self.ast.kind(eid) == .Range) {
+                const rng = self.ast.exprs.get(.Range, eid);
                 if (rng.start.isNone() and !rng.end.isNone()) {
-                    is_spread = true;
-                    expr_to_eval = rng.end.unwrap();
+                    spread = true;
+                    tgt = rng.end.unwrap();
                 }
             }
-
-            var dim_value = try self.evalExpr(expr_to_eval);
-            defer dim_value.destroy(self.allocator);
-
-            if (is_spread) {
-                switch (dim_value) {
-                    .Sequence => |seq| {
-                        for (seq.values.items) |item| {
-                            switch (item) {
-                                .Int => |val| {
-                                    const dim = std.math.cast(usize, val) orelse return Error.InvalidType;
-                                    try dims.append(self.allocator, dim);
-                                },
-                                else => return Error.InvalidType,
-                            }
-                        }
-                    },
-                    else => return Error.InvalidType, // Spread expects a sequence
-                }
-            } else {
-                switch (dim_value) {
-                    .Int => |val| {
-                        const dim = std.math.cast(usize, val) orelse return Error.InvalidType;
-                        try dims.append(self.allocator, dim);
-                    },
-                    .Sequence => |seq| {
-                        // Also support flattening if passed directly without spread?
-                        // For now, assume explicit spread is required or single Sequence expands?
-                        // Existing logic supported flattening Sequence, let's keep it.
-                        for (seq.values.items) |item| {
-                            switch (item) {
-                                .Int => |val| {
-                                    const dim = std.math.cast(usize, val) orelse return Error.InvalidType;
-                                    try dims.append(self.allocator, dim);
-                                },
-                                else => return Error.InvalidType,
-                            }
-                        }
-                    },
-                    else => return Error.InvalidType,
-                }
+            var v = try self.evalExpr(tgt);
+            defer v.destroy(self.allocator);
+            switch (v) {
+                .Int => |i| if (spread) return Error.InvalidType else try dims.append(self.allocator, @intCast(i)),
+                .Sequence => |s| for (s.values.items) |iv| try dims.append(self.allocator, @intCast(try self.expectInt(iv))),
+                else => return Error.InvalidType,
             }
         }
-
-        const dims_slice = try ts.gpa.alloc(usize, dims.items.len);
-        defer ts.gpa.free(dims_slice);
-        @memcpy(dims_slice, dims.items);
-        return Value{ .Type = ts.mkTensor(elem_ty, dims_slice) };
+        const d = try self.ast.type_info.store.gpa.alloc(usize, dims.items.len);
+        @memcpy(d, dims.items);
+        return Value{ .Type = self.ast.type_info.store.mkTensor(elem, d) };
     }
 
-    /// Evaluate a fixed-size array type expression.
-    fn evalArrayType(self: *Interpreter, row: ast.Rows.ArrayType) anyerror!Value {
-        const elem_ty = try self.typeIdFromTypeExpr(row.elem);
-        var size_value = try self.evalExpr(row.size);
-        defer size_value.destroy(self.allocator);
-        const len = switch (size_value) {
-            .Int => |val| std.math.cast(usize, val) orelse return Error.InvalidType,
-            else => return Error.InvalidType,
-        };
-        return Value{ .Type = self.ast.type_info.store.mkArray(elem_ty, len) };
-    }
-
-    /// Evaluate a dynamic array type expression.
-    fn evalDynArrayType(self: *Interpreter, row: ast.Rows.DynArrayType) anyerror!Value {
-        const elem_ty = try self.typeIdFromTypeExpr(row.elem);
-        const ts = self.ast.type_info.store;
-        return Value{ .Type = ts.mkDynArray(elem_ty) };
-    }
-
-    /// Evaluate a slice type expression, honoring the constness flag.
-    fn evalSliceType(self: *Interpreter, row: ast.Rows.SliceType) anyerror!Value {
-        const elem_ty = try self.typeIdFromTypeExpr(row.elem);
-        const ts = self.ast.type_info.store;
-        return Value{ .Type = ts.mkSlice(elem_ty, row.is_const) };
-    }
-
-    /// Evaluate a map type expression with key/value type parameters.
-    fn evalMapType(self: *Interpreter, row: ast.Rows.MapType) anyerror!Value {
-        const ts = self.ast.type_info.store;
-        const key_ty = try self.typeIdFromTypeExpr(row.key);
-        const val_ty = try self.typeIdFromTypeExpr(row.value);
-        return Value{ .Type = ts.mkMap(key_ty, val_ty) };
-    }
-
-    /// Evaluate an optional type expression wrapping a single element type.
-    fn evalOptionalType(self: *Interpreter, row: ast.Rows.OptionalType) anyerror!Value {
-        const elem_ty = try self.typeIdFromTypeExpr(row.elem);
-        const ts = self.ast.type_info.store;
-        return Value{ .Type = ts.mkOptional(elem_ty) };
-    }
-
-    /// Construct a struct type from its named fields.
-    fn evalStructType(self: *Interpreter, row: ast.Rows.StructType) anyerror!Value {
+    fn evalStructType(self: *Interpreter, row: ast.Rows.StructType) !Value {
         const ts = self.ast.type_info.store;
         const sfs = self.ast.exprs.sfield_pool.slice(row.fields);
-        var buf = try ts.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
-        defer ts.gpa.free(buf);
-        var i: usize = 0;
-        while (i < sfs.len) : (i += 1) {
-            const field = self.ast.exprs.StructField.get(sfs[i]);
-            const field_ty = try self.typeIdFromTypeExpr(field.ty);
-            buf[i] = .{ .name = field.name, .ty = field_ty };
+        const buf = try ts.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
+        errdefer ts.gpa.free(buf);
+        for (sfs, 0..) |id, i| {
+            const f = self.ast.exprs.StructField.get(id);
+            buf[i] = .{ .name = f.name, .ty = try self.typeIdFromTypeExpr(f.ty) };
         }
-        const struct_ty = ts.mkStruct(buf, 0);
-        return Value{ .Type = struct_ty };
+        return Value{ .Type = ts.mkStruct(buf, 0) };
     }
 
-    /// Evaluate a variant type expression by describing each field payload.
-    fn evalVariantType(self: *Interpreter, row: ast.Rows.VariantType) anyerror!Value {
+    fn evalVariantType(self: *Interpreter, row: ast.Rows.VariantType) !Value {
         const ts = self.ast.type_info.store;
         const vfs = self.ast.exprs.vfield_pool.slice(row.fields);
-        var buf = try ts.gpa.alloc(types.TypeStore.StructFieldArg, vfs.len);
-        defer ts.gpa.free(buf);
-        var i: usize = 0;
-        while (i < vfs.len) : (i += 1) {
-            const vf = self.ast.exprs.VariantField.get(vfs[i]);
-            const payload_ty = try self.evalVariantFieldPayloadType(vf);
-            buf[i] = .{ .name = vf.name, .ty = payload_ty };
+        const buf = try ts.gpa.alloc(types.TypeStore.StructFieldArg, vfs.len);
+        errdefer ts.gpa.free(buf);
+        for (vfs, 0..) |id, i| {
+            const vf = self.ast.exprs.VariantField.get(id);
+            buf[i] = .{ .name = vf.name, .ty = try self.evalVariantPayload(vf) };
         }
         return Value{ .Type = ts.mkVariant(buf) };
     }
 
-    /// Resolve the payload type for a variant field, supporting tuples/structs.
-    fn evalVariantFieldPayloadType(self: *Interpreter, field: ast.Rows.VariantField) anyerror!types.TypeId {
+    fn evalVariantPayload(self: *Interpreter, f: ast.Rows.VariantField) !types.TypeId {
         const ts = self.ast.type_info.store;
-        return switch (field.payload_kind) {
+        return switch (f.payload_kind) {
             .none => ts.tVoid(),
-            .tuple => blk_tuple: {
-                if (field.payload_elems.isNone()) break :blk_tuple ts.tVoid();
-                const elems = self.ast.exprs.expr_pool.slice(field.payload_elems.asRange());
-                var tuple_buf = try ts.gpa.alloc(types.TypeId, elems.len);
-                defer ts.gpa.free(tuple_buf);
-                var j: usize = 0;
-                while (j < elems.len) : (j += 1) {
-                    tuple_buf[j] = try self.typeIdFromTypeExpr(elems[j]);
-                }
-                return ts.mkTuple(tuple_buf);
+            .tuple => blk: {
+                if (f.payload_elems.isNone()) break :blk ts.tVoid();
+                const elems = self.ast.exprs.expr_pool.slice(f.payload_elems.asRange());
+                const buf = try ts.gpa.alloc(types.TypeId, elems.len);
+                errdefer ts.gpa.free(buf);
+                for (elems, 0..) |e, i| buf[i] = try self.typeIdFromTypeExpr(e);
+                break :blk ts.mkTuple(buf);
             },
-            .@"struct" => blk_struct: {
-                if (field.payload_fields.isNone()) break :blk_struct ts.tVoid();
-                const fields = self.ast.exprs.sfield_pool.slice(field.payload_fields.asRange());
-                var field_buf = try ts.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
-                defer ts.gpa.free(field_buf);
-                var j: usize = 0;
-                while (j < fields.len) : (j += 1) {
-                    const sf = self.ast.exprs.StructField.get(fields[j]);
-                    const ty = try self.typeIdFromTypeExpr(sf.ty);
-                    field_buf[j] = .{ .name = sf.name, .ty = ty };
+            .@"struct" => blk: {
+                if (f.payload_fields.isNone()) break :blk ts.tVoid();
+                const flds = self.ast.exprs.sfield_pool.slice(f.payload_fields.asRange());
+                const buf = try ts.gpa.alloc(types.TypeStore.StructFieldArg, flds.len);
+                errdefer ts.gpa.free(buf);
+                for (flds, 0..) |id, i| {
+                    const sf = self.ast.exprs.StructField.get(id);
+                    buf[i] = .{ .name = sf.name, .ty = try self.typeIdFromTypeExpr(sf.ty) };
                 }
-                return ts.mkStruct(field_buf, 0);
+                break :blk ts.mkStruct(buf, 0);
             },
         };
     }
 
-    /// Evaluate an error set type, returning its element/error pair.
-    fn evalErrorSetType(self: *Interpreter, row: ast.Rows.ErrorSetType) anyerror!Value {
-        const ts = self.ast.type_info.store;
-        const value_ty = try self.typeIdFromTypeExpr(row.value);
-        const err_ty = try self.typeIdFromTypeExpr(row.err);
-        return Value{ .Type = ts.mkErrorSet(value_ty, err_ty) };
-    }
-
-    /// Evaluate an import expression by retrieving the type of the referenced module.
-    fn evalImport(self: *Interpreter, expr: ast.ExprId) anyerror!Value {
+    fn evalImport(self: *Interpreter, expr: ast.ExprId) !Value {
         const idx = expr.toRaw();
-        if (idx >= self.ast.type_info.expr_types.items.len) return Error.InvalidType;
-        if (self.ast.type_info.expr_types.items[idx]) |ty| {
-            return Value{ .Type = ty };
-        }
+        const tys = self.ast.type_info.expr_types.items;
+        if (idx < tys.len) if (tys[idx]) |t| return Value{ .Type = t };
         return Error.InvalidType;
     }
 
-    /// Evaluate a union type expression by collecting variant fields.
-    fn evalUnionType(self: *Interpreter, row: ast.Rows.UnionType) anyerror!Value {
+    fn evalUnionType(self: *Interpreter, row: ast.Rows.UnionType) !Value {
         const ts = self.ast.type_info.store;
         const sfs = self.ast.exprs.sfield_pool.slice(row.fields);
-        var buf = try ts.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
-        defer ts.gpa.free(buf);
-        var i: usize = 0;
-        while (i < sfs.len) : (i += 1) {
-            const field = self.ast.exprs.StructField.get(sfs[i]);
-            const field_ty = try self.typeIdFromTypeExpr(field.ty);
-            buf[i] = .{ .name = field.name, .ty = field_ty };
+        const buf = try ts.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
+        errdefer ts.gpa.free(buf);
+        for (sfs, 0..) |id, i| {
+            const f = self.ast.exprs.StructField.get(id);
+            buf[i] = .{ .name = f.name, .ty = try self.typeIdFromTypeExpr(f.ty) };
         }
-        const union_ty = ts.mkUnion(buf);
-        return Value{ .Type = union_ty };
+        return Value{ .Type = ts.mkUnion(buf) };
     }
 
-    /// Evaluate an enum literal by emitting its tag type and member list.
-    fn evalEnumType(self: *Interpreter, row: ast.Rows.EnumType) anyerror!Value {
+    fn evalEnumType(self: *Interpreter, row: ast.Rows.EnumType) !Value {
         const ts = self.ast.type_info.store;
-        var tag_ty = ts.tI32();
-        if (!row.discriminant.isNone()) {
-            tag_ty = try self.typeIdFromTypeExpr(row.discriminant.unwrap());
-        }
-
+        const tag = if (!row.discriminant.isNone()) try self.typeIdFromTypeExpr(row.discriminant.unwrap()) else ts.tI32();
         const efs = self.ast.exprs.efield_pool.slice(row.fields);
-        var member_buf = try ts.gpa.alloc(types.TypeStore.EnumMemberArg, efs.len);
-        defer ts.gpa.free(member_buf);
-        var next_value: i128 = 0;
-        var i: usize = 0;
-        while (i < efs.len) : (i += 1) {
-            const enum_field = self.ast.exprs.EnumField.get(efs[i]);
-            var current_value: i128 = next_value;
-            if (!enum_field.value.isNone()) {
-                var val = try self.evalExpr(enum_field.value.unwrap());
-                current_value = switch (val) {
-                    .Int => |v| v,
-                    else => {
-                        val.destroy(self.allocator);
-                        return Error.InvalidType;
-                    },
-                };
-                val.destroy(self.allocator);
-            }
-            member_buf[i] = .{ .name = enum_field.name, .value = @intCast(current_value) };
-            next_value = current_value + 1;
+        const buf = try ts.gpa.alloc(types.TypeStore.EnumMemberArg, efs.len);
+        errdefer ts.gpa.free(buf);
+        var nkt: i128 = 0;
+        for (efs, 0..) |id, i| {
+            const f = self.ast.exprs.EnumField.get(id);
+            if (!f.value.isNone()) nkt = try self.expectInt(try self.evalExpr(f.value.unwrap()));
+            buf[i] = .{ .name = f.name, .value = @intCast(nkt) };
+            nkt += 1;
         }
-        const enum_ty = ts.mkEnum(member_buf, tag_ty);
-        return Value{ .Type = enum_ty };
+        return Value{ .Type = ts.mkEnum(buf, tag) };
     }
 
-    /// Evaluate a type expression and return its `TypeId`, using `typeof` fallback when needed.
-    fn typeIdFromTypeExpr(self: *Interpreter, expr: ast.ExprId) anyerror!types.TypeId {
-        const expr_index = expr.toRaw();
-        if (expr_index < self.ast.type_info.expr_types.items.len) {
-            if (self.ast.type_info.expr_types.items[expr_index]) |type_ty| {
-                if (self.ast.type_info.store.getKind(type_ty) == .TypeType) {
-                    return self.ast.type_info.store.get(.TypeType, type_ty).of;
-                }
+    fn typeIdFromTypeExpr(self: *Interpreter, expr: ast.ExprId) !types.TypeId {
+        const idx = expr.toRaw();
+        const ts = self.ast.type_info.store;
+        if (idx < self.ast.type_info.expr_types.items.len) {
+            if (self.ast.type_info.expr_types.items[idx]) |t| {
+                if (ts.getKind(t) == .TypeType) return ts.get(.TypeType, t).of;
             }
         }
-        var value = try self.evalExpr(expr);
-        defer value.destroy(self.allocator);
-        return switch (value) {
-            .Type => |ty| ty,
-            else => Error.InvalidType,
-        };
+        var val = try self.evalExpr(expr);
+        defer val.destroy(self.allocator);
+        return if (val == .Type) val.Type else Error.InvalidType;
     }
 
-    /// Evaluate a function call expression, handling methods and variadic dispatch.
-    fn evalCall(self: *Interpreter, row: ast.Rows.Call) anyerror!Value {
-        var callee_value: Value = .Void;
-        var method_receiver: ?Value = null;
-        defer if (method_receiver) |*recv| recv.destroy(self.allocator);
-
+    fn evalCall(self: *Interpreter, row: ast.Rows.Call) !Value {
+        var callee: Value = undefined;
+        var rcv: ?Value = null;
         if (self.ast.kind(row.callee) == .FieldAccess) {
-            const field_row = self.ast.exprs.get(.FieldAccess, row.callee);
-            var parent = try self.evalExpr(field_row.parent);
-            if (structOwner(parent)) |owner_name| {
-                if (self.lookupMethod(owner_name, field_row.field)) |expr| {
-                    callee_value = Value{ .Function = .{ .expr = expr, .ast = self.ast } };
-                    method_receiver = parent;
-                } else {
-                    callee_value = try self.evalFieldAccessWithParent(field_row, &parent, true);
-                }
+            const fr = self.ast.exprs.get(.FieldAccess, row.callee);
+            var parent = try self.evalExpr(fr.parent);
+            errdefer parent.destroy(self.allocator);
+            const owner = self.resolveOwner(parent, ast.OptExprId.some(fr.parent));
+            if (owner != null and self.method_table.get(.{ .owner = owner.?, .method = fr.field }) != null) {
+                callee = Value{ .Function = .{ .expr = self.method_table.get(.{ .owner = owner.?, .method = fr.field }).?, .ast = self.ast } };
+                rcv = parent;
             } else {
-                callee_value = try self.evalFieldAccessWithParent(field_row, &parent, true);
+                callee = try self.evalFieldAccessWithParent(fr, &parent, true);
             }
-        } else {
-            callee_value = try self.evalExpr(row.callee);
-        }
-        defer callee_value.destroy(self.allocator);
+        } else callee = try self.evalExpr(row.callee);
+        defer callee.destroy(self.allocator);
 
+        errdefer if (rcv) |*r| r.destroy(self.allocator);
         var args = try self.evalCallArgs(row.args);
-        defer args.deinit(self.allocator);
-        defer for (args.items) |*value| value.destroy(self.allocator);
-
-        if (method_receiver) |recv| {
-            try args.insert(self.allocator, 0, recv);
-            method_receiver = null;
+        defer {
+            for (args.items) |*v| v.destroy(self.allocator);
+            args.deinit(self.allocator);
         }
-
-        return switch (callee_value) {
-            .Function => |func| try self.callFunction(func, &args),
-            else => Error.InvalidCall,
-        };
+        if (rcv) |r| {
+            try args.insert(self.allocator, 0, r);
+            rcv = null;
+        }
+        return if (callee == .Function) self.callFunction(callee.Function, &args) else Error.InvalidCall;
     }
 
-    /// Evaluate a range of expressions used as call arguments.
-    fn evalCallArgs(self: *Interpreter, range: ast.RangeExpr) anyerror!std.ArrayList(Value) {
+    fn evalCallArgs(self: *Interpreter, range: ast.RangeExpr) !std.ArrayListUnmanaged(Value) {
         const exprs = self.ast.exprs.expr_pool.slice(range);
-        if (exprs.len == 0) return .empty;
-        var list: std.ArrayList(Value) = try .initCapacity(self.allocator, exprs.len);
-        var success = false;
-        defer if (!success) {
-            for (list.items) |*value| value.destroy(self.allocator);
+        var list = try std.ArrayListUnmanaged(Value).initCapacity(self.allocator, exprs.len);
+        errdefer {
+            for (list.items) |*v| v.destroy(self.allocator);
             list.deinit(self.allocator);
-        };
-        var idx: usize = 0;
-        while (idx < exprs.len) : (idx += 1) {
-            list.appendAssumeCapacity(try self.evalExpr(exprs[idx]));
         }
-        success = true;
+        for (exprs) |e| list.appendAssumeCapacity(try self.evalExpr(e));
         return list;
     }
 
-    /// Bind arguments/bindings and execute the `FunctionValue` body.
-    fn callFunction(self: *Interpreter, func: FunctionValue, args: *std.ArrayList(Value)) anyerror!Value {
+    fn callFunction(self: *Interpreter, func: FunctionValue, args: *std.ArrayListUnmanaged(Value)) !Value {
         const row = func.ast.exprs.get(.FunctionLit, func.expr);
         const params = func.ast.exprs.param_pool.slice(row.params);
         if (!row.flags.is_variadic and args.items.len > params.len) return Error.TooManyArguments;
-        var matches = std.ArrayList(Binding){};
-        defer matches.deinit(self.allocator);
-        var idx: usize = 0;
-        while (idx < params.len) : (idx += 1) {
-            const param = func.ast.exprs.Param.get(params[idx]);
-            const is_variadic_param = row.flags.is_variadic and idx == params.len - 1;
-            var value: Value = .Void;
-            if (is_variadic_param) {
-                value = try self.collectVariadicArgs(args, idx);
-            } else if (idx < args.items.len) {
-                value = args.items[idx];
-                args.items[idx] = .Void;
-            } else if (!param.value.isNone()) {
-                value = try self.evalExpr(param.value.unwrap());
-            } else {
-                return Error.MissingArgument;
+        var matches = std.ArrayListUnmanaged(Binding){};
+        defer {
+            for (matches.items) |*b| b.value.destroy(self.allocator);
+            matches.deinit(self.allocator);
+        }
+
+        for (params, 0..) |pid, i| {
+            const p = func.ast.exprs.Param.get(pid);
+            var val: Value = undefined;
+            if (row.flags.is_variadic and i == params.len - 1) {
+                val = try self.collectVariadicArgs(args, i);
+            } else if (i < args.items.len) {
+                val = args.items[i];
+                args.items[i] = .Void;
+            } else if (!p.value.isNone()) {
+                val = try self.evalExpr(p.value.unwrap());
+            } else return Error.MissingArgument;
+
+            if (!p.pat.isNone()) {
+                if (!try self.matchPattern(func.ast, val, p.pat.unwrap(), &matches)) {
+                    val.destroy(self.allocator);
+                    return Error.InvalidCall;
+                }
             }
-            if (param.pat.isNone()) {
-                value.destroy(self.allocator);
-                continue;
-            }
-            const pattern = param.pat.unwrap();
-            const before = matches.items.len;
-            if (!try self.matchPattern(func.ast, value, pattern, &matches)) {
-                self.rollbackBindings(&matches, before);
-                value.destroy(self.allocator);
-                return Error.InvalidCall;
-            }
-            value.destroy(self.allocator);
+            val.destroy(self.allocator);
         }
         var scope = try self.pushBindings(&matches);
         defer scope.deinit();
-        if (row.body.isNone()) return Value{ .Void = {} };
-
-        // Temporarily switch to the function's AST for evaluating the body
-        const saved_ast = self.ast;
-        self.ast = func.ast;
-        defer self.ast = saved_ast;
-
-        return try self.evalExpr(row.body.unwrap());
+        matches.clearRetainingCapacity();
+        if (!row.body.isNone()) {
+            const saved = self.ast;
+            self.ast = func.ast;
+            defer self.ast = saved;
+            return self.evalExpr(row.body.unwrap());
+        }
+        return Value{ .Void = {} };
     }
 
-    /// Collect remaining arguments starting at `start_idx` into a sequence value.
-    fn collectVariadicArgs(self: *Interpreter, args: *std.ArrayList(Value), start_idx: usize) anyerror!Value {
-        if (start_idx >= args.items.len) return Value{ .Sequence = .{ .values = .empty } };
-        const extra = args.items.len - start_idx;
-        var list: std.ArrayList(Value) = try .initCapacity(self.allocator, extra);
-        var success = false;
-        defer if (!success) {
-            for (list.items) |*value| value.destroy(self.allocator);
+    fn collectVariadicArgs(self: *Interpreter, args: *std.ArrayListUnmanaged(Value), start: usize) !Value {
+        if (start >= args.items.len) return Value{ .Sequence = .{ .values = .{} } };
+        var list = try std.ArrayListUnmanaged(Value).initCapacity(self.allocator, args.items.len - start);
+        errdefer {
+            for (list.items) |*v| v.destroy(self.allocator);
             list.deinit(self.allocator);
-        };
-        var idx: usize = start_idx;
-        while (idx < args.items.len) : (idx += 1) {
-            list.appendAssumeCapacity(args.items[idx]);
-            args.items[idx] = .Void;
         }
-        success = true;
+        for (start..args.items.len) |i| {
+            list.appendAssumeCapacity(args.items[i]);
+            args.items[i] = .Void;
+        }
         return Value{ .Sequence = .{ .values = list } };
     }
 
-    /// Evaluate a literal sequence expression and return a sequence value.
-    fn evalSequence(self: *Interpreter, expr_range: ast.RangeExpr) anyerror!Value {
-        const exprs = self.ast.exprs.expr_pool.slice(expr_range);
-        if (exprs.len == 0) return Value{ .Sequence = .{ .values = .empty } };
-        var list: std.ArrayList(Value) = try .initCapacity(self.allocator, exprs.len);
-        var success = false;
-        defer if (!success) {
-            for (list.items) |*value| value.destroy(self.allocator);
-            list.deinit(self.allocator);
-        };
-        var idx: usize = 0;
-        while (idx < exprs.len) : (idx += 1) {
-            const value = try self.evalExpr(exprs[idx]);
-            list.appendAssumeCapacity(value);
-        }
-        success = true;
-        return Value{ .Sequence = .{ .values = list } };
+    fn evalSequence(self: *Interpreter, range: ast.RangeExpr) !Value {
+        return Value{ .Sequence = .{ .values = try self.evalCallArgs(range) } };
     }
 
-    /// Evaluate a struct literal by mapping field expressions to values.
-    fn evalStructLit(self: *Interpreter, row: ast.Rows.StructLit) anyerror!Value {
-        const field_ids = self.ast.exprs.sfv_pool.slice(row.fields);
-        const count = field_ids.len;
-        if (count == 0) return Value{ .Struct = .{ .fields = .empty, .owner = self.structTypeName(row.ty) } };
-        var list: std.ArrayList(StructField) = try .initCapacity(self.allocator, count);
-        var success = false;
-        defer if (!success) {
-            for (list.items) |*field| field.value.destroy(self.allocator);
+    fn evalStructLit(self: *Interpreter, row: ast.Rows.StructLit) !Value {
+        const fids = self.ast.exprs.sfv_pool.slice(row.fields);
+        const owner = self.resolveOwner(null, row.ty);
+        var list = try std.ArrayListUnmanaged(StructField).initCapacity(self.allocator, fids.len);
+        errdefer {
+            for (list.items) |*f| f.value.destroy(self.allocator);
             list.deinit(self.allocator);
-        };
-        var idx: usize = 0;
-        while (idx < count) : (idx += 1) {
-            const field = self.ast.exprs.StructFieldValue.get(field_ids[idx]);
-            if (field.name.isNone()) return Error.InvalidStatement;
-            const value = try self.evalExpr(field.value);
-            list.appendAssumeCapacity(StructField{
-                .name = field.name.unwrap(),
-                .value = value,
-            });
         }
-        const owner = self.structTypeName(row.ty);
-        success = true;
+        for (fids) |id| {
+            const f = self.ast.exprs.StructFieldValue.get(id);
+            if (f.name.isNone()) return Error.InvalidStatement;
+            list.appendAssumeCapacity(.{ .name = f.name.unwrap(), .value = try self.evalExpr(f.value) });
+        }
         return Value{ .Struct = .{ .fields = list, .owner = owner } };
     }
 
-    /// Evaluate a map literal by computing key/value pairs.
-    fn evalMapLit(self: *Interpreter, row: ast.Rows.MapLit) anyerror!Value {
+    fn evalMapLit(self: *Interpreter, row: ast.Rows.MapLit) !Value {
         const entries = self.ast.exprs.kv_pool.slice(row.entries);
-        if (entries.len == 0) return Value{ .Map = .{ .entries = .empty } };
-        var map: std.ArrayList(MapEntry) = try .initCapacity(self.allocator, entries.len);
-        var success = false;
-        defer if (!success) {
-            for (map.items) |*entry| {
-                entry.key.destroy(self.allocator);
-                entry.value.destroy(self.allocator);
+        var list = try std.ArrayListUnmanaged(MapEntry).initCapacity(self.allocator, entries.len);
+        errdefer {
+            for (list.items) |*e| {
+                e.key.destroy(self.allocator);
+                e.value.destroy(self.allocator);
             }
-            map.deinit(self.allocator);
-        };
-        var idx: usize = 0;
-        while (idx < entries.len) : (idx += 1) {
-            const kv = self.ast.exprs.KeyValue.get(entries[idx]);
-            const key = try self.evalExpr(kv.key);
-            const value = try self.evalExpr(kv.value);
-            map.appendAssumeCapacity(MapEntry{
-                .key = key,
-                .value = value,
-            });
+            list.deinit(self.allocator);
         }
-        success = true;
-        return Value{ .Map = .{ .entries = map } };
+        for (entries) |id| {
+            const kv = self.ast.exprs.KeyValue.get(id);
+            list.appendAssumeCapacity(.{ .key = try self.evalExpr(kv.key), .value = try self.evalExpr(kv.value) });
+        }
+        return Value{ .Map = .{ .entries = list } };
     }
 
-    /// Decode the owner’s identifier from a type expression, if present.
-    fn structTypeName(self: *Interpreter, ty: ast.OptExprId) ?ast.StrId {
-        if (ty.isNone()) return null;
-        return self.exprName(ty.unwrap());
+    fn resolveOwner(self: *Interpreter, parent: ?Value, ty_expr: ast.OptExprId) ?ast.StrId {
+        if (parent) |p| if (p == .Struct) return p.Struct.owner;
+        if (!ty_expr.isNone()) {
+            const e = ty_expr.unwrap();
+            return switch (self.ast.kind(e)) {
+                .Ident => self.ast.exprs.get(.Ident, e).name,
+                .FieldAccess => self.ast.exprs.get(.FieldAccess, e).field,
+                else => null,
+            };
+        }
+        return null;
     }
 
-    /// Extract an identifier or field name from `expr` when possible.
-    fn exprName(self: *Interpreter, expr: ast.ExprId) ?ast.StrId {
-        return switch (self.ast.kind(expr)) {
-            .Ident => self.ast.exprs.get(.Ident, expr).name,
-            .FieldAccess => self.ast.exprs.get(.FieldAccess, expr).field,
-            else => null,
-        };
-    }
-
-    /// Evaluate a range literal, returning start/end values.
-    fn evalRange(self: *Interpreter, row: ast.Rows.Range) anyerror!Value {
+    fn evalRange(self: *Interpreter, row: ast.Rows.Range) !Value {
         if (row.start.isNone() or row.end.isNone()) return Error.InvalidStatement;
         var start = try self.evalExpr(row.start.unwrap());
         defer start.destroy(self.allocator);
         var end = try self.evalExpr(row.end.unwrap());
         defer end.destroy(self.allocator);
-        const start_int = try expectInt(start);
-        const end_int = try expectInt(end);
-        return Value{ .Range = RangeValue{ .start = start_int, .end = end_int, .inclusive = row.inclusive_right } };
+        return Value{ .Range = .{ .start = try self.expectInt(start), .end = try self.expectInt(end), .inclusive = row.inclusive_right } };
     }
 
-    /// Evaluate field access expressions for sequences, structs, pointer targets, or types.
-    fn evalFieldAccess(self: *Interpreter, row: ast.Rows.FieldAccess) anyerror!Value {
+    fn evalFieldAccess(self: *Interpreter, row: ast.Rows.FieldAccess) !Value {
         var parent = try self.evalExpr(row.parent);
         return self.evalFieldAccessWithParent(row, &parent, true);
     }
 
-    fn findDeclInUnit(ast_unit: *ast.Ast, name: ast.StrId) ?ast.DeclId {
-        const decls = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
-        for (decls) |did| {
-            const row = ast_unit.exprs.Decl.get(did);
-            if (row.pattern.isNone()) continue;
-            const pat_id = row.pattern.unwrap();
-            if (ast_unit.kind(pat_id) != .Binding) continue;
-            const binding = ast_unit.pats.get(.Binding, pat_id);
-            if (binding.name.eq(name)) return did;
-        }
-        return null;
-    }
-
-    /// Evaluate a field access using a pre-evaluated parent value.
-    fn evalFieldAccessWithParent(
-        self: *Interpreter,
-        row: ast.Rows.FieldAccess,
-        parent: *Value,
-        destroy_parent: bool,
-    ) anyerror!Value {
-        const should_destroy = destroy_parent;
-        defer if (should_destroy) parent.destroy(self.allocator);
+    fn evalFieldAccessWithParent(self: *Interpreter, row: ast.Rows.FieldAccess, parent: *Value, destroy_parent: bool) !Value {
+        defer if (destroy_parent) parent.destroy(self.allocator);
         if (row.is_tuple) {
-            const idx = try self.parseTupleIndex(row.field);
+            const idx = std.fmt.parseInt(usize, self.ast.exprs.strs.get(row.field), 10) catch return Error.InvalidFieldAccess;
             return switch (parent.*) {
-                .Sequence => |seq| {
-                    if (idx >= seq.values.items.len) return Error.InvalidFieldAccess;
-                    return try self.cloneValue(seq.values.items[idx]);
-                },
-                else => return Error.InvalidFieldAccess,
+                .Sequence => |s| if (idx < s.values.items.len) self.cloneValue(s.values.items[idx]) else Error.InvalidFieldAccess,
+                else => Error.InvalidFieldAccess,
             };
         }
-        const field_name = self.ast.exprs.strs.get(row.field);
-        if (std.mem.eql(u8, field_name, "len")) {
-            switch (parent.*) {
-                .Sequence => |seq| return Value{ .Int = @intCast(seq.values.items.len) },
-                .String => |s| return Value{ .Int = @intCast(s.len) },
-                else => return Error.InvalidFieldAccess,
-            }
+        if (std.mem.eql(u8, self.ast.exprs.strs.get(row.field), "len")) {
+            return switch (parent.*) {
+                .Sequence => |s| Value{ .Int = @intCast(s.values.items.len) },
+                .String => |s| Value{ .Int = @intCast(s.len) },
+                else => Error.InvalidFieldAccess,
+            };
         }
         return switch (parent.*) {
-            .Pointer => |ptr| {
-                var target = try self.cloneValue(ptr.*);
-                return self.evalFieldAccessWithParent(row, &target, true);
+            .Pointer => |p| {
+                var t = try self.cloneValue(p.*);
+                return self.evalFieldAccessWithParent(row, &t, true);
             },
-            .Struct => |sv| {
-                const struct_field = findStructField(sv, row.field);
-                if (struct_field) |field| {
-                    return try self.cloneValue(field.*.value);
-                }
-                return Error.InvalidFieldAccess;
-            },
-            .Type => |type_id| {
-                var id = type_id;
-                const ts = self.ast.type_info.store;
-                var kind = ts.getKind(id);
-                if (kind == .TypeType) {
-                    const type_type = ts.get(.TypeType, id);
-                    id = type_type.of;
-                }
-                if (kind == .Ast) {
-                    const ast_ty = ts.get(.Ast, id);
-                    // Accessing a member from an imported module
-                    if (self.compilation_unit) |compilation_unit| {
-                        const pkg_name = self.ast.exprs.strs.get(ast_ty.pkg_name);
-                        const filepath = self.ast.exprs.strs.get(ast_ty.filepath);
-                        if (compilation_unit.packages.getPtr(pkg_name)) |pkg| {
-                            if (pkg.sources.getPtr(filepath)) |parent_unit| {
-                                if (parent_unit.ast) |a| {
-                                    // Re-intern field name into the imported unit's interner
-                                    const fname = self.ast.exprs.strs.get(row.field);
-                                    const target_sid = a.exprs.strs.intern(fname);
-
-                                    var decl_id: ?ast.DeclId = null;
-                                    if (self.get_module_symtab) |get_symtab| {
-                                        if (get_symtab(self.checker_context, parent_unit.file_id)) |symtab| {
-                                            // Assuming the top-level scope is at index 0 (or bottom of stack)
-                                            if (symtab.stack.items.len > 0) {
-                                                const root_scope = symtab.stack.items[0].id;
-                                                if (symtab.lookup(root_scope, target_sid)) |sid| {
-                                                    const srow = symtab.syms.get(sid);
-                                                    if (!srow.origin_decl.isNone()) {
-                                                        decl_id = srow.origin_decl.unwrap();
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    if (decl_id == null) {
-                                        decl_id = findDeclInUnit(a, target_sid);
-                                    }
-
-                                    if (decl_id) |did| {
-                                        const decl = a.exprs.Decl.get(did);
-                                        // Try to get the comptime value for this declaration
-                                        if (a.type_info.getComptimeValue(decl.value)) |val_ptr| {
-                                            return try self.cloneValue(val_ptr.*);
-                                        }
-                                        // Fallback: if it's a function literal, just return the function value
-                                        if (a.kind(decl.value) == .FunctionLit) {
-                                            return Value{ .Function = .{ .expr = decl.value, .ast = a } };
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    return Error.InvalidFieldAccess;
-                }
-                kind = ts.getKind(id);
-                if (kind == .Enum) {
-                    const enum_type = ts.get(.Enum, id);
-                    const members = ts.enum_member_pool.slice(enum_type.members);
-                    for (members) |member_id| {
-                        const member = ts.EnumMember.get(member_id);
-                        if (member.name.eq(row.field)) {
-                            return Value{ .Int = member.value };
-                        }
-                    }
-                } else if (kind == .Struct) {
-                    const struct_ty = ts.get(.Struct, id);
-                    const fields = ts.field_pool.slice(struct_ty.fields);
-                    for (fields) |field_id| {
-                        const field = ts.Field.get(field_id);
-                        if (field.name.eq(row.field)) {
-                            // Return the field's type wrapped in TypeType
-                            return Value{ .Type = ts.mkTypeType(field.ty) };
-                        }
-                    }
-                }
-                return Error.InvalidFieldAccess;
-            },
-            else => {
-                return Error.InvalidFieldAccess;
-            },
+            .Struct => |s| if (self.findStructField(s, row.field)) |f| self.cloneValue(f.value) else Error.InvalidFieldAccess,
+            .Type => |t| self.evalStaticMember(t, row.field),
+            else => Error.InvalidFieldAccess,
         };
     }
 
-    /// Evaluate indices into sequences, strings, and maps.
-    fn evalIndexAccess(self: *Interpreter, row: ast.Rows.IndexAccess) anyerror!Value {
-        var collection = try self.evalExpr(row.collection);
-        defer collection.destroy(self.allocator);
-        var index_val = try self.evalExpr(row.index);
-        defer index_val.destroy(self.allocator);
-        return switch (collection) {
-            .Sequence => |seq| {
-                const idx = try expectIndex(index_val);
-                if (idx >= seq.values.items.len) return Error.InvalidIndexAccess;
-                return try self.cloneValue(seq.values.items[idx]);
+    fn evalStaticMember(self: *Interpreter, tid: types.TypeId, field: ast.StrId) !Value {
+        const ts = self.ast.type_info.store;
+        const id = if (ts.getKind(tid) == .TypeType) ts.get(.TypeType, tid).of else tid;
+        switch (ts.getKind(id)) {
+            .Enum => for (ts.enum_member_pool.slice(ts.get(.Enum, id).members)) |mid| {
+                const m = ts.EnumMember.get(mid);
+                if (m.name.eq(field)) return Value{ .Int = m.value };
             },
-            .String => |s| {
-                const idx = try expectIndex(index_val);
-                if (idx >= s.len) return Error.InvalidIndexAccess;
-                return Value{ .Int = @intCast(s[idx]) };
+            .Struct => for (ts.field_pool.slice(ts.get(.Struct, id).fields)) |fid| {
+                const f = ts.Field.get(fid);
+                if (f.name.eq(field)) return Value{ .Type = ts.mkTypeType(f.ty) };
             },
-            .Map => |map| {
-                var idx: usize = 0;
-                while (idx < map.entries.items.len) : (idx += 1) {
-                    const entry = map.entries.items[idx];
-                    if (valuesEqual(index_val, entry.key)) {
-                        return try self.cloneValue(entry.value);
-                    }
-                }
-                return Error.InvalidIndexAccess;
-            },
+            .Ast => return self.resolveImportMember(ts.get(.Ast, id), field),
+            else => {},
+        }
+        return Error.InvalidFieldAccess;
+    }
+
+    fn resolveImportMember(self: *Interpreter, at: types.Rows.Ast, field: ast.StrId) !Value {
+        const unit = self.compilation_unit orelse return Error.InvalidFieldAccess;
+        const pkg = unit.packages.getPtr(self.ast.exprs.strs.get(at.pkg_name)) orelse return Error.InvalidFieldAccess;
+        const pu = pkg.sources.getPtr(self.ast.exprs.strs.get(at.filepath)) orelse return Error.InvalidFieldAccess;
+        const other_ast = pu.ast orelse return Error.InvalidFieldAccess;
+        const target_sid = other_ast.exprs.strs.intern(self.ast.exprs.strs.get(field));
+
+        var did: ?ast.DeclId = null;
+        if (self.get_module_symtab) |g| if (g(self.checker_context, pu.file_id)) |st| if (st.stack.items.len > 0)
+            if (st.lookup(st.stack.items[0].id, target_sid)) |sid| if (!st.syms.get(sid).origin_decl.isNone()) {
+                did = st.syms.get(sid).origin_decl.unwrap();
+            };
+
+        if (did == null) for (other_ast.exprs.decl_pool.slice(other_ast.unit.decls)) |d| {
+            const r = other_ast.exprs.Decl.get(d);
+            if (!r.pattern.isNone()) if (other_ast.kind(r.pattern.unwrap()) == .Binding)
+                if (other_ast.pats.get(.Binding, r.pattern.unwrap()).name.eq(target_sid)) {
+                    did = d;
+                    break;
+                };
+        };
+
+        if (did) |d| {
+            const decl = other_ast.exprs.Decl.get(d);
+            if (other_ast.type_info.getComptimeValue(decl.value)) |v| return self.cloneValue(v.*);
+            if (other_ast.kind(decl.value) == .FunctionLit) return Value{ .Function = .{ .expr = decl.value, .ast = other_ast } };
+        }
+        return Error.InvalidFieldAccess;
+    }
+
+    fn evalIndexAccess(self: *Interpreter, row: ast.Rows.IndexAccess) !Value {
+        var coll = try self.evalExpr(row.collection);
+        defer coll.destroy(self.allocator);
+        var idx = try self.evalExpr(row.index);
+        defer idx.destroy(self.allocator);
+        return switch (coll) {
+            .Sequence => |s| if ((try self.expectInt(idx)) < s.values.items.len) self.cloneValue(s.values.items[@intCast(try self.expectInt(idx))]) else Error.InvalidIndexAccess,
+            .String => |s| if ((try self.expectInt(idx)) < s.len) Value{ .Int = @intCast(s[@intCast(try self.expectInt(idx))]) } else Error.InvalidIndexAccess,
+            .Map => |m| for (m.entries.items) |e| {
+                if (self.valuesEqual(idx, e.key)) return self.cloneValue(e.value);
+            } else Error.InvalidIndexAccess,
             else => Error.InvalidIndexAccess,
         };
     }
 
-    /// Parse a tuple literal field index from a string identifier.
-    fn parseTupleIndex(self: *Interpreter, id: ast.StrId) anyerror!usize {
-        const slice = self.ast.exprs.strs.get(id);
-        return std.fmt.parseInt(usize, slice, 10) catch Error.InvalidFieldAccess;
-    }
-
-    /// Convert `value` to a non-negative integer suitable for an index.
-    fn expectIndex(value: Value) anyerror!usize {
-        return switch (value) {
-            .Int => |int_val| {
-                if (int_val < 0) return Error.InvalidIndexAccess;
-                const max: i128 = std.math.maxInt(usize);
-                if (int_val > max) return Error.InvalidIndexAccess;
-                return @intCast(int_val);
-            },
-            else => return Error.InvalidIndexAccess,
-        };
-    }
-
-    /// Evaluate a match expression by trying each arm sequentially.
-    fn evalMatch(self: *Interpreter, row: ast.Rows.Match) anyerror!Value {
+    fn evalMatch(self: *Interpreter, row: ast.Rows.Match) !Value {
         var scrut = try self.evalExpr(row.expr);
         defer scrut.destroy(self.allocator);
-        const arms = self.ast.exprs.arm_pool.slice(row.arms);
-        for (arms) |arm_id| {
-            const arm = self.ast.exprs.MatchArm.get(arm_id);
-            var matches = std.ArrayList(Binding){};
-            defer matches.deinit(self.allocator);
+        var matches = std.ArrayListUnmanaged(Binding){};
+        defer {
+            for (matches.items) |*b| b.value.destroy(self.allocator);
+            matches.deinit(self.allocator);
+        }
+
+        for (self.ast.exprs.arm_pool.slice(row.arms)) |id| {
+            for (matches.items) |*b| b.value.destroy(self.allocator);
+            matches.clearRetainingCapacity();
+            const arm = self.ast.exprs.MatchArm.get(id);
             if (!try self.matchPattern(self.ast, scrut, arm.pattern, &matches)) continue;
+            if (!arm.guard.isNone()) {
+                var g = try self.evalExpr(arm.guard.unwrap());
+                defer g.destroy(self.allocator);
+                if (!try self.valueToBool(g)) continue;
+            }
             var scope = try self.pushBindings(&matches);
             defer scope.deinit();
-            if (!arm.guard.isNone()) {
-                var guard_val = try self.evalExpr(arm.guard.unwrap());
-                defer guard_val.destroy(self.allocator);
-                if (!try valueToBool(guard_val)) continue;
-            }
-            return try self.evalExpr(arm.body);
+            matches.clearRetainingCapacity();
+            return self.evalExpr(arm.body);
         }
         return Value{ .Void = {} };
     }
 
-    /// Return the owner name of a struct value, if any.
-    fn structOwner(value: Value) ?ast.StrId {
-        return switch (value) {
-            .Struct => value.Struct.owner,
-            else => null,
-        };
-    }
-
-    /// Evaluate a `for` loop over a range or sequence.
-    fn evalFor(self: *Interpreter, row: ast.Rows.For) anyerror!Value {
-        var iterable = try self.evalExpr(row.iterable);
-        defer iterable.destroy(self.allocator);
-        const body = row.body;
-        const pattern = row.pattern;
-        switch (iterable) {
-            .Range => |range| {
-                var current = range.start;
-                while (true) {
-                    const done = if (range.inclusive) current > range.end else current >= range.end;
-                    if (done) break;
-                    _ = try self.runLoopIteration(pattern, body, Value{ .Int = current });
-                    current += 1;
-                }
+    fn evalFor(self: *Interpreter, row: ast.Rows.For) !Value {
+        var iter = try self.evalExpr(row.iterable);
+        defer iter.destroy(self.allocator);
+        switch (iter) {
+            .Range => |r| {
+                var c = r.start;
+                while (if (r.inclusive) c <= r.end else c < r.end) : (c += 1) _ = try self.runLoop(row.pattern, row.body, .{ .Int = c });
             },
-            .Sequence => |seq| {
-                var idx: usize = 0;
-                while (idx < seq.values.items.len) : (idx += 1) {
-                    _ = try self.runLoopIteration(pattern, body, seq.values.items[idx]);
-                }
+            .Sequence => |s| {
+                for (s.values.items) |v| _ = try self.runLoop(row.pattern, row.body, v);
             },
             else => return Error.InvalidType,
         }
         return Value{ .Void = {} };
     }
 
-    /// Bind `value` to `pattern`, execute `body`, and clean up bindings.
-    fn runLoopIteration(self: *Interpreter, pattern: ast.PatternId, body: ast.ExprId, value: Value) anyerror!bool {
-        var matches = std.ArrayList(Binding){};
-        defer matches.deinit(self.allocator);
-        if (!try self.matchPattern(self.ast, value, pattern, &matches)) return false;
+    fn runLoop(self: *Interpreter, pat: ast.PatternId, body: ast.ExprId, val: Value) !bool {
+        var matches = std.ArrayListUnmanaged(Binding){};
+        defer {
+            for (matches.items) |*b| b.value.destroy(self.allocator);
+            matches.deinit(self.allocator);
+        }
+        if (!try self.matchPattern(self.ast, val, pat, &matches)) return false;
         var scope = try self.pushBindings(&matches);
         defer scope.deinit();
+        matches.clearRetainingCapacity();
         var body_val = try self.evalExpr(body);
         body_val.destroy(self.allocator);
         return true;
     }
 
-    /// Evaluate a `while` or `while pattern` loop.
-    fn evalWhile(self: *Interpreter, row: ast.Rows.While) anyerror!Value {
-        const body = row.body;
+    fn evalWhile(self: *Interpreter, row: ast.Rows.While) !Value {
+        var matches = std.ArrayListUnmanaged(Binding){};
+        defer {
+            for (matches.items) |*b| b.value.destroy(self.allocator);
+            matches.deinit(self.allocator);
+        }
         while (true) {
-            var cond_value: Value = if (row.cond.isNone()) Value{ .Bool = true } else try self.evalExpr(row.cond.unwrap());
-            if (row.is_pattern and !row.pattern.isNone()) {
-                var matches = std.ArrayList(Binding){};
-                defer matches.deinit(self.allocator);
-                if (!try self.matchPattern(self.ast, cond_value, row.pattern.unwrap(), &matches)) {
-                    cond_value.destroy(self.allocator);
-                    break;
-                }
-                cond_value.destroy(self.allocator);
-                var scope = try self.pushBindings(&matches);
-                defer scope.deinit();
-                var body_val = try self.evalExpr(body);
+            for (matches.items) |*b| b.value.destroy(self.allocator);
+            matches.clearRetainingCapacity();
+            if (row.cond.isNone()) {
+                var body_val = try self.evalExpr(row.body);
                 body_val.destroy(self.allocator);
                 continue;
             }
-            const cond_bool = try valueToBool(cond_value);
-            cond_value.destroy(self.allocator);
-            if (!cond_bool) break;
-            var body_val = try self.evalExpr(body);
-            body_val.destroy(self.allocator);
+            var cond = try self.evalExpr(row.cond.unwrap());
+            if (row.is_pattern and !row.pattern.isNone()) {
+                if (!try self.matchPattern(self.ast, cond, row.pattern.unwrap(), &matches)) {
+                    cond.destroy(self.allocator);
+                    break;
+                }
+                cond.destroy(self.allocator);
+                var scope = try self.pushBindings(&matches);
+                defer scope.deinit();
+                matches.clearRetainingCapacity();
+                var body_val = try self.evalExpr(row.body);
+                body_val.destroy(self.allocator);
+            } else {
+                const b = try self.valueToBool(cond);
+                cond.destroy(self.allocator);
+                if (!b) break;
+                var body_val = try self.evalExpr(row.body);
+                body_val.destroy(self.allocator);
+            }
         }
         return Value{ .Void = {} };
     }
 
-    /// Evaluate a literal expression (number, string, bool, etc.).
-    fn evalLiteral(self: *Interpreter, literal: ast.Rows.Literal) anyerror!Value {
-        return switch (literal.kind) {
-            .int => Value{ .Int = @intCast(literal.data.int.value) },
-            .float => Value{ .Float = literal.data.float.value },
-            .bool => Value{ .Bool = literal.data.bool },
-            .char => Value{ .Int = @intCast(literal.data.char) },
-            .string => blk: {
-                const slice = self.ast.exprs.strs.get(literal.data.string);
-                const dup = try self.allocator.dupe(u8, slice);
-                break :blk Value{ .String = dup };
-            },
-            .imaginary => Value{ .Float = literal.data.imaginary.value },
+    fn evalLiteral(self: *Interpreter, l: ast.Rows.Literal) !Value {
+        return switch (l.kind) {
+            .int => Value{ .Int = @intCast(l.data.int.value) },
+            .float => Value{ .Float = l.data.float.value },
+            .bool => Value{ .Bool = l.data.bool },
+            .char => Value{ .Int = @intCast(l.data.char) },
+            .string => Value{ .String = try self.allocator.dupe(u8, self.ast.exprs.strs.get(l.data.string)) },
+            .imaginary => Value{ .Float = l.data.imaginary.value },
         };
     }
 
-    /// Resolve an identifier to a binding, builtin type, or exported declaration.
-    fn evalIdent(self: *Interpreter, expr_id: ast.ExprId, ident: ast.Rows.Ident) anyerror!Value {
-        // 1. Check local comptime bindings
-        if (try self.lookup(ident.name)) |value| {
-            return value;
+    fn evalIdent(self: *Interpreter, expr: ast.ExprId) !Value {
+        const name = self.ast.exprs.get(.Ident, expr).name;
+        if (try self.lookup(name)) |v| return v;
+        const ts = self.ast.type_info.store;
+        if (self.symtab) |t| if (t.lookup(t.currentId(), name)) |sid| if (!t.syms.get(sid).origin_decl.isNone()) {
+            const did = t.syms.get(sid).origin_decl.unwrap();
+            if (did.toRaw() < self.ast.type_info.decl_types.items.len) if (self.ast.type_info.decl_types.items[did.toRaw()]) |ty|
+                if (ts.getKind(ty) == .TypeType) return Value{ .Type = ts.get(.TypeType, ty).of };
+        };
+        const idx = expr.toRaw();
+        if (idx < self.ast.type_info.expr_types.items.len) if (self.ast.type_info.expr_types.items[idx]) |ty|
+            if (ts.getKind(ty) == .TypeType) return Value{ .Type = ts.get(.TypeType, ty).of };
+
+        if (self.ast.type_info.getExport(name)) |e| return Value{ .Type = e.ty };
+        if (lookupBuiltinType(self.ast.exprs.strs.get(name), ts)) |t| return Value{ .Type = t };
+
+        for (self.ast.exprs.decl_pool.slice(self.ast.unit.decls)) |d| {
+            const r = self.ast.exprs.Decl.get(d);
+            if (!r.pattern.isNone()) if (self.ast.kind(r.pattern.unwrap()) == .Binding)
+                if (self.ast.pats.get(.Binding, r.pattern.unwrap()).name.eq(name))
+                    if (isTypeExpr(self.ast.kind(r.value))) return self.evalExpr(r.value);
         }
-
-        const ident_name = self.ast.exprs.strs.get(ident.name);
-
-        // 2. Fallback to checker's symbol table if available
-        if (self.symtab) |symtab| {
-            if (symtab.lookup(symtab.currentId(), ident.name)) |sid| {
-                const srow = symtab.syms.get(sid);
-                if (!srow.origin_decl.isNone()) {
-                    const did = srow.origin_decl.unwrap();
-                    if (did.toRaw() < self.ast.type_info.decl_types.items.len) {
-                        if (self.ast.type_info.decl_types.items[did.toRaw()]) |ty| {
-                            const ts = self.ast.type_info.store;
-                            if (ts.getKind(ty) == .TypeType) {
-                                const tt = ts.get(.TypeType, ty);
-                                return Value{ .Type = tt.of };
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // 3. If the ident is already typed as TypeType, return the underlying type
-        const expr_index = expr_id.toRaw();
-        if (expr_index < self.ast.type_info.expr_types.items.len) {
-            if (self.ast.type_info.expr_types.items[expr_index]) |type_ty| {
-                const ts = self.ast.type_info.store;
-                if (ts.getKind(type_ty) == .TypeType) {
-                    const tt = ts.get(.TypeType, type_ty);
-                    return Value{ .Type = tt.of };
-                }
-            }
-        }
-
-        if (self.ast.type_info.getExport(ident.name)) |entry|
-            return Value{ .Type = entry.ty };
-
-        if (self.lookupBuiltinType(ident_name)) |builtin_ty|
-            return Value{ .Type = builtin_ty };
-
-        if (self.findDeclByName(ident.name)) |did| {
-            const row = self.ast.exprs.Decl.get(did);
-            if (isTypeExprKind(self.ast.kind(row.value))) {
-                return try self.evalExpr(row.value);
-            }
-        }
-
         return Error.BindingNotFound;
     }
-
-    /// Look up the declaration that binds `name` within the current AST unit.
-    fn findDeclByName(self: *Interpreter, name: ast.StrId) ?ast.DeclId {
-        const decls = self.ast.exprs.decl_pool.slice(self.ast.unit.decls);
-        for (decls) |did| {
-            const row = self.ast.exprs.Decl.get(did);
-            if (row.pattern.isNone()) continue;
-            const pat_id = row.pattern.unwrap();
-            if (self.ast.kind(pat_id) != .Binding) continue;
-            const binding = self.ast.pats.get(.Binding, pat_id);
-            if (binding.name.eq(name)) return did;
-        }
-        return null;
-    }
-
-    /// Return whether `kind` represents a type-level expression.
-    fn isTypeExprKind(kind: ast.ExprKind) bool {
-        return switch (kind) {
-            .TupleType, .ArrayType, .DynArrayType, .MapType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType, .Literal, .Import, .Call, .FieldAccess, .MlirBlock => true,
+    fn isTypeExpr(k: ast.ExprKind) bool {
+        return switch (k) {
+            .Literal, .Import, .Call, .FieldAccess, .MlirBlock, .TupleType, .ArrayType, .DynArrayType, .MapType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType => true,
             else => false,
         };
     }
-
-    /// Map builtin type names to their `TypeId` equivalents.
-    fn lookupBuiltinType(self: *Interpreter, name: []const u8) ?types.TypeId {
-        const ts = self.ast.type_info.store;
+    fn lookupBuiltinType(name: []const u8, ts: *types.TypeStore) ?types.TypeId {
         if (std.mem.eql(u8, name, "bool")) return ts.tBool();
         if (std.mem.eql(u8, name, "i8")) return ts.tI8();
         if (std.mem.eql(u8, name, "i16")) return ts.tI16();
@@ -1348,763 +842,406 @@ pub const Interpreter = struct {
         return null;
     }
 
-    /// Perform binary operations during interpretation.
-    fn evalBinary(self: *Interpreter, row: ast.Rows.Binary) anyerror!Value {
-        var left = try self.evalExpr(row.left);
-        defer left.destroy(self.allocator);
-        var right = try self.evalExpr(row.right);
-        defer right.destroy(self.allocator);
-
-        switch (row.op) {
-            .add => {
-                const l = try numericValue(left);
-                const r = try numericValue(right);
-                switch (l) {
-                    .Int => switch (r) {
-                        .Int => return Value{ .Int = l.Int + r.Int },
-                        .Float => return Value{ .Float = @as(f64, @floatFromInt(l.Int)) + r.Float },
-                    },
-                    .Float => switch (r) {
-                        .Int => return Value{ .Float = l.Float + @as(f64, @floatFromInt(r.Int)) },
-                        .Float => return Value{ .Float = l.Float + r.Float },
-                    },
-                }
-            },
-            .sub => {
-                const l = try numericValue(left);
-                const r = try numericValue(right);
-                switch (l) {
-                    .Int => switch (r) {
-                        .Int => return Value{ .Int = l.Int - r.Int },
-                        .Float => return Value{ .Float = @as(f64, @floatFromInt(l.Int)) - r.Float },
-                    },
-                    .Float => switch (r) {
-                        .Int => return Value{ .Float = l.Float - @as(f64, @floatFromInt(r.Int)) },
-                        .Float => return Value{ .Float = l.Float - r.Float },
-                    },
-                }
-            },
-            .mul => {
-                const l = try numericValue(left);
-                const r = try numericValue(right);
-                switch (l) {
-                    .Int => switch (r) {
-                        .Int => return Value{ .Int = l.Int * r.Int },
-                        .Float => return Value{ .Float = @as(f64, @floatFromInt(l.Int)) * r.Float },
-                    },
-                    .Float => switch (r) {
-                        .Int => return Value{ .Float = l.Float * @as(f64, @floatFromInt(r.Int)) },
-                        .Float => return Value{ .Float = l.Float * r.Float },
-                    },
-                }
-            },
-            .div => {
-                const l = try numericValue(left);
-                const r = try numericValue(right);
-                switch (l) {
-                    .Int => switch (r) {
-                        .Int => {
-                            if (r.Int == 0) return Error.DivisionByZero;
-                            return Value{ .Int = @divTrunc(l.Int, r.Int) };
-                        },
-                        .Float => return Value{ .Float = @as(f64, @floatFromInt(l.Int)) / r.Float },
-                    },
-                    .Float => switch (r) {
-                        .Int => return Value{ .Float = l.Float / @as(f64, @floatFromInt(r.Int)) },
-                        .Float => return Value{ .Float = l.Float / r.Float },
-                    },
-                }
-            },
-            .mod => {
-                const divisor = try expectInt(right);
-                if (divisor == 0) return Error.DivisionByZero;
-                return Value{ .Int = @rem(try expectInt(left), divisor) };
-            },
-            .logical_and => {
-                const l = try valueToBool(left);
-                if (!l) return Value{ .Bool = false };
-                const r = try valueToBool(right);
-                return Value{ .Bool = r };
-            },
-            .logical_or => {
-                const l = try valueToBool(left);
-                if (l) return Value{ .Bool = true };
-                const r = try valueToBool(right);
-                return Value{ .Bool = r };
-            },
-            .shl => {
-                const l = try expectInt(left);
-                const r: u7 = @intCast(try expectInt(right));
-                return Value{ .Int = l << r };
-            },
-            .shr => {
-                const l = try expectInt(left);
-                const r: u7 = @intCast(try expectInt(right));
-                return Value{ .Int = l >> r };
-            },
-            .bit_and => return Value{ .Int = try expectInt(left) & try expectInt(right) },
-            .bit_or => return Value{ .Int = try expectInt(left) | try expectInt(right) },
-            .bit_xor => return Value{ .Int = try expectInt(left) ^ try expectInt(right) },
-            .lt => return Value{ .Bool = try compareLt(left, right) },
-            .lte => return Value{ .Bool = try compareLte(left, right) },
-            .gt => return Value{ .Bool = try compareGt(left, right) },
-            .gte => return Value{ .Bool = try compareGte(left, right) },
-            .eq => return Value{ .Bool = valuesEqual(left, right) },
-            .neq => return Value{ .Bool = !valuesEqual(left, right) },
-            else => return Error.InvalidBinaryOperand,
-        }
-    }
-
-    /// Perform unary operations (including `&` which produces a pointer).
-    fn evalUnary(self: *Interpreter, row: ast.Rows.Unary) anyerror!Value {
-        var value = try self.evalExpr(row.expr);
-        if (row.op == .address_of) {
-            return self.moveValueToPointer(value);
-        }
-        defer value.destroy(self.allocator);
+    fn evalBinary(self: *Interpreter, row: ast.Rows.Binary) !Value {
+        var l = try self.evalExpr(row.left);
+        defer l.destroy(self.allocator);
+        var r = try self.evalExpr(row.right);
+        defer r.destroy(self.allocator);
         return switch (row.op) {
-            .pos => Value{ .Int = try expectInt(value) },
-            .neg => Value{ .Int = -try expectInt(value) },
-            .logical_not => Value{ .Bool = !try valueToBool(value) },
-            else => return Error.InvalidBinaryOperand,
+            .add => mathOp(l, r, .Add),
+            .sub => mathOp(l, r, .Sub),
+            .mul => mathOp(l, r, .Mul),
+            .div => mathOp(l, r, .Div),
+            .mod => blk: {
+                const denom = try self.expectInt(r);
+                if (denom == 0) return Error.DivisionByZero;
+                break :blk Value{ .Int = @rem(try self.expectInt(l), denom) };
+            },
+            .logical_and => Value{ .Bool = (try self.valueToBool(l)) and (try self.valueToBool(r)) },
+            .logical_or => Value{ .Bool = (try self.valueToBool(l)) or (try self.valueToBool(r)) },
+            .shl => Value{ .Int = try self.expectInt(l) << @as(u7, @intCast(try self.expectInt(r))) },
+            .shr => Value{ .Int = try self.expectInt(l) >> @as(u7, @intCast(try self.expectInt(r))) },
+            .bit_and => Value{ .Int = (try self.expectInt(l)) & (try self.expectInt(r)) },
+            .bit_or => Value{ .Int = (try self.expectInt(l)) | (try self.expectInt(r)) },
+            .bit_xor => Value{ .Int = (try self.expectInt(l)) ^ (try self.expectInt(r)) },
+            .lt => Value{ .Bool = try cmpOp(l, r, .Lt) },
+            .lte => Value{ .Bool = try cmpOp(l, r, .Lte) },
+            .gt => Value{ .Bool = try cmpOp(l, r, .Gt) },
+            .gte => Value{ .Bool = try cmpOp(l, r, .Gte) },
+            .eq => Value{ .Bool = self.valuesEqual(l, r) },
+            .neq => Value{ .Bool = !self.valuesEqual(l, r) },
+            else => Error.InvalidBinaryOperand,
         };
     }
-
-    /// Allocate a pointer value that owns `value`.
-    fn moveValueToPointer(self: *Interpreter, value: Value) anyerror!Value {
-        const target = try self.allocator.create(Value);
-        target.* = value;
-        return Value{ .Pointer = target };
-    }
-
-    /// Evaluate an `if` expression and return the selected branch’s value.
-    fn evalIf(self: *Interpreter, row: ast.Rows.If) anyerror!Value {
-        var cond_val = try self.evalExpr(row.cond);
-        defer cond_val.destroy(self.allocator);
-        if (try valueToBool(cond_val)) {
-            return try self.evalExpr(row.then_block);
+    const Op = enum { Add, Sub, Mul, Div };
+    fn mathOp(l: Value, r: Value, op: Op) !Value {
+        switch (l) {
+            .Int => |li| switch (r) {
+                .Int => |ri| if (op == .Div and ri == 0) return error.DivisionByZero else return Value{ .Int = switch (op) {
+                    .Add => li + ri,
+                    .Sub => li - ri,
+                    .Mul => li * ri,
+                    .Div => @divTrunc(li, ri),
+                } },
+                .Float => |rf| return Value{ .Float = fOp(@as(f64, @floatFromInt(li)), rf, op) },
+                else => {},
+            },
+            .Float => |lf| switch (r) {
+                .Int => |ri| return Value{ .Float = fOp(lf, @as(f64, @floatFromInt(ri)), op) },
+                .Float => |rf| return Value{ .Float = fOp(lf, rf, op) },
+                else => {},
+            },
+            else => {},
         }
-        if (row.else_block.isNone()) return Value{ .Void = {} };
-        return try self.evalExpr(row.else_block.unwrap());
+        return error.InvalidBinaryOperand;
     }
-
-    /// Evaluate a return statement by computing its optional value.
-    fn evalReturn(self: *Interpreter, row: ast.Rows.Return) anyerror!Value {
-        if (row.value.isNone()) return Value{ .Void = {} };
-        return try self.evalExpr(row.value.unwrap());
+    fn fOp(a: f64, b: f64, op: Op) f64 {
+        return switch (op) {
+            .Add => a + b,
+            .Sub => a - b,
+            .Mul => a * b,
+            .Div => a / b,
+        };
     }
-
-    /// Compare `left` and `right` for `<`.
-    fn compareLt(left: Value, right: Value) anyerror!bool {
-        const l = try numericValue(left);
-        const r = try numericValue(right);
-        return switch (l) {
-            .Int => switch (r) {
-                .Int => l.Int < r.Int,
-                .Float => @as(f64, @floatFromInt(l.Int)) < r.Float,
+    const Cmp = enum { Lt, Lte, Gt, Gte };
+    fn cmpOp(l: Value, r: Value, op: Cmp) !bool {
+        switch (l) {
+            .Int => |li| switch (r) {
+                .Int => |ri| return cOp(li, ri, op),
+                .Float => |rf| return cOp(@as(f64, @floatFromInt(li)), rf, op),
+                else => {},
             },
-            .Float => switch (r) {
-                .Int => l.Float < @as(f64, @floatFromInt(r.Int)),
-                .Float => l.Float < r.Float,
+            .Float => |lf| switch (r) {
+                .Int => |ri| return cOp(lf, @as(f64, @floatFromInt(ri)), op),
+                .Float => |rf| return cOp(lf, rf, op),
+                else => {},
             },
+            else => {},
+        }
+        return error.InvalidBinaryOperand;
+    }
+    fn cOp(a: anytype, b: anytype, op: Cmp) bool {
+        return switch (op) {
+            .Lt => a < b,
+            .Lte => a <= b,
+            .Gt => a > b,
+            .Gte => a >= b,
         };
     }
 
-    /// Compare `left` and `right` for `<=`.
-    fn compareLte(left: Value, right: Value) anyerror!bool {
-        const l = try numericValue(left);
-        const r = try numericValue(right);
-        return switch (l) {
-            .Int => switch (r) {
-                .Int => l.Int <= r.Int,
-                .Float => @as(f64, @floatFromInt(l.Int)) <= r.Float,
-            },
-            .Float => switch (r) {
-                .Int => l.Float <= @as(f64, @floatFromInt(r.Int)),
-                .Float => l.Float <= r.Float,
-            },
+    fn evalUnary(self: *Interpreter, row: ast.Rows.Unary) !Value {
+        var v = try self.evalExpr(row.expr);
+        if (row.op == .address_of) {
+            const p = try self.allocator.create(Value);
+            p.* = v;
+            return Value{ .Pointer = p };
+        }
+        defer v.destroy(self.allocator);
+        return switch (row.op) {
+            .pos => Value{ .Int = try self.expectInt(v) },
+            .neg => Value{ .Int = -(try self.expectInt(v)) },
+            .logical_not => Value{ .Bool = !(try self.valueToBool(v)) },
+            else => Error.InvalidBinaryOperand,
         };
     }
-
-    /// Compare `left` and `right` for `>`.
-    fn compareGt(left: Value, right: Value) anyerror!bool {
-        const l = try numericValue(left);
-        const r = try numericValue(right);
-        return switch (l) {
-            .Int => switch (r) {
-                .Int => l.Int > r.Int,
-                .Float => @as(f64, @floatFromInt(l.Int)) > r.Float,
-            },
-            .Float => switch (r) {
-                .Int => l.Float > @as(f64, @floatFromInt(r.Int)),
-                .Float => l.Float > r.Float,
-            },
-        };
+    fn evalIf(self: *Interpreter, row: ast.Rows.If) !Value {
+        var c = try self.evalExpr(row.cond);
+        defer c.destroy(self.allocator);
+        if (try self.valueToBool(c)) return self.evalExpr(row.then_block);
+        return if (!row.else_block.isNone()) self.evalExpr(row.else_block.unwrap()) else Value{ .Void = {} };
     }
 
-    /// Compare `left` and `right` for `>=`.
-    fn compareGte(left: Value, right: Value) anyerror!bool {
-        const l = try numericValue(left);
-        const r = try numericValue(right);
-        return switch (l) {
-            .Int => switch (r) {
-                .Int => l.Int >= r.Int,
-                .Float => @as(f64, @floatFromInt(l.Int)) >= r.Float,
-            },
-            .Float => switch (r) {
-                .Int => l.Float >= @as(f64, @floatFromInt(r.Int)),
-                .Float => l.Float >= r.Float,
-            },
-        };
+    fn evalReturn(self: *Interpreter, row: ast.Rows.Return) !Value {
+        return if (!row.value.isNone()) self.evalExpr(row.value.unwrap()) else Value{ .Void = {} };
     }
 
-    /// Normalize a numeric `Value` to `NumericValue` for comparison.
-    fn numericValue(value: Value) anyerror!NumericValue {
-        return switch (value) {
-            .Int => NumericValue{ .Int = value.Int },
-            .Float => NumericValue{ .Float = value.Float },
-            .Bool => NumericValue{ .Int = toInt(value.Bool) },
-            else => return Error.InvalidBinaryOperand,
-        };
-    }
-
-    /// Insert or update a top-level binding with `name`.
     pub fn setBinding(self: *Interpreter, name: ast.StrId, value: Value) !void {
-        if (self.ast.type_info.lookupComptimeBindingType(name)) |ty| {
-            const cloned = try comptime_mod.cloneComptimeValue(self.ast.type_info.gpa, value);
-            try self.ast.type_info.setComptimeBinding(name, ty, cloned);
-        }
-        if (self.findBinding(name)) |binding| {
-            binding.value.destroy(self.allocator);
-            binding.value = value;
-            return;
-        }
-        try self.bindings.append(self.allocator, .{ .name = name, .value = value });
+        if (self.ast.type_info.lookupComptimeBindingType(name)) |t| try self.ast.type_info.setComptimeBinding(name, t, try comptime_mod.cloneComptimeValue(self.ast.type_info.gpa, value));
+        if (self.findBinding(name)) |b| {
+            b.value.destroy(self.allocator);
+            b.value = value;
+        } else try self.bindings.append(self.allocator, .{ .name = name, .value = value });
     }
 
-    /// Register all methods defined on structs so they can be looked up by name.
-    fn registerMethods(self: *Interpreter) anyerror!void {
-        const decl_ids = self.ast.exprs.decl_pool.slice(self.ast.unit.decls);
-        for (decl_ids) |decl_id| {
-            const decl = self.ast.exprs.Decl.get(decl_id);
+    fn registerMethods(self: *Interpreter) !void {
+        for (self.ast.exprs.decl_pool.slice(self.ast.unit.decls)) |d| {
+            const decl = self.ast.exprs.Decl.get(d);
             if (decl.method_path.isNone()) continue;
-            const segs = self.ast.exprs.method_path_pool.slice(decl.method_path.asRange());
-            if (segs.len < 2) continue;
-            const owner_seg = self.ast.exprs.MethodPathSeg.get(segs[0]);
-            const method_seg = self.ast.exprs.MethodPathSeg.get(segs[segs.len - 1]);
-            const key = MethodKey{ .owner = owner_seg.name, .method = method_seg.name };
-            if (self.method_table.get(key)) |_| continue;
-            try self.method_table.put(key, decl.value);
+            const s = self.ast.exprs.method_path_pool.slice(decl.method_path.asRange());
+            if (s.len > 1) try self.method_table.put(.{ .owner = self.ast.exprs.MethodPathSeg.get(s[0]).name, .method = self.ast.exprs.MethodPathSeg.get(s[s.len - 1]).name }, decl.value);
         }
     }
 
-    /// Return the expression ID implementing `owner.method` if registered.
-    fn lookupMethod(self: *Interpreter, owner: ast.StrId, method: ast.StrId) ?ast.ExprId {
-        const key = MethodKey{ .owner = owner, .method = method };
-        if (self.method_table.get(key)) |entry| return entry;
-        return null;
-    }
-
-    /// Return the binding entry for `name`, if already present.
     pub fn findBinding(self: *Interpreter, name: ast.StrId) ?*Binding {
-        for (self.bindings.items) |*binding| if (binding.name.eq(name)) return binding;
+        for (self.bindings.items) |*b| if (b.name.eq(name)) return b;
         return null;
     }
 
-    /// Produce a deep copy of `value` when ownership must be duplicated.
-    pub fn cloneValue(self: *Interpreter, value: Value) !Value {
-        return switch (value) {
-            .String => |s| blk: {
-                const dup = try self.allocator.dupe(u8, s);
-                break :blk Value{ .String = dup };
+    pub fn cloneValue(self: *Interpreter, v: Value) !Value {
+        return switch (v) {
+            .String => |s| Value{ .String = try self.allocator.dupe(u8, s) },
+            .Sequence => |s| blk: {
+                var l = try std.ArrayListUnmanaged(Value).initCapacity(self.allocator, s.values.items.len);
+                errdefer {
+                    for (l.items) |*x| x.destroy(self.allocator);
+                    l.deinit(self.allocator);
+                }
+                for (s.values.items) |i| l.appendAssumeCapacity(try self.cloneValue(i));
+                break :blk Value{ .Sequence = .{ .values = l } };
             },
-            .Sequence => |seq| try self.cloneSequence(seq),
-            .Struct => |sv| try self.cloneStruct(sv),
-            .Map => |mv| try self.cloneMap(mv),
-            .Pointer => |ptr| try self.clonePointer(ptr),
-            .Function => |func| Value{ .Function = func },
-            else => value,
+            .Struct => |s| blk: {
+                var l = try std.ArrayListUnmanaged(StructField).initCapacity(self.allocator, s.fields.items.len);
+                errdefer {
+                    for (l.items) |*x| x.value.destroy(self.allocator);
+                    l.deinit(self.allocator);
+                }
+                for (s.fields.items) |f| l.appendAssumeCapacity(.{ .name = f.name, .value = try self.cloneValue(f.value) });
+                break :blk Value{ .Struct = .{ .fields = l, .owner = s.owner } };
+            },
+            .Map => |m| blk: {
+                var l = try std.ArrayListUnmanaged(MapEntry).initCapacity(self.allocator, m.entries.items.len);
+                errdefer {
+                    for (l.items) |*x| {
+                        x.key.destroy(self.allocator);
+                        x.value.destroy(self.allocator);
+                    }
+                    l.deinit(self.allocator);
+                }
+                for (m.entries.items) |e| l.appendAssumeCapacity(.{ .key = try self.cloneValue(e.key), .value = try self.cloneValue(e.value) });
+                break :blk Value{ .Map = .{ .entries = l } };
+            },
+            .Pointer => |p| {
+                const n = try self.allocator.create(Value);
+                n.* = try self.cloneValue(p.*);
+                return Value{ .Pointer = n };
+            },
+            .Function => Value{ .Function = v.Function },
+            else => v,
         };
     }
 
-    /// Coerce `value` to an integer, erroring if non-numeric.
-    fn expectInt(value: Value) anyerror!i128 {
-        return switch (value) {
-            .Int => value.Int,
-            .Bool => if (value.Bool) 1 else 0,
-            else => return Error.InvalidBinaryOperand,
+    fn expectInt(self: *Interpreter, v: Value) !i128 {
+        _ = self;
+        return switch (v) {
+            .Int => |i| i,
+            .Bool => |b| if (b) 1 else 0,
+            else => Error.InvalidBinaryOperand,
         };
     }
-
-    /// Convert `value` to boolean following builtin truthiness rules.
-    fn valueToBool(value: Value) anyerror!bool {
-        return switch (value) {
-            .Bool => value.Bool,
-            .Int => value.Int != 0,
-            .Float => value.Float != 0.0,
-            else => return Error.InvalidType,
+    fn valueToBool(self: *Interpreter, v: Value) !bool {
+        _ = self;
+        return switch (v) {
+            .Bool => |b| b,
+            .Int => |i| i != 0,
+            .Float => |f| f != 0.0,
+            else => Error.InvalidType,
         };
     }
-
-    /// Small helper to convert bool to integer.
-    fn toInt(value: bool) i128 {
-        return @intFromBool(value);
+    fn findStructField(self: *Interpreter, sv: StructValue, name: ast.StrId) ?*StructField {
+        _ = self;
+        for (sv.fields.items) |*f| if (f.name.eq(name)) return f;
+        return null;
     }
 
-    /// Structural equality test used in patterns and comparisons.
-    fn valuesEqual(left: Value, right: Value) bool {
-        return switch (left) {
-            .Int => |l| switch (right) {
-                .Int => l == right.Int,
-                .Float => @as(f64, @floatFromInt(l)) == right.Float,
-                .Bool => l == toInt(right.Bool),
+    fn valuesEqual(self: *Interpreter, l: Value, r: Value) bool {
+        return switch (l) {
+            .Int => |i| switch (r) {
+                .Int => |j| i == j,
+                .Float => |f| @as(f64, @floatFromInt(i)) == f,
+                .Bool => |b| i == @intFromBool(b),
                 else => false,
             },
-            .Bool => |b| switch (right) {
-                .Bool => b == right.Bool,
-                .Int => toInt(b) == right.Int,
-                .Float => @as(f64, @floatFromInt(toInt(b))) == right.Float,
+            .Float => |f| switch (r) {
+                .Float => |g| f == g,
+                .Int => |i| f == @as(f64, @floatFromInt(i)),
+                .Bool => |b| f == @as(f64, @floatFromInt(@intFromBool(b))),
                 else => false,
             },
-            .Float => |f| switch (right) {
-                .Float => f == right.Float,
-                .Int => f == @as(f64, @floatFromInt(right.Int)),
-                .Bool => f == @as(f64, @floatFromInt(toInt(right.Bool))),
+            .Bool => |b| switch (r) {
+                .Bool => |c| b == c,
+                .Int => |i| @intFromBool(b) == i,
+                .Float => |f| @as(f64, @floatFromInt(@intFromBool(b))) == f,
                 else => false,
             },
-            .String => |s| switch (right) {
-                .String => std.mem.eql(u8, s, right.String),
-                else => false,
+            .String => |s| r == .String and std.mem.eql(u8, s, r.String),
+            .Sequence => |s| r == .Sequence and s.values.items.len == r.Sequence.values.items.len and blk: {
+                for (s.values.items, r.Sequence.values.items) |a, b| if (!self.valuesEqual(a, b)) break :blk false;
+                break :blk true;
             },
-            .Sequence => |seq| switch (right) {
-                .Sequence => sequencesEqual(seq, right.Sequence),
-                else => false,
+            .Struct => |s| r == .Struct and s.fields.items.len == r.Struct.fields.items.len and (if (s.owner) |o| if (r.Struct.owner) |p| o.eq(p) else false else r.Struct.owner == null) and blk: {
+                for (s.fields.items, r.Struct.fields.items) |a, b| if (!a.name.eq(b.name) or !self.valuesEqual(a.value, b.value)) break :blk false;
+                break :blk true;
             },
-            .Struct => |sv| switch (right) {
-                .Struct => structValuesEqual(sv, right.Struct),
-                else => false,
+            .Map => |m| r == .Map and m.entries.items.len == r.Map.entries.items.len and blk: {
+                for (m.entries.items, r.Map.entries.items) |a, b| if (!self.valuesEqual(a.key, b.key) or !self.valuesEqual(a.value, b.value)) break :blk false;
+                break :blk true;
             },
-            .Map => |mv| switch (right) {
-                .Map => mapsEqual(mv, right.Map),
-                else => false,
-            },
-            .Range => |rv| switch (right) {
-                .Range => rv.start == right.Range.start and rv.end == right.Range.end and rv.inclusive == right.Range.inclusive,
-                else => false,
-            },
-            .Function => |func| switch (right) {
-                .Function => func.expr.eq(right.Function.expr),
-                else => false,
-            },
+            .Range => |g| r == .Range and g.start == r.Range.start and g.end == r.Range.end and g.inclusive == r.Range.inclusive,
+            .Function => |f| r == .Function and f.expr.eq(r.Function.expr),
             else => false,
         };
     }
 
-    /// Compare two sequences element-wise.
-    fn sequencesEqual(a: Sequence, b: Sequence) bool {
-        if (a.values.items.len != b.values.items.len) return false;
-        if (a.values.items.len == 0) return true;
-        var idx: usize = 0;
-        while (idx < a.values.items.len) : (idx += 1) {
-            if (!valuesEqual(a.values.items[idx], b.values.items[idx])) return false;
-        }
-        return true;
-    }
-
-    /// Compare two struct values including owner metadata.
-    fn structValuesEqual(a: StructValue, b: StructValue) bool {
-        if (a.fields.items.len != b.fields.items.len) return false;
-        if (!ownersEqual(a.owner, b.owner)) return false;
-        if (a.fields.items.len == 0) return true;
-        var idx: usize = 0;
-        while (idx < a.fields.items.len) : (idx += 1) {
-            const left_field = a.fields.items[idx];
-            const right_field = b.fields.items[idx];
-            if (!left_field.name.eq(right_field.name)) return false;
-            if (!valuesEqual(left_field.value, right_field.value)) return false;
-        }
-        return true;
-    }
-
-    /// Compare two maps by iterating entries.
-    fn mapsEqual(a: MapValue, b: MapValue) bool {
-        if (a.entries.items.len != b.entries.items.len) return false;
-        if (a.entries.items.len == 0) return true;
-        var idx: usize = 0;
-        while (idx < a.entries.items.len) : (idx += 1) {
-            const left = a.entries.items[idx];
-            const right = b.entries.items[idx];
-            if (!valuesEqual(left.key, right.key)) return false;
-            if (!valuesEqual(left.value, right.value)) return false;
-        }
-        return true;
-    }
-
-    /// Whether two optional struct owners refer to the same module/type.
-    fn ownersEqual(a: ?ast.StrId, b: ?ast.StrId) bool {
-        if (a == null and b == null) return true;
-        if (a == null or b == null) return false;
-        return a.?.eq(b.?);
-    }
-
-    /// Clone a sequence value along with its entries.
-    fn cloneSequence(self: *Interpreter, seq: Sequence) anyerror!Value {
-        if (seq.values.items.len == 0) return Value{ .Sequence = .{ .values = .empty } };
-        var list: std.ArrayList(Value) = try .initCapacity(self.allocator, seq.values.items.len);
-        var success = false;
-        defer if (!success) {
-            for (list.items) |*value| value.destroy(self.allocator);
-            list.deinit(self.allocator);
-        };
-        var idx: usize = 0;
-        while (idx < seq.values.items.len) : (idx += 1) {
-            list.appendAssumeCapacity(try self.cloneValue(seq.values.items[idx]));
-        }
-        success = true;
-        return Value{ .Sequence = .{ .values = list } };
-    }
-
-    /// Clone a struct value (fields + owner) for reuse in bindings.
-    fn cloneStruct(self: *Interpreter, sv: StructValue) anyerror!Value {
-        if (sv.fields.items.len == 0) return Value{ .Struct = .{ .fields = .empty, .owner = sv.owner } };
-        var list: std.ArrayList(StructField) = try .initCapacity(self.allocator, sv.fields.items.len);
-        var success = false;
-        defer if (!success) {
-            for (list.items) |*field| field.value.destroy(self.allocator);
-            list.deinit(self.allocator);
-        };
-        var idx: usize = 0;
-        while (idx < sv.fields.items.len) : (idx += 1) {
-            list.appendAssumeCapacity(StructField{
-                .name = sv.fields.items[idx].name,
-                .value = try self.cloneValue(sv.fields.items[idx].value),
-            });
-        }
-        success = true;
-        return Value{ .Struct = .{ .fields = list, .owner = sv.owner } };
-    }
-
-    /// Deep clone of a map value so lookups do not share mutable entries.
-    fn cloneMap(self: *Interpreter, mv: MapValue) anyerror!Value {
-        if (mv.entries.items.len == 0) return Value{ .Map = .{ .entries = .empty } };
-        var list: std.ArrayList(MapEntry) = try .initCapacity(self.allocator, mv.entries.items.len);
-        var success = false;
-        defer if (!success) {
-            for (list.items) |*entry| {
-                entry.key.destroy(self.allocator);
-                entry.value.destroy(self.allocator);
-            }
-            list.deinit(self.allocator);
-        };
-        var idx: usize = 0;
-        while (idx < mv.entries.items.len) : (idx += 1) {
-            const entry = mv.entries.items[idx];
-            list.appendAssumeCapacity(MapEntry{
-                .key = try self.cloneValue(entry.key),
-                .value = try self.cloneValue(entry.value),
-            });
-        }
-        success = true;
-        return Value{ .Map = .{ .entries = list } };
-    }
-
-    /// Clone a pointer value by cloning the pointee.
-    fn clonePointer(self: *Interpreter, target: *Value) anyerror!Value {
-        const cloned = try self.cloneValue(target.*);
-        const ptr = try self.allocator.create(Value);
-        ptr.* = cloned;
-        return Value{ .Pointer = ptr };
-    }
-
-    /// Find a field entry by name within a struct value.
-    fn findStructField(sv: StructValue, name: ast.StrId) ?*StructField {
-        var idx: usize = 0;
-        while (idx < sv.fields.items.len) : (idx += 1) {
-            if (sv.fields.items[idx].name.eq(name)) return &sv.fields.items[idx];
-        }
-        return null;
-    }
-
-    /// Match `value` against pattern `pid`, recording bound identifiers.
-    fn matchPattern(self: *Interpreter, pattern_ast: *ast.Ast, value: Value, pid: ast.PatternId, matches: *std.ArrayList(Binding)) anyerror!bool {
-        switch (pattern_ast.kind(pid)) {
+    fn matchPattern(self: *Interpreter, past: *ast.Ast, val: Value, pid: ast.PatternId, matches: *std.ArrayListUnmanaged(Binding)) !bool {
+        switch (past.kind(pid)) {
             .Wildcard => return true,
             .Literal => {
-                const row = pattern_ast.pats.get(.Literal, pid);
-                var literal = try self.evalExpr(row.expr);
-                defer literal.destroy(self.allocator);
-                return valuesEqual(value, literal);
+                var lit = try self.evalExpr(past.pats.get(.Literal, pid).expr);
+                defer lit.destroy(self.allocator);
+                return self.valuesEqual(val, lit);
             },
             .Binding => {
-                const row = pattern_ast.pats.get(.Binding, pid);
-                var binding_value = try self.cloneValue(value);
-                var success = false;
-                defer if (!success) binding_value.destroy(self.allocator);
-                try matches.append(self.allocator, .{ .name = row.name, .value = binding_value });
-                success = true;
+                var v = try self.cloneValue(val);
+                errdefer v.destroy(self.allocator);
+                try matches.append(self.allocator, .{ .name = past.pats.get(.Binding, pid).name, .value = v });
                 return true;
             },
-            .Tuple => return try self.matchTuplePattern(pattern_ast, value, pattern_ast.pats.get(.Tuple, pid), matches),
-            .Slice => return try self.matchSlicePattern(pattern_ast, value, pattern_ast.pats.get(.Slice, pid), matches),
-            .Struct => return try self.matchStructPattern(pattern_ast, value, pattern_ast.pats.get(.Struct, pid), matches),
-            .At => return try self.matchAtPattern(pattern_ast, value, pattern_ast.pats.get(.At, pid), matches),
+            .Tuple => {
+                if (val != .Sequence) return false;
+                const r = past.pats.get(.Tuple, pid);
+                const ps = past.pats.pat_pool.slice(r.elems);
+                if (val.Sequence.values.items.len != ps.len) return false;
+                for (ps, 0..) |p, i| if (!try self.matchPattern(past, val.Sequence.values.items[i], p, matches)) {
+                    self.rollbackBindings(matches, matches.items.len - i);
+                    return false;
+                };
+                return true;
+            },
+            .Slice => {
+                if (val != .Sequence) return false;
+                const r = past.pats.get(.Slice, pid);
+                const ps = past.pats.pat_pool.slice(r.elems);
+                const items = val.Sequence.values.items;
+                const fix = if (r.has_rest) @as(usize, @intCast(r.rest_index)) else ps.len;
+                if (items.len < fix) return false;
+                for (ps[0..fix], 0..) |p, i| if (!try self.matchPattern(past, items[i], p, matches)) {
+                    self.rollbackBindings(matches, matches.items.len - i);
+                    return false;
+                };
+                if (!r.has_rest) return items.len == ps.len;
+                if (@as(usize, @intCast(r.rest_index)) > items.len) return false;
+                if (!r.rest_binding.isNone()) {
+                    var rv = try self.cloneValue(val);
+                    defer rv.destroy(self.allocator);
+                    const mark = matches.items.len;
+                    if (!try self.matchPattern(past, rv, r.rest_binding.unwrap(), matches)) {
+                        self.rollbackBindings(matches, mark);
+                        return false;
+                    }
+                }
+                return true;
+            },
+            .Struct => {
+                if (val != .Struct) return false;
+                const r = past.pats.get(.Struct, pid);
+                const fs = past.pats.field_pool.slice(r.fields);
+                if (!r.has_rest and val.Struct.fields.items.len != fs.len) return false;
+                const mark = matches.items.len;
+                for (fs) |fid| {
+                    const f = past.pats.StructField.get(fid);
+                    const sf = self.findStructField(val.Struct, f.name) orelse return false;
+                    if (!try self.matchPattern(past, sf.value, f.pattern, matches)) {
+                        self.rollbackBindings(matches, mark);
+                        return false;
+                    }
+                }
+                return true;
+            },
+            .At => {
+                const r = past.pats.get(.At, pid);
+                const mark = matches.items.len;
+                if (!try self.matchPattern(past, val, r.pattern, matches)) {
+                    self.rollbackBindings(matches, mark);
+                    return false;
+                }
+                var v = try self.cloneValue(val);
+                errdefer v.destroy(self.allocator);
+                try matches.append(self.allocator, .{ .name = r.binder, .value = v });
+                return true;
+            },
             else => return false,
         }
     }
-
-    /// Match a tuple pattern against a sequence value.
-    fn matchTuplePattern(self: *Interpreter, pattern_ast: *ast.Ast, value: Value, row: ast.PatRows.Tuple, matches: *std.ArrayList(Binding)) anyerror!bool {
-        return switch (value) {
-            .Sequence => |seq| {
-                const patterns = pattern_ast.pats.pat_pool.slice(row.elems);
-                if (seq.values.items.len != patterns.len) return false;
-                if (seq.values.items.len == 0) return true;
-                const elems = seq.values.items[0..seq.values.items.len];
-                var idx: usize = 0;
-                while (idx < patterns.len) : (idx += 1) {
-                    const before = matches.items.len;
-                    if (!try self.matchPattern(pattern_ast, elems[idx], patterns[idx], matches)) {
-                        self.rollbackBindings(matches, before);
-                        return false;
-                    }
-                }
-                return true;
-            },
-            else => false,
-        };
+    fn rollbackBindings(self: *Interpreter, m: *std.ArrayListUnmanaged(Binding), to: usize) void {
+        for (m.items[to..]) |*b| b.value.destroy(self.allocator);
+        m.shrinkRetainingCapacity(to);
     }
 
-    /// Match a slice pattern, handling rest bindings.
-    fn matchSlicePattern(self: *Interpreter, pattern_ast: *ast.Ast, value: Value, row: ast.PatRows.Slice, matches: *std.ArrayList(Binding)) anyerror!bool {
-        return switch (value) {
-            .Sequence => |seq| {
-                const patterns = pattern_ast.pats.pat_pool.slice(row.elems);
-                const fixed: usize = if (row.has_rest) @intCast(row.rest_index) else patterns.len;
-                if (seq.values.items.len < fixed) return false;
-                if (fixed > 0) {
-                    const elems = seq.values.items[0..seq.values.items.len];
-                    var idx: usize = 0;
-                    while (idx < fixed) : (idx += 1) {
-                        const before = matches.items.len;
-                        if (!try self.matchPattern(pattern_ast, elems[idx], patterns[idx], matches)) {
-                            self.rollbackBindings(matches, before);
-                            return false;
-                        }
-                    }
-                }
-                if (!row.has_rest) return seq.values.items.len == patterns.len;
-                const rest_index: usize = @intCast(row.rest_index);
-                if (rest_index > seq.values.items.len) return false;
-                if (row.rest_binding.isNone()) return true;
-                const rest_pattern = row.rest_binding.unwrap();
-                var rest_value = try self.cloneSequence(seq);
-                const before_rest = matches.items.len;
-                const matched_rest = try self.matchPattern(pattern_ast, rest_value, rest_pattern, matches);
-                rest_value.destroy(self.allocator);
-                if (!matched_rest) {
-                    self.rollbackBindings(matches, before_rest);
-                    return false;
-                }
-                return true;
-            },
-            else => false,
-        };
-    }
-
-    /// Match a struct pattern by comparing fields and nested patterns.
-    fn matchStructPattern(self: *Interpreter, pattern_ast: *ast.Ast, value: Value, row: ast.PatRows.Struct, matches: *std.ArrayList(Binding)) anyerror!bool {
-        return switch (value) {
-            .Struct => |sv| {
-                const fields = pattern_ast.pats.field_pool.slice(row.fields);
-                if (!row.has_rest and sv.fields.items.len != fields.len) return false;
-                for (fields) |field_id| {
-                    const field = pattern_ast.pats.StructField.get(field_id);
-                    const struct_field = findStructField(sv, field.name);
-                    if (struct_field == null) return false;
-                    const before = matches.items.len;
-                    if (!try self.matchPattern(pattern_ast, struct_field.?.value, field.pattern, matches)) {
-                        self.rollbackBindings(matches, before);
-                        return false;
-                    }
-                }
-                return true;
-            },
-            else => false,
-        };
-    }
-
-    /// Handle `@` patterns that bind the entire matched value.
-    fn matchAtPattern(self: *Interpreter, pattern_ast: *ast.Ast, value: Value, row: ast.PatRows.At, matches: *std.ArrayList(Binding)) anyerror!bool {
-        const before = matches.items.len;
-        if (!try self.matchPattern(pattern_ast, value, row.pattern, matches)) {
-            self.rollbackBindings(matches, before);
-            return false;
+    pub fn captureBindingSnapshot(self: *Interpreter, matches: *std.ArrayListUnmanaged(Binding)) !BindingSnapshot {
+        var s = try std.ArrayListUnmanaged(Binding).initCapacity(self.allocator, matches.items.len);
+        errdefer {
+            for (s.items) |*b| b.value.destroy(self.allocator);
+            s.deinit(self.allocator);
         }
-        var clone = try self.cloneValue(value);
-        var success = false;
-        defer if (!success) clone.destroy(self.allocator);
-        try matches.append(self.allocator, .{ .name = row.binder, .value = clone });
-        success = true;
-        return true;
-    }
-
-    /// Revert `matches` back to `target_len`, freeing extra values.
-    fn rollbackBindings(self: *Interpreter, matches: *std.ArrayList(Binding), target_len: usize) void {
-        var current = matches.items.len;
-        while (current > target_len) : (current -= 1) {
-            matches.items[current - 1].value.destroy(self.allocator);
+        var h = std.hash.Wyhash.init(0);
+        for (matches.items) |b| {
+            s.appendAssumeCapacity(.{ .name = b.name, .value = try self.cloneValue(b.value) });
+            h.update(std.mem.asBytes(&b.name.toRaw()));
+            h.update(std.mem.asBytes(&comptime_mod.hashComptimeValue(b.value)));
         }
-        matches.shrinkRetainingCapacity(target_len);
+        return BindingSnapshot{ .bindings = s, .hash = h.final() };
     }
 
-    /// Compute a hash over the provided bindings for memoization.
-    fn bindingHash(bindings: []const Binding) u64 {
-        var hasher: std.hash.Wyhash = .init(0);
-        for (bindings) |binding| {
-            const name_raw: u32 = binding.name.toRaw();
-            hasher.update(std.mem.asBytes(&name_raw));
-            const val_hash: u64 = comptime_mod.hashComptimeValue(binding.value);
-            hasher.update(std.mem.asBytes(&val_hash));
+    pub fn specializeFunction(self: *Interpreter, decl: ast.DeclId, matches: *std.ArrayListUnmanaged(Binding)) !SpecializationResult {
+        var h = std.hash.Wyhash.init(0);
+        for (matches.items) |b| {
+            h.update(std.mem.asBytes(&b.name.toRaw()));
+            h.update(std.mem.asBytes(&comptime_mod.hashComptimeValue(b.value)));
         }
-        return hasher.final();
-    }
+        const key = FunctionKey{ .decl_id = decl, .bindings_hash = h.final() };
+        const map_hash = (@as(u128, key.bindings_hash) << 32) | key.decl_id.toRaw();
 
-    /// Capture bindings into a snapshot alongside its hash for reuse.
-    pub fn captureBindingSnapshot(self: *Interpreter, matches: *std.ArrayList(Binding)) anyerror!BindingSnapshot {
-        var snapshot: std.ArrayList(Binding) = try .initCapacity(self.allocator, matches.items.len);
-        var hasher: std.hash.Wyhash = .init(0);
-        var success = false;
-        defer if (!success) {
-            for (snapshot.items) |*binding| binding.value.destroy(self.allocator);
-            snapshot.deinit(self.allocator);
-        };
-        for (matches.items) |binding| {
-            const cloned = try self.cloneValue(binding.value);
-            try snapshot.append(self.allocator, .{ .name = binding.name, .value = cloned });
-            const name_raw: u32 = binding.name.toRaw();
-            hasher.update(std.mem.asBytes(&name_raw));
-            const val_hash: u64 = comptime_mod.hashComptimeValue(binding.value);
-            hasher.update(std.mem.asBytes(&val_hash));
-        }
-        success = true;
-        return BindingSnapshot{ .bindings = snapshot, .hash = hasher.final() };
-    }
-
-    /// Clone an existing binding snapshot to keep a copy for future lookups.
-    fn cloneSnapshot(self: *Interpreter, source: *BindingSnapshot) anyerror!BindingSnapshot {
-        var cloned: std.ArrayList(Binding) = try .initCapacity(self.allocator, source.bindings.items.len);
-        var success = false;
-        defer if (!success) {
-            for (cloned.items) |*binding| binding.value.destroy(self.allocator);
-            cloned.deinit(self.allocator);
-        };
-        for (source.bindings.items) |binding| {
-            const dup = try self.cloneValue(binding.value);
-            try cloned.append(self.allocator, .{ .name = binding.name, .value = dup });
-        }
-        success = true;
-        return BindingSnapshot{ .bindings = cloned, .hash = source.hash };
-    }
-
-    /// Pack a function key into a 128-bit hash for the specialization map.
-    fn hashFunctionKey(key: FunctionKey) u128 {
-        const decl_raw: u32 = key.decl_id.toRaw();
-        return (@as(u128, key.bindings_hash) << 32) | @as(u128, decl_raw);
-    }
-
-    /// Create or reuse a specialized function definition using `matches`.
-    pub fn specializeFunction(self: *Interpreter, decl_id: ast.DeclId, matches: *std.ArrayList(Binding)) anyerror!SpecializationResult {
-        const binding_hash = bindingHash(matches.items);
-        const key = FunctionKey{ .decl_id = decl_id, .bindings_hash = binding_hash };
-        const map_hash = hashFunctionKey(key);
-        if (self.specializations.getPtr(map_hash)) |existing| {
-            if (keysEqual(existing.key, key)) {
-                return SpecializationResult{
-                    .func = FunctionValue{ .expr = existing.func_expr, .ast = self.ast },
-                    .snapshot = try self.cloneSnapshot(&existing.bindings),
-                };
+        if (self.specializations.getPtr(map_hash)) |e| if (e.key.decl_id.eq(key.decl_id) and e.key.bindings_hash == key.bindings_hash) {
+            var c = try std.ArrayListUnmanaged(Binding).initCapacity(self.allocator, e.bindings.bindings.items.len);
+            errdefer {
+                for (c.items) |*b| b.value.destroy(self.allocator);
+                c.deinit(self.allocator);
             }
+            for (e.bindings.bindings.items) |b| c.appendAssumeCapacity(.{ .name = b.name, .value = try self.cloneValue(b.value) });
+            return SpecializationResult{ .func = .{ .expr = e.func_expr, .ast = self.ast }, .snapshot = .{ .bindings = c, .hash = e.bindings.hash } };
+        };
+        var s = try self.captureBindingSnapshot(matches);
+        errdefer s.destroy(self.allocator);
+        var r = try std.ArrayListUnmanaged(Binding).initCapacity(self.allocator, s.bindings.items.len);
+        errdefer {
+            for (r.items) |*b| b.value.destroy(self.allocator);
+            r.deinit(self.allocator);
         }
-        var snapshot = try self.captureBindingSnapshot(matches);
-        const return_snapshot = try self.cloneSnapshot(&snapshot);
-        var entry = FunctionSpecializationEntry{
-            .key = key,
-            .func_expr = self.ast.exprs.Decl.get(decl_id).value,
-            .bindings = snapshot,
-        };
-        var success = false;
-        defer if (!success) entry.destroy(self.allocator);
-        try self.specializations.put(map_hash, entry);
-        success = true;
-        return SpecializationResult{
-            .func = FunctionValue{ .expr = entry.func_expr, .ast = self.ast },
-            .snapshot = return_snapshot,
-        };
+        for (s.bindings.items) |b| r.appendAssumeCapacity(.{ .name = b.name, .value = try self.cloneValue(b.value) });
+
+        try self.specializations.put(map_hash, .{ .key = key, .func_expr = self.ast.exprs.Decl.get(decl).value, .bindings = s });
+        return SpecializationResult{ .func = .{ .expr = self.ast.exprs.Decl.get(decl).value, .ast = self.ast }, .snapshot = .{ .bindings = r, .hash = s.hash } };
     }
 
-    /// Tracks bound variables pushed during a function/pattern invocation.
-    /// Temporary frame used when binding matched variables to new values.
     pub const BindingScope = struct {
-        /// Interpreter owning the current scope.
-        interpreter: *Interpreter,
-        /// Length of the binding list before the scope began.
+        interp: *Interpreter,
         prev_len: usize,
-        /// Bindings that replaced existing entries.
-        replaced: std.ArrayList(Binding),
-        /// Whether the scope is still active and needs restoration.
-        active: bool,
-
-        /// Restore bindings to their prior state when the scope closes.
-        fn restore(self: *BindingScope) void {
-            if (!self.active) return;
-            var len = self.interpreter.bindings.items.len;
-            while (len > self.prev_len) : (len -= 1) {
-                self.interpreter.bindings.items[len - 1].value.destroy(self.interpreter.allocator);
-            }
-            self.interpreter.bindings.shrinkRetainingCapacity(self.prev_len);
-            for (self.replaced.items) |binding| {
-                if (self.interpreter.findBinding(binding.name)) |existing| {
-                    existing.value.destroy(self.interpreter.allocator);
-                    existing.value = binding.value;
-                }
-            }
-            self.replaced.clearRetainingCapacity();
-            self.active = false;
-        }
-
-        /// Cleanup resources associated with the scope.
+        replaced: std.ArrayListUnmanaged(Binding),
         pub fn deinit(self: *BindingScope) void {
-            self.restore();
-            self.replaced.deinit(self.interpreter.allocator);
+            if (self.interp.bindings.items.len > self.prev_len) {
+                for (self.interp.bindings.items[self.prev_len..]) |*b| b.value.destroy(self.interp.allocator);
+                self.interp.bindings.shrinkRetainingCapacity(self.prev_len);
+            }
+            for (self.replaced.items) |b| if (self.interp.findBinding(b.name)) |e| {
+                e.value.destroy(self.interp.allocator);
+                e.value = b.value;
+            };
+            self.replaced.deinit(self.interp.allocator);
         }
     };
 
-    /// Push the `matches` bindings into the interpreter, saving replaced bindings.
-    pub fn pushBindings(self: *Interpreter, matches: *std.ArrayList(Binding)) anyerror!BindingScope {
-        var scope = BindingScope{
-            .interpreter = self,
-            .prev_len = self.bindings.items.len,
-            .replaced = .empty,
-            .active = true,
-        };
-        var success = false;
-        defer if (!success) {
-            scope.restore();
-            scope.replaced.deinit(self.allocator);
-        };
-        for (matches.items) |*binding| {
-            const value = binding.value;
-            binding.value = .Void;
-            if (self.findBinding(binding.name)) |existing| {
-                const old_value = try self.cloneValue(existing.value);
-                try scope.replaced.append(self.allocator, .{ .name = binding.name, .value = old_value });
-                existing.value.destroy(self.allocator);
-                existing.value = value;
-            } else {
-                try self.bindings.append(self.allocator, .{ .name = binding.name, .value = value });
-            }
+    pub fn pushBindings(self: *Interpreter, matches: *std.ArrayListUnmanaged(Binding)) !BindingScope {
+        var s = BindingScope{ .interp = self, .prev_len = self.bindings.items.len, .replaced = .{} };
+        errdefer s.deinit();
+        for (matches.items) |*b| {
+            const v = b.value;
+            b.value = .Void;
+            if (self.findBinding(b.name)) |e| {
+                try s.replaced.append(self.allocator, .{ .name = b.name, .value = try self.cloneValue(e.value) });
+                e.value.destroy(self.allocator);
+                e.value = v;
+            } else try self.bindings.append(self.allocator, .{ .name = b.name, .value = v });
         }
-        success = true;
-        return scope;
+        return s;
     }
 };

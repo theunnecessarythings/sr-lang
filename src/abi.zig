@@ -1,374 +1,197 @@
+const std = @import("std");
 const mlir = @import("mlir_bindings.zig");
 const Codegen = @import("codegen_main.zig").Codegen;
 const types = @import("types.zig");
-const std = @import("std");
 
-// ===== ABI: x86_64 SysV  =====
-/// Describes how a value is encoded for SysV x86_64 calling conventions.
-const AbiKind = enum {
-    /// Coerce the value into a single scalar (integer or floating).
-    DirectScalar,
-    /// Split the value into two pointer-sized scalars (low/high).
-    DirectPair,
-    /// Pass a pointer to the value (byval) with a specified alignment.
-    IndirectByVal,
-    /// Return the value via the first sret argument pointer.
-    IndirectSRet,
-};
+// ===== ABI: x86_64 SysV =====
 
-/// ABI classification for passing or returning SR values according to SysV x86_64.
+const AbiKind = enum { DirectScalar, DirectPair, IndirectByVal, IndirectSRet };
+
 pub const AbiClass = struct {
-    /// Which ABI classification applies to this type.
     kind: AbiKind,
-    /// First scalar slot used for direct scalar or pair cases.
     scalar0: ?mlir.Type = null,
-    /// Optional second scalar slot for direct pair cases.
     scalar1: ?mlir.Type = null,
-    /// Required alignment when the value is passed indirectly.
     alignment: u32 = 1,
-    /// Total size in bytes of the value.
     size: usize = 0,
 };
 
-/// Return true when `ty` is represented using integer-like or pointer-sized scalars.
-/// `store` drives the lookup while `ty` is the type identifier being inspected.
-fn srIsIntLike(store: *types.TypeStore, ty: types.TypeId) bool {
-    return switch (store.getKind(ty)) {
-        .I8, .U8, .I16, .U16, .I32, .U32, .I64, .U64, .Usize, .Bool => true,
-        .Ptr, .Any, .Function, .MlirModule, .MlirAttribute, .MlirType => true, // treat as pointer-sized
-        else => false,
-    };
-}
-/// Return true when `ty` is a floating-point scalar type.
-/// `store` provides the type table and `ty` chooses which entry to examine.
-fn srIsFloatLike(store: *types.TypeStore, ty: types.TypeId) bool {
-    return switch (store.getKind(ty)) {
-        .F32, .F64 => true,
-        else => false,
-    };
-}
-
-/// Encapsulates the computed size, alignment, and component information for ABI rules.
 const SizeAlign = struct {
-    /// Size in bytes after layout/shuffling.
     size: usize,
-    /// Alignment requirement in bytes.
     alignment: usize,
-    /// Whether the type contains any floating-point data.
-    hasFloat: bool,
-    /// Whether the type is comprised solely of integer-like parts.
-    allIntsOnly: bool,
+    hasFloat: bool = false,
+    allIntsOnly: bool = true,
 };
 
-/// Determine the SysV ABI size/alignment characteristics for `ty`.
-/// `self` provides access to the current codegen context.
 pub fn abiSizeAlign(self: *Codegen, ty: types.TypeId) SizeAlign {
-    return switch (self.context.type_store.getKind(ty)) {
-        .Void => .{ .size = 0, .alignment = 1, .hasFloat = false, .allIntsOnly = true },
-        .Bool => .{ .size = 1, .alignment = 1, .hasFloat = false, .allIntsOnly = true },
-
-        .I8, .U8 => .{ .size = 1, .alignment = 1, .hasFloat = false, .allIntsOnly = true },
-        .I16, .U16 => .{ .size = 2, .alignment = 2, .hasFloat = false, .allIntsOnly = true },
-        .I32, .U32 => .{ .size = 4, .alignment = 4, .hasFloat = false, .allIntsOnly = true },
-        .I64, .U64, .Usize => .{ .size = 8, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
-
-        .F32 => .{ .size = 4, .alignment = 4, .hasFloat = true, .allIntsOnly = false },
-        .F64 => .{ .size = 8, .alignment = 8, .hasFloat = true, .allIntsOnly = false },
+    const ts = self.context.type_store;
+    switch (ts.getKind(ty)) {
+        .Void => return .{ .size = 0, .alignment = 1 },
+        .Bool, .I8, .U8 => return .{ .size = 1, .alignment = 1 },
+        .I16, .U16 => return .{ .size = 2, .alignment = 2 },
+        .I32, .U32, .F32 => return .{ .size = 4, .alignment = 4, .hasFloat = ts.getKind(ty) == .F32, .allIntsOnly = ts.getKind(ty) != .F32 },
+        .I64, .U64, .Usize, .Ptr, .Any, .Function, .MlirModule, .MlirAttribute, .MlirType, .F64 => return .{ .size = 8, .alignment = 8, .hasFloat = ts.getKind(ty) == .F64, .allIntsOnly = ts.getKind(ty) != .F64 },
 
         .Simd => {
-            const S = self.context.type_store.get(.Simd, ty);
+            const S = ts.get(.Simd, ty);
             const elem = abiSizeAlign(self, S.elem);
-            // On x86_64, vector types are at least 16-byte aligned for SSE
-            const simd_align = if (elem.alignment < 16) 16 else elem.alignment;
-            return .{ .size = elem.size * S.lanes, .alignment = simd_align, .hasFloat = elem.hasFloat, .allIntsOnly = elem.allIntsOnly };
+            return .{ .size = elem.size * S.lanes, .alignment = @max(16, elem.alignment), .hasFloat = elem.hasFloat, .allIntsOnly = elem.allIntsOnly };
         },
-
-        .Ptr, .Any, .Function, .MlirModule, .MlirAttribute, .MlirType => .{ .size = 8, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
-        .Map => .{ .size = 32, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
-        .String => .{ .size = 16, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
-        .Slice => .{ .size = 16, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
-        .DynArray => .{ .size = 24, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
-        .Enum => {
-            const E = self.context.type_store.get(.Enum, ty);
-            // Enums are represented as their discriminant type.
-            return abiSizeAlign(self, E.tag_type);
+        .Map => return .{ .size = 32, .alignment = 8 },
+        .String, .Slice => return .{ .size = 16, .alignment = 8 },
+        .DynArray => return .{ .size = 24, .alignment = 8 },
+        .Enum => return abiSizeAlign(self, ts.get(.Enum, ty).tag_type),
+        .TypeType => {
+            const ptr_size = if (@sizeOf(usize) >= 8) 8 else @sizeOf(usize);
+            return .{ .size = ptr_size, .alignment = ptr_size };
         },
-
+        .Noreturn => return .{ .size = 0, .alignment = 1 },
         .Array => {
-            const A = self.context.type_store.get(.Array, ty);
+            const A = ts.get(.Array, ty);
             const e = abiSizeAlign(self, A.elem);
             const stride = std.mem.alignForward(usize, e.size, e.alignment);
             return .{ .size = stride * A.len, .alignment = e.alignment, .hasFloat = e.hasFloat, .allIntsOnly = e.allIntsOnly };
         },
-        .Variant => {
-            const v_ty = self.context.type_store.get(.Variant, ty);
-            const n = v_ty.variants.len;
-            if (n == 0) return SizeAlign{ .size = 4, .alignment = 4, .hasFloat = false, .allIntsOnly = true };
+        .Variant, .Error, .Union => |k| {
+            // Unified logic for union-like types
+            const fields = switch (k) {
+                .Variant => ts.field_pool.slice(ts.get(.Variant, ty).variants),
+                .Error => ts.field_pool.slice(ts.get(.Error, ty).variants),
+                .Union => ts.field_pool.slice(ts.get(.Union, ty).fields),
+                else => unreachable,
+            };
+            if (fields.len == 0) return .{ .size = 4, .alignment = 4 };
 
-            var max_payload_size: usize = 0;
-            var max_payload_alignment: usize = 1;
-            var has_float = false;
-            var all_ints = true;
+            var max_sz: usize = 0;
+            var max_al: usize = 1;
+            var hasF = false;
+            var ints = true;
 
-            const fields = self.context.type_store.field_pool.slice(v_ty.variants);
             for (fields) |f| {
-                const field = self.context.type_store.Field.get(f);
-                const sa = abiSizeAlign(self, field.ty);
-                if (sa.size > max_payload_size) {
-                    max_payload_size = sa.size;
-                }
-                if (sa.alignment > max_payload_alignment) {
-                    max_payload_alignment = sa.alignment;
-                }
-                has_float = has_float or sa.hasFloat;
-                all_ints = all_ints and sa.allIntsOnly;
+                const sa = abiSizeAlign(self, ts.Field.get(f).ty);
+                max_sz = @max(max_sz, sa.size);
+                max_al = @max(max_al, sa.alignment);
+                hasF = hasF or sa.hasFloat;
+                ints = ints and sa.allIntsOnly;
             }
 
-            const tag_size = 4;
-            const total_size = tag_size + max_payload_size;
-            const alignment = @max(4, max_payload_alignment);
-
-            return SizeAlign{ .size = total_size, .alignment = alignment, .hasFloat = has_float, .allIntsOnly = all_ints };
+            // Variants/Errors have a tag (4 bytes), Unions don't
+            const tag_size: usize = if (k == .Union) 0 else 4;
+            const min_align: usize = if (k == .Union) 1 else 4;
+            const align_final = @max(min_align, max_al);
+            return .{ .size = tag_size + max_sz, .alignment = align_final, .hasFloat = hasF, .allIntsOnly = ints };
         },
-        .Error => {
-            const e_ty = self.context.type_store.get(.Error, ty);
-            const n = e_ty.variants.len;
-            if (n == 0) return SizeAlign{ .size = 4, .alignment = 4, .hasFloat = false, .allIntsOnly = true };
-
-            var max_payload_size: usize = 0;
-            var max_payload_alignment: usize = 1;
-            var has_float = false;
-            var all_ints = true;
-
-            const fields = self.context.type_store.field_pool.slice(e_ty.variants);
-            for (fields) |f| {
-                const field = self.context.type_store.Field.get(f);
-                const sa = abiSizeAlign(self, field.ty);
-                if (sa.size > max_payload_size) max_payload_size = sa.size;
-                if (sa.alignment > max_payload_alignment) max_payload_alignment = sa.alignment;
-                has_float = has_float or sa.hasFloat;
-                all_ints = all_ints and sa.allIntsOnly;
-            }
-
-            const tag_size = 4;
-            const total_size = tag_size + max_payload_size;
-            const alignment = @max(4, max_payload_alignment);
-
-            return SizeAlign{ .size = total_size, .alignment = alignment, .hasFloat = has_float, .allIntsOnly = all_ints };
-        },
-        .Optional => { // {i1, T} unless pointer-backed
-            const O = self.context.type_store.get(.Optional, ty);
-            if (self.context.type_store.isOptionalPointer(ty)) {
-                return abiSizeAlign(self, O.elem);
-            }
-            const a_tag = SizeAlign{ .size = 1, .alignment = 1, .hasFloat = false, .allIntsOnly = true };
-            const v = abiSizeAlign(self, O.elem);
-            var off: usize = 0;
-            var al: usize = a_tag.alignment;
-            // field 0 (tag)
-            off = std.mem.alignForward(usize, off, a_tag.alignment);
-            off += a_tag.size;
-            al = @max(al, a_tag.alignment);
-            // field 1 (value)
-            off = std.mem.alignForward(usize, off, v.alignment);
+        .Optional => {
+            if (ts.isOptionalPointer(ty)) return abiSizeAlign(self, ts.get(.Optional, ty).elem);
+            const tag = SizeAlign{ .size = 1, .alignment = 1 };
+            const v = abiSizeAlign(self, ts.get(.Optional, ty).elem);
+            var off = std.mem.alignForward(usize, tag.size, v.alignment);
             off += v.size;
-            al = @max(al, v.alignment);
-            off = std.mem.alignForward(usize, off, al);
-            return .{ .size = off, .alignment = al, .hasFloat = v.hasFloat, .allIntsOnly = a_tag.allIntsOnly and v.allIntsOnly };
+            const al = @max(tag.alignment, v.alignment);
+            return .{ .size = std.mem.alignForward(usize, off, al), .alignment = al, .hasFloat = v.hasFloat, .allIntsOnly = v.allIntsOnly };
         },
         .ErrorSet => {
-            const es = self.context.type_store.get(.ErrorSet, ty);
-            const ok_name = self.context.type_store.strs.intern("Ok");
-            const err_name = self.context.type_store.strs.intern("Err");
-            var union_fields = [_]types.TypeStore.StructFieldArg{
-                .{ .name = ok_name, .ty = es.value_ty },
-                .{ .name = err_name, .ty = es.error_ty },
-            };
-            const payload_union = self.context.type_store.mkUnion(&union_fields);
-            const payload = abiSizeAlign(self, payload_union);
-
-            var off: usize = 0;
-            var al: usize = 4;
-            off = std.mem.alignForward(usize, off, 4);
-            off += 4;
-            off = std.mem.alignForward(usize, off, payload.alignment);
+            const es = ts.get(.ErrorSet, ty);
+            const payload = abiSizeAlign(self, self.context.type_store.mkUnion(&[_]types.TypeStore.StructFieldArg{
+                .{ .name = ts.strs.intern("Ok"), .ty = es.value_ty },
+                .{ .name = ts.strs.intern("Err"), .ty = es.error_ty },
+            }));
+            // Payload + 4 byte tag (approximated logic from original)
+            var off = std.mem.alignForward(usize, 4, payload.alignment);
             off += payload.size;
-            al = @max(al, payload.alignment);
-            off = std.mem.alignForward(usize, off, al);
-            return .{ .size = off, .alignment = al, .hasFloat = payload.hasFloat, .allIntsOnly = payload.allIntsOnly };
+            const al = @max(4, payload.alignment);
+            return .{ .size = std.mem.alignForward(usize, off, al), .alignment = al, .hasFloat = payload.hasFloat, .allIntsOnly = payload.allIntsOnly };
         },
-        .Tuple => {
-            const T = self.context.type_store.get(.Tuple, ty);
-            const elems = self.context.type_store.type_pool.slice(T.elems);
+        .Tuple, .Struct => |k| {
+            // Aggregate logic
             var size: usize = 0;
             var alignment: usize = 1;
             var hasF = false;
-            var intsOnly = true;
-            for (elems) |eId| {
-                const e = abiSizeAlign(self, eId);
+            var ints = true;
+
+            // Iterator over types
+            const elem_types_store = if (k == .Tuple) ts.type_pool.slice(ts.get(.Tuple, ty).elems) else null; // Tuple has types directly
+            const field_ids = if (k == .Struct) ts.field_pool.slice(ts.get(.Struct, ty).fields) else null;
+
+            const count = if (k == .Tuple) elem_types_store.?.len else field_ids.?.len;
+
+            for (0..count) |i| {
+                const sub_ty = if (k == .Tuple) elem_types_store.?[i] else ts.Field.get(field_ids.?[i]).ty;
+                const e = abiSizeAlign(self, sub_ty);
                 size = std.mem.alignForward(usize, size, e.alignment);
                 size += e.size;
                 alignment = @max(alignment, e.alignment);
                 hasF = hasF or e.hasFloat;
-                intsOnly = intsOnly and e.allIntsOnly;
+                ints = ints and e.allIntsOnly;
             }
-            size = std.mem.alignForward(usize, size, alignment);
-            return .{ .size = size, .alignment = alignment, .hasFloat = hasF, .allIntsOnly = intsOnly };
+            return .{ .size = std.mem.alignForward(usize, size, alignment), .alignment = alignment, .hasFloat = hasF, .allIntsOnly = ints };
         },
-        .Struct => {
-            const S = self.context.type_store.get(.Struct, ty);
-            const fields = self.context.type_store.field_pool.slice(S.fields);
-            var size: usize = 0;
-            var alignment: usize = 1;
-            var hasF = false;
-            var intsOnly = true;
-            for (fields) |fid| {
-                const e = abiSizeAlign(self, self.context.type_store.Field.get(fid).ty);
-                size = std.mem.alignForward(usize, size, e.alignment);
-                size += e.size;
-                alignment = @max(alignment, e.alignment);
-                hasF = hasF or e.hasFloat;
-                intsOnly = intsOnly and e.allIntsOnly;
-            }
-            size = std.mem.alignForward(usize, size, alignment);
-            return .{ .size = size, .alignment = alignment, .hasFloat = hasF, .allIntsOnly = intsOnly };
-        },
-        .Union => {
-            const U = self.context.type_store.get(.Union, ty);
-            const fields = self.context.type_store.field_pool.slice(U.fields);
-            var size: usize = 0;
-            var alignment: usize = 1;
-            var hasF = false;
-            var intsOnly = true;
-            for (fields) |fid| {
-                const e = abiSizeAlign(self, self.context.type_store.Field.get(fid).ty);
-                size = @max(size, e.size);
-                alignment = @max(alignment, e.alignment);
-                hasF = hasF or e.hasFloat;
-                intsOnly = intsOnly and e.allIntsOnly;
-            }
-            size = std.mem.alignForward(usize, size, alignment);
-            return .{ .size = size, .alignment = alignment, .hasFloat = hasF, .allIntsOnly = intsOnly };
-        },
-        .TypeType => {
-            const ptr_bytes: usize = if (@sizeOf(usize) >= 8) 8 else @sizeOf(usize);
-            return .{ .size = ptr_bytes, .alignment = ptr_bytes, .hasFloat = false, .allIntsOnly = true };
-        },
-        .Noreturn => {
-            return .{ .size = 0, .alignment = 1, .hasFloat = false, .allIntsOnly = true };
-        },
-        else => std.debug.panic("abiSizeAlign: unhandled SR kind {} -> {}", .{ ty, self.context.type_store.getKind(ty) }),
-    };
-}
-
-// Simple FP pattern recognizers (for MVP SSE cases)
-/// Check whether `ty` is exactly the `f32` scalar.
-fn srIsExactlyFloat(store: *types.TypeStore, ty: types.TypeId) bool {
-    return store.getKind(ty) == .F32;
-}
-
-/// Check whether `ty` is exactly the `f64` scalar.
-fn srIsExactlyDouble(store: *types.TypeStore, ty: types.TypeId) bool {
-    return store.getKind(ty) == .F64;
-}
-
-/// Return true if `ty` represents two consecutive `f32` scalars in a struct/tuple.
-fn srIsTwoFloats(store: *types.TypeStore, ty: types.TypeId) bool {
-    if (store.getKind(ty) == .Struct) {
-        const S = store.get(.Struct, ty);
-        if (S.fields.len != 2) return false;
-        const fs = store.field_pool.slice(S.fields);
-        return srIsExactlyFloat(store, store.Field.get(fs[0]).ty) and
-            srIsExactlyFloat(store, store.Field.get(fs[1]).ty);
+        else => std.debug.panic("abiSizeAlign: unhandled kind {}", .{ts.getKind(ty)}),
     }
-    if (store.getKind(ty) == .Tuple) {
-        const T = store.get(.Tuple, ty);
-        if (T.elems.len != 2) return false;
-        const es = store.type_pool.slice(T.elems);
-        return srIsExactlyFloat(store, es[0]) and srIsExactlyFloat(store, es[1]);
-    }
-    return false;
 }
 
-/// Compute how `ty` should be passed or returned under the x86_64 SysV ABI.
-/// `self` is the codegen context, `ty` is the SR type in flight, and `isReturn`
-/// indicates whether the current slot belongs to a return value instead of a parameter.
+// Helpers
+fn isFloat(ts: *types.TypeStore, ty: types.TypeId) bool {
+    return ts.getKind(ty) == .F32;
+}
+fn isDouble(ts: *types.TypeStore, ty: types.TypeId) bool {
+    return ts.getKind(ty) == .F64;
+}
+
 pub fn abiClassifyX64SysV(self: *Codegen, ty: types.TypeId, isReturn: bool) AbiClass {
-    // Scalars: map 1:1, don't ABI-mangle
-    switch (self.context.type_store.getKind(ty)) {
+    const ts = self.context.type_store;
+    switch (ts.getKind(ty)) {
         .Noreturn => return .{ .kind = .DirectScalar, .scalar0 = self.void_ty, .size = 0 },
         .Bool => return .{ .kind = .DirectScalar, .scalar0 = self.i1_ty, .size = 1, .alignment = 1 },
         .I8, .U8 => return .{ .kind = .DirectScalar, .scalar0 = self.i8_ty, .size = 1, .alignment = 1 },
         .I16, .U16 => return .{ .kind = .DirectScalar, .scalar0 = mlir.Type.getSignlessIntegerType(self.mlir_ctx, 16), .size = 2, .alignment = 2 },
         .I32, .U32 => return .{ .kind = .DirectScalar, .scalar0 = self.i32_ty, .size = 4, .alignment = 4 },
         .I64, .U64, .Usize => return .{ .kind = .DirectScalar, .scalar0 = self.i64_ty, .size = 8, .alignment = 8 },
+        .Ptr, .Any, .Function, .MlirModule, .MlirAttribute, .MlirType => return .{ .kind = .DirectScalar, .scalar0 = self.llvm_ptr_ty, .size = 8, .alignment = 8 },
         .F32 => return .{ .kind = .DirectScalar, .scalar0 = self.f32_ty, .size = 4, .alignment = 4 },
         .F64 => return .{ .kind = .DirectScalar, .scalar0 = self.f64_ty, .size = 8, .alignment = 8 },
-        .Ptr, .Any, .Function, .MlirModule, .MlirAttribute, .MlirType => return .{ .kind = .DirectScalar, .scalar0 = self.llvm_ptr_ty, .size = 8, .alignment = 8 },
-        .Map => {
+        .Optional => if (ts.isOptionalPointer(ty)) {
             const sa = abiSizeAlign(self, ty);
-            return if (isReturn)
-                .{ .kind = .IndirectSRet, .alignment = @intCast(sa.alignment), .size = sa.size }
-            else
-                .{ .kind = .IndirectByVal, .alignment = @intCast(sa.alignment), .size = sa.size };
+            return .{ .kind = .DirectScalar, .scalar0 = self.llvm_ptr_ty, .size = sa.size, .alignment = @intCast(sa.alignment) };
         },
-        .Variant => {
+        .Variant, .Map => { // Force indirect for Map/Variant in this ABI implementation
             const sa = abiSizeAlign(self, ty);
             return if (isReturn) .{ .kind = .IndirectSRet, .alignment = @intCast(sa.alignment), .size = sa.size } else .{ .kind = .IndirectByVal, .alignment = @intCast(sa.alignment), .size = sa.size };
         },
-        .Optional => {
-            if (self.context.type_store.isOptionalPointer(ty)) {
-                const sa = abiSizeAlign(self, ty);
-                return .{
-                    .kind = .DirectScalar,
-                    .scalar0 = self.llvm_ptr_ty,
-                    .size = sa.size,
-                    .alignment = @intCast(sa.alignment),
-                };
-            }
-        },
         else => {},
     }
+
     const sa = abiSizeAlign(self, ty);
+    if (sa.size == 0) return .{ .kind = .DirectScalar, .scalar0 = self.i32_ty, .size = 0 };
 
-    if (sa.size == 0) {
-        return .{ .kind = .DirectScalar, .scalar0 = self.i32_ty, .size = 0 }; // arbitrary; won't be used
-    }
-
-    // MVP float handling (common cases)
     if (sa.hasFloat and !sa.allIntsOnly) {
-        // 1x float -> float in XMM
-        if (sa.size == 4 and srIsExactlyFloat(self.context.type_store, ty)) {
-            return .{ .kind = .DirectScalar, .scalar0 = self.f32_ty, .size = 4 };
+        if (sa.size == 4 and isFloat(ts, ty)) return .{ .kind = .DirectScalar, .scalar0 = self.f32_ty, .size = 4 };
+        if (sa.size == 8 and isDouble(ts, ty)) return .{ .kind = .DirectScalar, .scalar0 = self.f64_ty, .size = 8 };
+        // 2x float vector check
+        var isTwoF = false;
+        if (ts.getKind(ty) == .Struct) {
+            const S = ts.get(.Struct, ty);
+            if (S.fields.len == 2) {
+                const fs = ts.field_pool.slice(S.fields);
+                if (isFloat(ts, ts.Field.get(fs[0]).ty) and isFloat(ts, ts.Field.get(fs[1]).ty)) isTwoF = true;
+            }
+        } else if (ts.getKind(ty) == .Tuple) {
+            const T = ts.get(.Tuple, ty);
+            if (T.elems.len == 2) {
+                const es = ts.type_pool.slice(T.elems);
+                if (isFloat(ts, es[0]) and isFloat(ts, es[1])) isTwoF = true;
+            }
         }
-        // 1x double -> double in XMM
-        if (sa.size == 8 and srIsExactlyDouble(self.context.type_store, ty)) {
-            return .{ .kind = .DirectScalar, .scalar0 = self.f64_ty, .size = 8 };
-        }
-        // 2x float -> <2 x float> (one XMM)
-        if (sa.size == 8 and srIsTwoFloats(self.context.type_store, ty)) {
-            const vty = mlir.Type.getVectorType(1, &[_]i64{2}, self.f32_ty);
-            return .{ .kind = .DirectScalar, .scalar0 = vty, .size = 8 };
-        }
-        // TODO: mixed FP/int or >2 floats: implement full SSE classification.
-        // For now, larger/complex FP aggregates go indirect.
-        if (isReturn) return .{ .kind = .IndirectSRet, .alignment = @intCast(sa.alignment), .size = sa.size };
-        return .{ .kind = .IndirectByVal, .alignment = @intCast(sa.alignment), .size = sa.size };
+        if (sa.size == 8 and isTwoF) return .{ .kind = .DirectScalar, .scalar0 = mlir.Type.getVectorType(1, &[_]i64{2}, self.f32_ty), .size = 8 };
+
+        return if (isReturn) .{ .kind = .IndirectSRet, .alignment = @intCast(sa.alignment), .size = sa.size } else .{ .kind = .IndirectByVal, .alignment = @intCast(sa.alignment), .size = sa.size };
     }
 
-    // Pure integer/byte/pointer aggregates.
-    if (sa.size > 16) {
-        if (isReturn) return .{ .kind = .IndirectSRet, .alignment = @intCast(sa.alignment), .size = sa.size };
-        return .{ .kind = .IndirectByVal, .alignment = @intCast(sa.alignment), .size = sa.size };
-    }
-    if (sa.size <= 8) {
-        const bits: u32 = @intCast(sa.size * 8);
-        const ity = mlir.Type.getSignlessIntegerType(self.mlir_ctx, bits);
-        return .{ .kind = .DirectScalar, .scalar0 = ity, .size = sa.size };
-    }
-    // 8 < size <= 16: DirectPair
+    if (sa.size > 16)
+        return if (isReturn) .{ .kind = .IndirectSRet, .alignment = @intCast(sa.alignment), .size = sa.size } else .{ .kind = .IndirectByVal, .alignment = @intCast(sa.alignment), .size = sa.size };
+
+    if (sa.size <= 8)
+        return .{ .kind = .DirectScalar, .scalar0 = mlir.Type.getSignlessIntegerType(self.mlir_ctx, @intCast(sa.size * 8)), .size = sa.size };
+
     const hiBits: u32 = @intCast(sa.size * 8 - 64);
-    const i64t = self.i64_ty;
-    const hit = mlir.Type.getSignlessIntegerType(self.mlir_ctx, if (hiBits == 0) 64 else hiBits);
-    return .{ .kind = .DirectPair, .scalar0 = i64t, .scalar1 = hit, .size = sa.size };
+    return .{ .kind = .DirectPair, .scalar0 = self.i64_ty, .scalar1 = mlir.Type.getSignlessIntegerType(self.mlir_ctx, if (hiBits == 0) 64 else hiBits), .size = sa.size };
 }

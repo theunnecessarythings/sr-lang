@@ -693,8 +693,9 @@ fn collectForceLlvmFuncSyms(self: *Codegen, t: *tir.TIR) !void {
     self.force_llvm_func_syms.clearRetainingCapacity();
 
     const type_store = self.context.type_store;
-    const funcs = t.funcs.func_pool.data.items;
-    for (funcs) |fid| {
+    const funcs = t.funcs.func_pool.inner.data.items;
+    for (funcs) |fid_raw| {
+        const fid = tir.FuncId.fromRaw(fid_raw);
         const f = t.funcs.Function.get(fid);
         const blocks = t.funcs.block_pool.slice(f.blocks);
         for (blocks) |bid| {
@@ -778,7 +779,8 @@ pub fn emitTritonModule(self: *Codegen, levels: *const compile.DependencyLevels)
         for (level.items) |file_id| {
             const unit = unit_by_file.get(file_id) orelse continue;
             if (unit.tir == null) continue;
-            for (unit.tir.?.funcs.func_pool.data.items) |fid| {
+            for (unit.tir.?.funcs.func_pool.inner.data.items) |fid_raw| {
+                const fid = tir.FuncId.fromRaw(fid_raw);
                 const f = unit.tir.?.funcs.Function.get(fid);
                 if (!f.is_triton_fn) continue;
 
@@ -855,7 +857,8 @@ pub fn emitTritonModule(self: *Codegen, levels: *const compile.DependencyLevels)
         for (level.items) |file_id| {
             const unit = unit_by_file.get(file_id) orelse continue;
             if (unit.tir == null) continue;
-            for (unit.tir.?.funcs.func_pool.data.items) |fid| {
+            for (unit.tir.?.funcs.func_pool.inner.data.items) |fid_raw| {
+                const fid = tir.FuncId.fromRaw(fid_raw);
                 const f = unit.tir.?.funcs.Function.get(fid);
                 if (!f.is_triton_fn) continue;
                 const params = unit.tir.?.funcs.param_pool.slice(f.params);
@@ -893,9 +896,10 @@ pub fn emitModule(
     try debug.ensureDebugModuleAttrs(self);
     try self.emitExternDecls(t);
 
-    const func_ids = t.funcs.func_pool.data.items;
+    const func_ids = t.funcs.func_pool.inner.data.items;
 
-    for (func_ids) |fid| {
+    for (func_ids) |fid_raw| {
+        const fid = tir.FuncId.fromRaw(fid_raw);
         const row = t.funcs.Function.get(fid);
         if (row.is_triton_fn) continue;
         try self.emitFunctionHeader(fid, t);
@@ -905,7 +909,8 @@ pub fn emitModule(
         }
     }
     const module_has_async = blk: {
-        for (func_ids) |fid| {
+        for (func_ids) |fid_raw| {
+            const fid = tir.FuncId.fromRaw(fid_raw);
             const row = t.funcs.Function.get(fid);
             if (row.is_async) break :blk true;
         }
@@ -918,7 +923,8 @@ pub fn emitModule(
             mlir.Attribute.unitAttrGet(self.mlir_ctx),
         );
     }
-    for (func_ids) |fid| {
+    for (func_ids) |fid_raw| {
+        const fid = tir.FuncId.fromRaw(fid_raw);
         const row = t.funcs.Function.get(fid);
         if (row.is_triton_fn) {
             self.has_triton_fns = true;
@@ -1029,10 +1035,11 @@ fn appendZeroValueInBlock(self: *Codegen, block: *mlir.Block, ty: mlir.Type) mli
 
 /// Emit MLIR declarations for the extern globals and functions referenced in `t`.
 fn emitExternDecls(self: *Codegen, t: *tir.TIR) !void {
-    const global_ids = t.funcs.global_pool.data.items;
+    const global_ids = t.funcs.global_pool.inner.data.items;
 
-    for (global_ids) |global_id| {
-        const g = t.funcs.Global.get(global_id);
+    for (global_ids) |gid_raw| {
+        const gid = tir.GlobalId.fromRaw(gid_raw);
+        const g = t.funcs.Global.get(gid);
         const name = t.instrs.strs.get(g.name);
         const sym_id = g.name;
 

@@ -1667,7 +1667,7 @@ test "functions - purity failures" {
     try checkProgram(
         \\ printf :: extern proc(*void, any) i32
         \\ f :: fn() i32 { _ = printf("hi".^*void); return 0 }
-    , &[_]diag.DiagnosticCode{.purity_violation});
+    , &[_]diag.DiagnosticCode{.purity_violation, .invalid_bitcast});
 
     // proc call inside fn
     try checkProgram(

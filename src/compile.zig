@@ -1,5 +1,5 @@
 const std = @import("std");
-const mlir = @import("mlir_bindings.zig");
+const ast = @import("ast.zig");
 const cst = @import("cst.zig");
 const tir = @import("tir.zig");
 const package = @import("package.zig");
@@ -8,6 +8,7 @@ const Diagnostics = @import("diagnostics.zig").Diagnostics;
 const TypeInfo = @import("types.zig").TypeInfo;
 const TypeStore = @import("types.zig").TypeStore;
 const Parser = @import("parser.zig").Parser;
+const mlir = @import("mlir_bindings.zig");
 
 /// Tracks whether MLIR passes have already been registered globally.
 var g_passes_registered: bool = false;
@@ -16,85 +17,84 @@ var g_passes_registered: bool = false;
 pub const SourceManager = struct {
     gpa: std.mem.Allocator,
     files: std.ArrayList(Entry) = .empty,
+    /// Maps file path string to index for O(1) lookup.
+    lookup_cache: std.StringHashMap(u32),
 
-    /// Managed metadata for each tracked file path or virtual source.
     const Entry = struct {
-        /// File path stored as owned bytes.
         path: []u8,
-        /// Optional in-memory override contents.
         virtual_source: ?[]u8 = null,
     };
 
-    /// Release every buffer tracked by the manager along with its allocator.
+    pub fn init(gpa: std.mem.Allocator) SourceManager {
+        return .{
+            .gpa = gpa,
+            .lookup_cache = std.StringHashMap(u32).init(gpa),
+        };
+    }
+
     pub fn deinit(self: *SourceManager) void {
         for (self.files.items) |*entry| {
             self.gpa.free(entry.path);
-            if (entry.virtual_source) |src| {
-                self.gpa.free(src);
-            }
+            if (entry.virtual_source) |src| self.gpa.free(src);
         }
         self.files.deinit(self.gpa);
+        self.lookup_cache.deinit();
     }
 
     /// Register `file_path` and return its managed index (avoids duplicates).
     pub fn add(self: *SourceManager, file_path: []const u8) !u32 {
-        if (self.findIndex(file_path)) |idx| {
-            return @intCast(idx);
-        }
+        if (self.lookup_cache.get(file_path)) |idx| return idx;
+
         const copy = try self.gpa.dupe(u8, file_path);
         errdefer self.gpa.free(copy);
+
+        const idx: u32 = @intCast(self.files.items.len);
         try self.files.append(self.gpa, .{ .path = copy });
-        return @intCast(self.files.items.len - 1);
+        try self.lookup_cache.put(copy, idx);
+        return idx;
     }
 
-    /// Look up an existing file entry by path, returning its index.
     pub fn find(self: *SourceManager, file_path: []const u8) ?u32 {
-        const idx = self.findIndex(file_path) orelse return null;
-        return @intCast(idx);
+        return self.lookup_cache.get(file_path);
     }
 
-    /// Read `index` either from the virtual source override or disk and return contents.
     pub fn read(self: *SourceManager, index: u32) ![]const u8 {
         if (index >= self.files.items.len) return error.FileNotFound;
         const entry = self.files.items[index];
-        if (entry.virtual_source) |src| {
-            return try self.gpa.dupe(u8, src);
-        }
+        if (entry.virtual_source) |src| return try self.gpa.dupe(u8, src);
+
         var file = std.fs.cwd().openFile(entry.path, .{}) catch |err| {
-            std.debug.print("error: {s}\n", .{entry.path});
+            std.debug.print("error opening: {s}\n", .{entry.path});
             return err;
         };
-
         defer file.close();
-        const file_size = try file.getEndPos();
-        const buffer = try self.gpa.alloc(u8, file_size);
-        const read_bytes = try file.readAll(buffer);
-        if (read_bytes != file_size) {
-            self.gpa.free(buffer);
-            return error.FileReadError;
-        }
+
+        const size = try file.getEndPos();
+        const buffer = try self.gpa.alloc(u8, size);
+        errdefer self.gpa.free(buffer);
+
+        if (try file.readAll(buffer) != size) return error.FileReadError;
         return buffer;
     }
 
-    /// Return the stored file path for `index`, if available.
     pub fn get(self: *const SourceManager, index: u32) ?[]const u8 {
-        if (index < self.files.items.len) {
-            return self.files.items[index].path;
-        }
+        if (index < self.files.items.len) return self.files.items[index].path;
         return null;
     }
 
-    /// Override the contents of `index` with the provided virtual source buffer.
     pub fn setVirtualSource(self: *SourceManager, index: u32, contents: []const u8) !void {
         if (index >= self.files.items.len) return error.FileNotFound;
         var entry = &self.files.items[index];
-        if (entry.virtual_source) |src| {
-            self.gpa.free(src);
-        }
+        if (entry.virtual_source) |src| self.gpa.free(src);
         entry.virtual_source = try self.gpa.dupe(u8, contents);
     }
 
-    /// Remove any virtual override for `index`, falling back to file contents.
+    pub fn setVirtualSourceByPath(self: *SourceManager, file_path: []const u8, contents: []const u8) !u32 {
+        const idx = try self.add(file_path);
+        try self.setVirtualSource(idx, contents);
+        return idx;
+    }
+
     pub fn clearVirtualSource(self: *SourceManager, index: u32) void {
         if (index >= self.files.items.len) return;
         var entry = &self.files.items[index];
@@ -103,121 +103,68 @@ pub const SourceManager = struct {
             entry.virtual_source = null;
         }
     }
-
-    /// Add or locate `file_path` and set its virtual source contents.
-    pub fn setVirtualSourceByPath(self: *SourceManager, file_path: []const u8, contents: []const u8) !u32 {
-        const idx = try self.add(file_path);
-        try self.setVirtualSource(idx, contents);
-        return idx;
-    }
-
-    /// Locate the entry index for `file_path`, if already registered.
-    fn findIndex(self: *SourceManager, file_path: []const u8) ?usize {
-        for (self.files.items, 0..) |entry, idx| {
-            if (std.mem.eql(u8, entry.path, file_path)) {
-                return idx;
-            }
-        }
-        return null;
-    }
 };
 
 /// Resolves a raw import string into an absolute path on disk.
-/// Searches: 1) relative to current file, 2) in 'imports/' subdir, 3) relative to exe root.
-pub fn resolveImportPath(
-    allocator: std.mem.Allocator,
-    source_manager: *SourceManager,
-    current_file_id: u32,
-    import_name: []const u8,
-) ![]const u8 {
+pub fn resolveImportPath(allocator: std.mem.Allocator, source_manager: *SourceManager, current_file_id: u32, import_name: []const u8) ![]const u8 {
     const current_file_path = source_manager.get(current_file_id) orelse return error.FileNotFound;
     const current_dir = std.fs.path.dirname(current_file_path) orelse ".";
-
     const ext = if (std.fs.path.extension(import_name).len == 0) ".sr" else "";
-    const filename_ext = try std.fmt.allocPrint(allocator, "{s}{s}", .{ import_name, ext });
-    defer allocator.free(filename_ext);
+    const filename = try std.fmt.allocPrint(allocator, "{s}{s}", .{ import_name, ext });
+    defer allocator.free(filename);
 
-    var joined_path: []u8 = undefined;
-    var found = false;
-
-    joined_path = try std.fs.path.join(allocator, &.{ current_dir, filename_ext });
-    found = std.fs.cwd().statFile(joined_path) catch null != null;
-
-    if (!found) {
-        allocator.free(joined_path);
-        joined_path = try std.fs.path.join(allocator, &.{ current_dir, "imports", filename_ext });
-        found = std.fs.cwd().statFile(joined_path) catch null != null;
+    const paths_to_try = [_][]const u8{
+        current_dir,
+        try std.fs.path.join(allocator, &.{ current_dir, "imports" }),
+        try std.fs.path.join(allocator, &.{ try std.fs.selfExeDirPathAlloc(allocator), ".." }),
+    };
+    defer {
+        allocator.free(paths_to_try[1]);
+        allocator.free(paths_to_try[2]); // exe_dir path join result
     }
 
-    if (!found) {
-        allocator.free(joined_path);
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const exe_dir = try std.fs.selfExeDirPath(&buf);
-        joined_path = try std.fs.path.join(allocator, &.{ exe_dir, "..", filename_ext });
-        found = std.fs.cwd().statFile(joined_path) catch null != null;
+    for (paths_to_try) |base| {
+        const joined = try std.fs.path.join(allocator, &.{ base, filename });
+        defer allocator.free(joined);
+        if (std.fs.cwd().access(joined, .{})) |_| {
+            return std.fs.realpathAlloc(allocator, joined);
+        } else |err| {
+            if (err != error.FileNotFound) return err;
+        }
     }
-
-    if (!found) return error.ImportNotFound;
-
-    const real_path = try std.fs.realpathAlloc(allocator, joined_path);
-    allocator.free(joined_path);
-    return real_path;
+    return error.ImportNotFound;
 }
 
-/// Shared compilation context passed through parsing/checking/codegen stages.
 pub const Context = struct {
-    /// Allocator for the context and derived storages.
     gpa: std.mem.Allocator,
-    /// Source manager handling file registrations and virtual overlays.
     source_manager: *SourceManager,
-    /// Diagnostic engine for capturing errors/warnings/notes.
     diags: *Diagnostics,
-    /// Shared string interner backing CST/compilation units.
     interner: *cst.StringInterner,
-    /// Location store used for token spans.
     loc_store: *cst.LocStore,
-    /// Global type store for the compiler.
     type_store: *TypeStore,
-    /// Aggregated unit that stores packages, modules, and files.
     compilation_unit: CompilationUnit,
-    /// Global map of all internal functions across all TIR units.
     global_func_map: std.AutoHashMap(tir.StrId, struct { tir.FuncId, *tir.FuncStore }),
-    /// Toggle that controls whether imported files are automatically loaded.
     load_imports: bool = true,
-    /// Mutex guarding shared mutable state for threaded stages.
     mutex: std.Thread.Mutex = .{},
-
-    /// Parsers currently created/executing on worker threads.
     parse_worklist: std.ArrayList(ParseRequest) = .{},
 
-    /// Work item describing a parser running on a thread.
     const ParseRequest = struct {
-        /// Path string for this parse request.
         path: []const u8,
-        /// File id assigned by the source manager.
         file_id: u32,
-        /// Worker thread handling the parse.
         thread: std.Thread,
-        /// Diagnostics sink for the parse.
         diags: *Diagnostics,
-        /// Parser instance performing the work.
         parser: *Parser,
     };
 
-    /// Initialize a context with fresh diagnostics, type store, interner, and source manager.
     pub fn init(gpa: std.mem.Allocator) Context {
         const interner = gpa.create(cst.StringInterner) catch unreachable;
         interner.* = cst.StringInterner.init(gpa);
-
         const type_store = gpa.create(TypeStore) catch unreachable;
         type_store.* = TypeStore.init(gpa, interner);
-
         const diags = gpa.create(Diagnostics) catch unreachable;
         diags.* = Diagnostics.init(gpa, type_store, interner);
-
-        const source_manager = gpa.create(SourceManager) catch unreachable;
-        source_manager.* = SourceManager{ .gpa = gpa };
-
+        const sm = gpa.create(SourceManager) catch unreachable;
+        sm.* = SourceManager.init(gpa);
         const loc_store = gpa.create(cst.LocStore) catch unreachable;
         loc_store.* = cst.LocStore{};
 
@@ -226,14 +173,13 @@ pub const Context = struct {
             .interner = interner,
             .loc_store = loc_store,
             .gpa = gpa,
-            .source_manager = source_manager,
+            .source_manager = sm,
             .type_store = type_store,
             .compilation_unit = .init(gpa),
             .global_func_map = .init(gpa),
         };
     }
 
-    /// Tear down the context and all associated storages (type store, interner, etc.).
     pub fn deinit(self: *Context) void {
         self.compilation_unit.deinit();
         self.global_func_map.deinit();
@@ -250,635 +196,379 @@ pub const Context = struct {
     }
 };
 
-/// Tracks dependency orderings between source files for staged processing.
 pub const DependencyLevels = struct {
-    /// Allocator used for storing the level arrays.
     allocator: std.mem.Allocator,
-    /// Each level contains file ids that can be processed concurrently.
     levels: std.ArrayList(std.ArrayList(u32)),
 
-    /// Create an empty dependency level tracker.
     pub fn init(allocator: std.mem.Allocator) DependencyLevels {
         return .{ .allocator = allocator, .levels = .{} };
     }
-
-    /// Deinitialize the stored levels and release the arrays.
     pub fn deinit(self: *DependencyLevels) void {
-        for (self.levels.items) |*level| {
-            level.deinit(self.allocator);
-        }
+        for (self.levels.items) |*l| l.deinit(self.allocator);
         self.levels.deinit(self.allocator);
     }
 };
 
-/// Determine a dependency-respecting processing order by grouping files into levels.
-/// Each level contains files whose dependencies are satisfied by earlier levels.
-pub fn computeDependencyLevels(
-    allocator: std.mem.Allocator,
-    unit: *CompilationUnit,
-    interner: *cst.StringInterner,
-    source_manager: *SourceManager,
-) !DependencyLevels {
-    var result: DependencyLevels = .init(allocator);
-    errdefer result.deinit();
+/// Helper struct for graph algorithms
+const GraphData = struct {
+    indegree: std.AutoHashMap(u32, usize),
+    adjacency: std.AutoHashMap(u32, std.ArrayList(u32)),
+    all_nodes: std.AutoHashMap(u32, void),
 
-    var indegree: std.AutoHashMap(u32, usize) = .init(allocator);
-    defer indegree.deinit();
-
-    var adjacency: std.AutoHashMap(u32, std.ArrayList(u32)) = .init(allocator);
-    defer {
-        var adj_iter = adjacency.iterator();
-        while (adj_iter.next()) |entry| {
-            entry.value_ptr.deinit(allocator);
-        }
-        adjacency.deinit();
+    fn deinit(self: *GraphData, allocator: std.mem.Allocator) void {
+        self.indegree.deinit();
+        var it = self.adjacency.iterator();
+        while (it.next()) |kv| kv.value_ptr.deinit(allocator);
+        self.adjacency.deinit();
+        self.all_nodes.deinit();
     }
+};
 
-    var ordered_nodes = std.ArrayList(u32){};
-    defer ordered_nodes.deinit(allocator);
+fn buildAdjacencyGraph(allocator: std.mem.Allocator, unit: *CompilationUnit, interner: *cst.StringInterner, sm: *SourceManager) !GraphData {
+    var data = GraphData{
+        .indegree = .init(allocator),
+        .adjacency = .init(allocator),
+        .all_nodes = .init(allocator),
+    };
 
-    var remaining: std.AutoHashMap(u32, void) = .init(allocator);
-    defer remaining.deinit();
-
+    // Register all nodes first
     var pkg_iter = unit.packages.iterator();
     while (pkg_iter.next()) |pkg| {
-        var source_iter = pkg.value_ptr.sources.iterator();
-        while (source_iter.next()) |entry| {
-            const file_id = entry.value_ptr.file_id;
-            if (indegree.getPtr(file_id) == null) {
-                try indegree.put(file_id, 0);
-            }
-            if (!remaining.contains(file_id)) {
-                try remaining.put(file_id, {});
-                try ordered_nodes.append(allocator, file_id);
-            }
+        var src_iter = pkg.value_ptr.sources.iterator();
+        while (src_iter.next()) |e| {
+            const fid = e.value_ptr.file_id;
+            try data.all_nodes.put(fid, {});
+            if (!data.indegree.contains(fid)) try data.indegree.put(fid, 0);
         }
     }
 
+    // Build edges
     var dep_iter = unit.dependencies.iterator();
-    while (dep_iter.next()) |entry| {
-        const file_id = entry.key_ptr.*;
-        if (indegree.getPtr(file_id) == null) {
-            try indegree.put(file_id, 0);
-        }
-        if (!remaining.contains(file_id)) {
-            try remaining.put(file_id, {});
-            try ordered_nodes.append(allocator, file_id);
-        }
+    while (dep_iter.next()) |e| {
+        const fid = e.key_ptr.*;
+        if (!data.indegree.contains(fid)) try data.indegree.put(fid, 0);
+        try data.all_nodes.put(fid, {});
 
-        var set_iter = entry.value_ptr.iterator();
-        while (set_iter.next()) |dep_entry| {
-            const dep_str = interner.get(dep_entry.key_ptr.*);
-            const dep_file_id = source_manager.find(dep_str) orelse continue;
-            if (dep_file_id == file_id) continue;
+        var set_iter = e.value_ptr.iterator();
+        while (set_iter.next()) |dep| {
+            const dep_fid = sm.find(interner.get(dep.key_ptr.*)) orelse continue;
+            if (dep_fid == fid) continue;
 
-            const indegree_ptr = indegree.getPtr(file_id) orelse blk: {
-                try indegree.put(file_id, 0);
-                break :blk indegree.getPtr(file_id).?;
-            };
-            indegree_ptr.* += 1;
+            const d_deg = try data.indegree.getOrPutValue(dep_fid, 0);
+            _ = d_deg; // unused, just ensuring existence
+            if (!data.all_nodes.contains(dep_fid)) try data.all_nodes.put(dep_fid, {});
 
-            var adj_ptr = adjacency.getPtr(dep_file_id) orelse blk: {
-                const list = std.ArrayList(u32){};
-                try adjacency.put(dep_file_id, list);
-                break :blk adjacency.getPtr(dep_file_id).?;
-            };
-            try adj_ptr.append(allocator, file_id);
+            // Add edge: dep_fid -> fid (dep must be processed before fid)
+            // Note: Indegree is count of dependencies needed by 'fid', so we increment fid's indegree
+            // and add fid to dep_fid's adjacency list.
 
-            if (indegree.getPtr(dep_file_id) == null) {
-                try indegree.put(dep_file_id, 0);
-            }
-            if (!remaining.contains(dep_file_id)) {
-                try remaining.put(dep_file_id, {});
-                try ordered_nodes.append(allocator, dep_file_id);
-            }
+            // Correction: Standard dep graph: A imports B. B must be compiled before A.
+            // Edge: B -> A.
+            // B's adjacency list contains A.
+            // A's indegree increments.
+
+            const tgt_deg = data.indegree.getPtr(fid).?;
+            tgt_deg.* += 1;
+
+            const adj = try data.adjacency.getOrPut(dep_fid);
+            if (!adj.found_existing) adj.value_ptr.* = .empty;
+            try adj.value_ptr.append(allocator, fid);
         }
     }
+    return data;
+}
+
+pub fn computeDependencyLevels(allocator: std.mem.Allocator, unit: *CompilationUnit, interner: *cst.StringInterner, sm: *SourceManager) !DependencyLevels {
+    var graph = try buildAdjacencyGraph(allocator, unit, interner, sm);
+    defer graph.deinit(allocator);
+
+    var res = DependencyLevels.init(allocator);
+    errdefer res.deinit();
 
     var queue = std.ArrayList(u32){};
     defer queue.deinit(allocator);
     var next_queue = std.ArrayList(u32){};
     defer next_queue.deinit(allocator);
 
-    var indegree_iter = indegree.iterator();
-    while (indegree_iter.next()) |entry| {
-        if (entry.value_ptr.* == 0) {
-            try queue.append(allocator, entry.key_ptr.*);
-        }
+    // Kahn's Algorithm
+    var it = graph.indegree.iterator();
+    while (it.next()) |e| {
+        if (e.value_ptr.* == 0) try queue.append(allocator, e.key_ptr.*);
     }
+
+    var processed_count: usize = 0;
 
     while (queue.items.len > 0) {
         var level = std.ArrayList(u32){};
         try level.appendSlice(allocator, queue.items);
-        for (queue.items) |node| {
-            _ = remaining.remove(node);
-        }
-        try result.levels.append(allocator, level);
+        try res.levels.append(allocator, level);
+        processed_count += queue.items.len;
 
-        next_queue.clearRetainingCapacity();
-        for (queue.items) |node| {
-            if (adjacency.getPtr(node)) |neighbors| {
-                for (neighbors.items) |neighbor| {
-                    const indegree_ptr = indegree.getPtr(neighbor) orelse continue;
-                    if (indegree_ptr.* == 0) continue;
-                    indegree_ptr.* -= 1;
-                    if (indegree_ptr.* == 0) {
-                        try next_queue.append(allocator, neighbor);
-                    }
+        for (queue.items) |u| {
+            if (graph.adjacency.getPtr(u)) |vs| {
+                for (vs.items) |v| {
+                    const deg = graph.indegree.getPtr(v).?;
+                    deg.* -= 1;
+                    if (deg.* == 0) try next_queue.append(allocator, v);
                 }
             }
         }
-
         queue.clearRetainingCapacity();
         std.mem.swap(std.ArrayList(u32), &queue, &next_queue);
     }
 
-    if (remaining.count() > 0) {
+    // Nodes in cycles are leftover
+    if (processed_count < graph.all_nodes.count()) {
         var cycle_level = std.ArrayList(u32){};
-        for (ordered_nodes.items) |node| {
-            if (remaining.contains(node)) {
-                _ = remaining.remove(node);
-                try cycle_level.append(allocator, node);
-            }
+        var nit = graph.all_nodes.iterator();
+        while (nit.next()) |e| {
+            if (graph.indegree.get(e.key_ptr.*).? > 0) try cycle_level.append(allocator, e.key_ptr.*);
         }
-        if (cycle_level.items.len > 0) {
-            try result.levels.append(allocator, cycle_level);
-        } else {
-            cycle_level.deinit(allocator);
-        }
+        if (cycle_level.items.len > 0) try res.levels.append(allocator, cycle_level);
     }
 
-    return result;
+    return res;
 }
 
-/// Captures import cycles detected and the set of nodes blocked by them.
 pub const CycleReport = struct {
-    /// Allocator used for storing cycles/blocked lists.
     allocator: std.mem.Allocator,
-    /// Each recorded cycle contains file ids in the cycle.
     cycles: std.ArrayList(std.ArrayList(u32)),
-    /// Nodes blocked (not schedulable) because they participate in cycles.
     blocked: std.ArrayList(u32),
 
-    /// Initialize the report data structures.
     pub fn init(allocator: std.mem.Allocator) CycleReport {
         return .{ .allocator = allocator, .cycles = .{}, .blocked = .{} };
     }
-
-    /// Free all internal vectors used to record cycles/blocked nodes.
     pub fn deinit(self: *CycleReport) void {
-        for (self.cycles.items) |*cy| cy.deinit(self.allocator);
+        for (self.cycles.items) |*c| c.deinit(self.allocator);
         self.cycles.deinit(self.allocator);
         self.blocked.deinit(self.allocator);
     }
 };
 
-/// Find import cycles by DFS over the leftover dependency graph (after leveling).
-/// Each detected cycle is reported along with any remaining nodes blocked because of it.
-pub fn detectImportCycles(
-    allocator: std.mem.Allocator,
-    unit: *CompilationUnit,
-    interner: *cst.StringInterner,
-    source_manager: *SourceManager,
-) !CycleReport {
-    var report: CycleReport = .init(allocator);
+pub fn detectImportCycles(allocator: std.mem.Allocator, unit: *CompilationUnit, interner: *cst.StringInterner, sm: *SourceManager) !CycleReport {
+    var graph = try buildAdjacencyGraph(allocator, unit, interner, sm);
+    defer graph.deinit(allocator);
+    var report = CycleReport.init(allocator);
     errdefer report.deinit();
 
-    // Build indegree and adjacency identical to computeDependencyLevels
-    var indegree: std.AutoHashMap(u32, usize) = .init(allocator);
-    defer indegree.deinit();
-
-    var adjacency: std.AutoHashMap(u32, std.ArrayList(u32)) = .init(allocator);
-    defer {
-        var it = adjacency.iterator();
-        while (it.next()) |entry| entry.value_ptr.deinit(allocator);
-        adjacency.deinit();
-    }
-
-    var nodes: std.AutoHashMap(u32, void) = .init(allocator);
-    defer nodes.deinit();
-
-    // Collect all nodes (files) known to the unit
-    var pkg_iter = unit.packages.iterator();
-    while (pkg_iter.next()) |pkg| {
-        var source_iter = pkg.value_ptr.sources.iterator();
-        while (source_iter.next()) |entry| {
-            const file_id = entry.value_ptr.file_id;
-            if (indegree.getPtr(file_id) == null) try indegree.put(file_id, 0);
-            if (!nodes.contains(file_id)) try nodes.put(file_id, {});
-        }
-    }
-
-    var dep_iter = unit.dependencies.iterator();
-    while (dep_iter.next()) |entry| {
-        const file_id = entry.key_ptr.*;
-        if (indegree.getPtr(file_id) == null) try indegree.put(file_id, 0);
-        if (!nodes.contains(file_id)) try nodes.put(file_id, {});
-
-        var set_iter = entry.value_ptr.iterator();
-        while (set_iter.next()) |dep_entry| {
-            const dep_str = interner.get(dep_entry.key_ptr.*);
-            const dep_file_id = source_manager.find(dep_str) orelse continue;
-            if (dep_file_id == file_id) continue;
-
-            const indegree_ptr = indegree.getPtr(file_id) orelse blk: {
-                try indegree.put(file_id, 0);
-                break :blk indegree.getPtr(file_id).?;
-            };
-            indegree_ptr.* += 1;
-
-            var adj_ptr = adjacency.getPtr(dep_file_id) orelse blk: {
-                const list = std.ArrayList(u32){};
-                try adjacency.put(dep_file_id, list);
-                break :blk adjacency.getPtr(dep_file_id).?;
-            };
-            try adj_ptr.append(allocator, file_id);
-
-            if (indegree.getPtr(dep_file_id) == null) try indegree.put(dep_file_id, 0);
-            if (!nodes.contains(dep_file_id)) try nodes.put(dep_file_id, {});
-        }
-    }
-
-    // Kahn's algorithm to remove acyclic nodes and find remaining
+    // Re-run Kahn's partially to strip acyclic nodes
     var queue = std.ArrayList(u32){};
     defer queue.deinit(allocator);
-    var next_queue = std.ArrayList(u32){};
-    defer next_queue.deinit(allocator);
+    var it = graph.indegree.iterator();
+    while (it.next()) |e| if (e.value_ptr.* == 0) try queue.append(allocator, e.key_ptr.*);
 
-    var remaining: std.AutoHashMap(u32, void) = .init(allocator);
-    defer remaining.deinit();
-    {
-        var itn = nodes.iterator();
-        while (itn.next()) |n| try remaining.put(n.key_ptr.*, {});
-    }
-
-    var indegree_iter = indegree.iterator();
-    while (indegree_iter.next()) |entry| {
-        if (entry.value_ptr.* == 0) try queue.append(allocator, entry.key_ptr.*);
-    }
     while (queue.items.len > 0) {
-        for (queue.items) |node| {
-            _ = remaining.remove(node);
-        }
-        next_queue.clearRetainingCapacity();
-        for (queue.items) |node| {
-            if (adjacency.getPtr(node)) |neighbors| {
-                for (neighbors.items) |neighbor| {
-                    const indegree_ptr = indegree.getPtr(neighbor) orelse continue;
-                    if (indegree_ptr.* == 0) continue;
-                    indegree_ptr.* -= 1;
-                    if (indegree_ptr.* == 0) try next_queue.append(allocator, neighbor);
-                }
+        const u = queue.pop().?;
+        _ = graph.all_nodes.remove(u); // Remove from 'remaining' set
+        if (graph.adjacency.getPtr(u)) |vs| {
+            for (vs.items) |v| {
+                const deg = graph.indegree.getPtr(v).?;
+                deg.* -= 1;
+                if (deg.* == 0) try queue.append(allocator, v);
             }
         }
-        queue.clearRetainingCapacity();
-        std.mem.swap(std.ArrayList(u32), &queue, &next_queue);
     }
 
-    if (remaining.count() == 0) return report; // no cycles
+    if (graph.all_nodes.count() == 0) return report;
 
-    // DFS on remaining subgraph to find back edges (simple cycle reporting)
-    var visited: std.AutoHashMap(u32, bool) = .init(allocator);
+    // DFS for cycles on remaining subgraph
+    var visited = std.AutoHashMap(u32, bool).init(allocator);
     defer visited.deinit();
-    var onstack: std.AutoHashMap(u32, bool) = .init(allocator);
+    var onstack = std.AutoHashMap(u32, bool).init(allocator);
     defer onstack.deinit();
-    var in_cycle: std.AutoHashMap(u32, bool) = .init(allocator);
-    defer in_cycle.deinit();
     var stack = std.ArrayList(u32){};
     defer stack.deinit(allocator);
+    var in_cycle = std.AutoHashMap(u32, void).init(allocator);
+    defer in_cycle.deinit();
 
-    // Helper that serializes cycle nodes when DFS discovers a back edge.
-    const pushCycle = struct {
-        /// Capture nodes forming the cycle from `pos` onward.
-        fn go(rep: *CycleReport, st: *std.ArrayList(u32), pos: usize) !void {
-            var cyc = std.ArrayList(u32){};
-            try cyc.ensureTotalCapacity(rep.allocator, st.items.len - pos + 1);
-            for (st.items[pos..]) |n| try cyc.append(rep.allocator, n);
-            // close the loop by repeating the start node at end for display
-            try cyc.append(rep.allocator, st.items[pos]);
-            try rep.cycles.append(rep.allocator, cyc);
-        }
-    }.go;
+    // Recursive closure for DFS
+    const DfsCtx = struct {
+        g: *GraphData,
+        r: *CycleReport,
+        v: *std.AutoHashMap(u32, bool),
+        os: *std.AutoHashMap(u32, bool),
+        st: *std.ArrayList(u32),
+        ic: *std.AutoHashMap(u32, void),
+        alloc: std.mem.Allocator,
 
-    // DFS routine that walks the subgraph, marking cycles and back edges.
-    const dfs = struct {
-        /// Visit nodes starting at `node`, recording cycles/back edges.
-        fn go(
-            rep: *CycleReport,
-            allocator2: std.mem.Allocator,
-            node: u32,
-            adjacency2: *std.AutoHashMap(u32, std.ArrayList(u32)),
-            remaining2: *std.AutoHashMap(u32, void),
-            visited2: *std.AutoHashMap(u32, bool),
-            onstack2: *std.AutoHashMap(u32, bool),
-            st: *std.ArrayList(u32),
-            in_cycle2: *std.AutoHashMap(u32, bool),
-        ) !void {
-            if (!remaining2.contains(node)) return; // ignore removed nodes
-            if (visited2.contains(node)) return;
-            try visited2.put(node, true);
-            try onstack2.put(node, true);
-            try st.append(allocator2, node);
+        fn run(ctx: @This(), u: u32) !void {
+            try ctx.v.put(u, true);
+            try ctx.os.put(u, true);
+            try ctx.st.append(ctx.alloc, u);
 
-            if (adjacency2.getPtr(node)) |nbrs| {
-                for (nbrs.items) |nbr| {
-                    if (!remaining2.contains(nbr)) continue;
-                    if (!visited2.contains(nbr)) {
-                        try go(rep, allocator2, nbr, adjacency2, remaining2, visited2, onstack2, st, in_cycle2);
-                    } else if (onstack2.contains(nbr)) {
-                        // Found a back edge; extract cycle from stack
-                        var pos: usize = 0;
-                        while (pos < st.items.len and st.items[pos] != nbr) : (pos += 1) {}
-                        if (pos < st.items.len) {
-                            try pushCycle(rep, st, pos);
-                            // Mark nodes in this cycle
-                            for (st.items[pos..]) |n| _ = try in_cycle2.put(n, true);
+            if (ctx.g.adjacency.getPtr(u)) |vs| {
+                for (vs.items) |v| {
+                    if (!ctx.g.all_nodes.contains(v)) continue;
+                    if (!ctx.v.contains(v)) {
+                        try ctx.run(v);
+                    } else if (ctx.os.contains(v)) {
+                        // Cycle found
+                        var cyc = std.ArrayList(u32){};
+                        var idx: usize = 0;
+                        while (idx < ctx.st.items.len and ctx.st.items[idx] != v) : (idx += 1) {}
+                        if (idx < ctx.st.items.len) {
+                            try cyc.appendSlice(ctx.alloc, ctx.st.items[idx..]);
+                            try cyc.append(ctx.alloc, ctx.st.items[idx]); // Close loop
+                            for (cyc.items) |n| try ctx.ic.put(n, {});
+                            try ctx.r.cycles.append(ctx.alloc, cyc);
+                        } else {
+                            cyc.deinit(ctx.alloc);
                         }
                     }
                 }
             }
-
-            _ = onstack2.remove(node);
-            _ = st.pop();
+            _ = ctx.os.remove(u);
+            _ = ctx.st.pop();
         }
-    }.go;
+    };
 
-    // Run DFS from each remaining node
-    var rem_it = remaining.iterator();
-    while (rem_it.next()) |entry| {
-        const n = entry.key_ptr.*;
-        if (!visited.contains(n)) {
-            try dfs(&report, allocator, n, &adjacency, &remaining, &visited, &onstack, &stack, &in_cycle);
+    var nit = graph.all_nodes.iterator();
+    while (nit.next()) |e| {
+        if (!visited.contains(e.key_ptr.*)) {
+            try DfsCtx.run(.{ .g = &graph, .r = &report, .v = &visited, .os = &onstack, .st = &stack, .ic = &in_cycle, .alloc = allocator }, e.key_ptr.*);
         }
     }
 
-    // Blocked are remaining nodes not in any cycle set
-    rem_it = remaining.iterator();
-    while (rem_it.next()) |entry| {
-        const n = entry.key_ptr.*;
-        if (!in_cycle.contains(n)) {
-            try report.blocked.append(allocator, n);
-        }
+    // Populate blocked
+    nit = graph.all_nodes.iterator();
+    while (nit.next()) |e| {
+        if (!in_cycle.contains(e.key_ptr.*)) try report.blocked.append(allocator, e.key_ptr.*);
     }
 
     return report;
 }
 
-/// Create an MLIR context with all dialects, translations, and pass registrations.
 pub fn initMLIR(alloc: std.mem.Allocator) mlir.Context {
     mlir.setGlobalAlloc(alloc);
-    var mlir_context = mlir.Context.create();
-    const registry = mlir.DialectRegistry.create();
-    mlir.registerAllDialects(registry);
+    var ctx = mlir.Context.create();
+    const reg = mlir.DialectRegistry.create();
+    mlir.registerAllDialects(reg);
     if (!g_passes_registered) {
         mlir.registerAllPasses();
         g_passes_registered = true;
     }
-    mlir.registerAllLLVMTranslations(mlir_context);
-
-    mlir_context.appendDialectRegistry(registry);
-    mlir_context.loadAllAvailableDialects();
-    mlir_context.setAllowUnregisteredDialects(true);
-
-    return mlir_context;
+    mlir.registerAllLLVMTranslations(ctx);
+    ctx.appendDialectRegistry(reg);
+    ctx.loadAllAvailableDialects();
+    ctx.setAllowUnregisteredDialects(true);
+    return ctx;
 }
 
-/// Run the canonical MLIR lowering pipeline on `module`.
 pub fn run_passes(context: *mlir.Context, module: *mlir.Module) !void {
     const pm = mlir.c.mlirPassManagerCreate(context.handle);
     defer mlir.c.mlirPassManagerDestroy(pm);
-    const pipeline =
-        "canonicalize,cse,symbol-dce," ++
-        "empty-tensor-to-alloc-tensor," ++
-        "convert-elementwise-to-linalg," ++
-        "one-shot-bufferize{bufferize-function-boundaries=true allow-unknown-ops=true}," ++
-        // "lift-cf-to-scf," ++
-        // "buffer-deallocation-pipeline," ++
-        "canonicalize,cse," ++
-        "async-to-async-runtime," ++
-        "async-runtime-ref-counting," ++
-        "async-runtime-ref-counting-opt," ++
-        "convert-bufferization-to-memref," ++
-        "convert-linalg-to-loops," ++
-        "loop-invariant-code-motion," ++
-        "lower-affine," ++
-        "convert-vector-to-llvm," ++
 
-        // Control flow & math
-        "convert-scf-to-cf," ++
-        "arith-expand," ++ //                  # (if wide-int/index/mulhs etc. show up)
-        "convert-math-to-llvm," ++ //          # (if math dialect is present)
+    // Canonicalization pipeline
+    const pipeline = "canonicalize,cse,symbol-dce,empty-tensor-to-alloc-tensor,convert-elementwise-to-linalg,one-shot-bufferize{bufferize-function-boundaries=true allow-unknown-ops=true},canonicalize,cse,async-to-async-runtime,async-runtime-ref-counting,async-runtime-ref-counting-opt,convert-bufferization-to-memref,convert-linalg-to-loops,loop-invariant-code-motion,lower-affine,convert-vector-to-llvm,convert-scf-to-cf,arith-expand,convert-math-to-llvm,expand-strided-metadata,fold-memref-alias-ops,finalize-memref-to-llvm,convert-async-to-llvm,convert-complex-to-llvm,convert-arith-to-llvm,convert-func-to-llvm,convert-cf-to-llvm,reconcile-unrealized-casts,llvm-legalize-for-export";
 
-        "expand-strided-metadata," ++
-        "fold-memref-alias-ops," ++
-
-        // To LLVM
-        "finalize-memref-to-llvm," ++
-        "convert-async-to-llvm," ++
-        "convert-complex-to-llvm," ++
-        "convert-arith-to-llvm," ++
-        "convert-func-to-llvm," ++
-        "convert-cf-to-llvm," ++
-        // "convert-ub-to-llvm," ++
-        "reconcile-unrealized-casts," ++
-        "llvm-legalize-for-export";
     const op_pm = mlir.c.mlirPassManagerGetAsOpPassManager(pm);
-    var result = mlir.c.mlirOpPassManagerAddPipeline(op_pm, mlir.c.mlirStringRefCreateFromCString(@ptrCast(pipeline)), callback, null);
-
-    if (mlir.c.mlirLogicalResultIsFailure(result)) {
-        std.debug.print("Failed to create pass pipeline\n", .{});
+    const pipe_str = mlir.c.mlirStringRefCreateFromCString(@ptrCast(pipeline));
+    if (mlir.c.mlirLogicalResultIsFailure(mlir.c.mlirOpPassManagerAddPipeline(op_pm, pipe_str, callback, null))) {
         return error.PassPipelineCreationFailed;
     }
 
-    // Run the pass manager on the module
-    const c_module = module.getOperation().clone();
-    result = mlir.c.mlirPassManagerRunOnOp(pm, module.getOperation().handle);
-
-    if (mlir.c.mlirLogicalResultIsFailure(result)) {
-        std.debug.print("Pass manager failed\n", .{});
-        c_module.dump();
+    if (mlir.c.mlirLogicalResultIsFailure(mlir.c.mlirPassManagerRunOnOp(pm, module.getOperation().handle))) {
+        module.getOperation().clone().dump();
         return error.PassManagerFailed;
     }
 }
 
-/// Logging hook invoked by the MLIR pass manager when emitting diagnostics.
-fn callback(msg: mlir.c.MlirStringRef, data: ?*anyopaque) callconv(.c) void {
-    const message = std.mem.sliceAsBytes(msg.data[0..msg.length]);
-    std.debug.print("{s}", .{message});
-    _ = data;
+fn callback(msg: mlir.c.MlirStringRef, _: ?*anyopaque) callconv(.c) void {
+    std.debug.print("{s}", .{std.mem.sliceAsBytes(msg.data[0..msg.length])});
 }
 
-/// JIT the given MLIR `module` via MLIR's execution engine (suitable for tests).
 pub fn runJit(module: mlir.c.MlirModule) void {
     _ = mlir.c.LLVMInitializeNativeTarget();
     _ = mlir.c.LLVMInitializeNativeAsmPrinter();
-
-    const engine = mlir.c.mlirExecutionEngineCreate(module, 3, 0, null, false);
-    if (mlir.c.mlirExecutionEngineIsNull(engine)) {
-        std.debug.print("Failed to create execution engine\n", .{});
+    const eng = mlir.c.mlirExecutionEngineCreate(module, 3, 0, null, false);
+    if (mlir.c.mlirExecutionEngineIsNull(eng)) {
+        std.debug.print("JIT Engine creation failed\n", .{});
         return;
     }
-
-    const result = mlir.c.mlirExecutionEngineInvokePacked(engine, mlir.c.mlirStringRefCreateFromCString("main"), null);
-    if (mlir.c.mlirLogicalResultIsFailure(result)) {
-        std.debug.print("Failed to invoke main function\n", .{});
-        return;
+    if (mlir.c.mlirLogicalResultIsFailure(mlir.c.mlirExecutionEngineInvokePacked(eng, mlir.c.mlirStringRefCreateFromCString("main"), null))) {
+        std.debug.print("JIT invoke main failed\n", .{});
     }
 }
 
-/// Mode that determines how far we lower/run the generated LLVM module.
-const Mode = enum {
-    /// Only print raw LLVM IR.
-    llvm_ir,
-    /// Execute LLVM passes and print optimized IR.
-    llvm_passes,
-    /// Run full compile+link pipeline and produce executable.
-    compile,
-};
+pub const Mode = enum { llvm_ir, llvm_passes, compile };
 
-/// Translate `module` through MLIR to LLVM IR, optionally running passes or invoking clang.
-pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const u8, mode: Mode, optimization_level: ?[]const u8, debug_info: bool) !void {
-    const print_ir = mode != .compile;
+pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const u8, mode: Mode, opt_lvl: ?[]const u8, debug: bool) !void {
     _ = mlir.c.LLVMInitializeNativeTarget();
     _ = mlir.c.LLVMInitializeNativeAsmPrinter();
     _ = mlir.c.LLVMInitializeNativeAsmParser();
 
-    const llvmContext = mlir.c.LLVMContextCreate();
-    const llvmIR = mlir.c.mlirTranslateModuleToLLVMIR(mlir.c.mlirModuleGetOperation(module), llvmContext);
-    if (llvmIR == null) return error.CompilationFailed;
+    const ctx = mlir.c.LLVMContextCreate();
+    defer mlir.c.LLVMContextDispose(ctx);
+    const ir = mlir.c.mlirTranslateModuleToLLVMIR(mlir.c.mlirModuleGetOperation(module), ctx);
+    if (ir == null) return error.CompilationFailed;
 
-    if (print_ir)
-        mlir.c.LLVMDumpModule(llvmIR);
+    if (mode != .compile) mlir.c.LLVMDumpModule(ir);
     if (mode == .llvm_ir) return;
 
-    const targetTriple = mlir.c.LLVMGetDefaultTargetTriple();
-    const features = "";
-    const cpu = "";
-
-    // Get target from triple BEFORE creating target machine
     var target: mlir.c.LLVMTargetRef = undefined;
     var err: [*c]u8 = undefined;
-    if (mlir.c.LLVMGetTargetFromTriple(targetTriple[0..], &target, &err) != 0) {
-        std.debug.print("Error finding target: {s}\n", .{err});
+    const triple = mlir.c.LLVMGetDefaultTargetTriple();
+    if (mlir.c.LLVMGetTargetFromTriple(triple, &target, &err) != 0) {
+        std.debug.print("Target Error: {s}\n", .{err});
         mlir.c.LLVMDisposeMessage(err);
         return error.TargetNotFound;
     }
 
-    const targetMachine = mlir.c.LLVMCreateTargetMachine(target, targetTriple, cpu, features, mlir.c.LLVMCodeGenLevelNone, mlir.c.LLVMRelocPIC, mlir.c.LLVMCodeModelDefault);
+    const tm = mlir.c.LLVMCreateTargetMachine(target, triple, "", "", mlir.c.LLVMCodeGenLevelNone, mlir.c.LLVMRelocPIC, mlir.c.LLVMCodeModelDefault);
+    defer mlir.c.LLVMDisposeTargetMachine(tm);
 
-    defer {
-        mlir.c.LLVMDisposeTargetMachine(targetMachine);
-        mlir.c.LLVMContextDispose(llvmContext);
-    }
-    // Create the pass manager
-    const pass_manager = mlir.c.LLVMCreatePassManager();
-    defer mlir.c.LLVMDisposePassManager(pass_manager);
-    // Set up the pass builder options
-    const passBuilderOptions = mlir.c.LLVMCreatePassBuilderOptions();
-    defer mlir.c.LLVMDisposePassBuilderOptions(passBuilderOptions);
+    const builder_opts = mlir.c.LLVMCreatePassBuilderOptions();
+    defer mlir.c.LLVMDisposePassBuilderOptions(builder_opts);
 
-    // Run the default O{level} optimization pipeline
-    const opt_level_str = optimization_level orelse "0";
-    var passes_buf: [32]u8 = undefined;
-    const passes = try std.fmt.bufPrintZ(&passes_buf, "default<O{s}>", .{opt_level_str});
+    var pass_buf: [32]u8 = undefined;
+    const passes = try std.fmt.bufPrintZ(&pass_buf, "default<O{s}>", .{opt_lvl orelse "0"});
 
-    const pass_err = mlir.c.LLVMRunPasses(llvmIR, passes, targetMachine, passBuilderOptions);
-    _ = pass_err;
-    _ = mlir.c.LLVMRunPassManager(pass_manager, llvmIR);
-    if (mlir.c.LLVMGetTargetFromTriple(mlir.c.LLVMGetDefaultTargetTriple(), &target, &err) != 0) {
-        std.debug.print("Error finding target: {s}\n", .{err});
-        mlir.c.LLVMDisposeMessage(err);
-        return error.TargetNotFound;
-    }
-    if (print_ir) {
-        std.debug.print("Optimized LLVM IR:\n", .{});
-        mlir.c.LLVMDumpModule(llvmIR);
-    }
+    if (mlir.c.LLVMRunPasses(ir, passes, tm, builder_opts) != null) return error.PassManagerFailed;
+    if (mode != .compile) mlir.c.LLVMDumpModule(ir);
     if (mode == .llvm_passes) return;
 
-    // make output dir
-    if (std.fs.cwd().access("out", .{})) |_| {} else |_| try std.fs.cwd().makeDir("out");
-
-    const llFileName = "out/output.ll";
-    if (mlir.c.LLVMPrintModuleToFile(llvmIR, llFileName, &err) != 0) {
-        std.debug.print("Error writing LLVM IR to file: {s}\n", .{err});
+    std.fs.cwd().makeDir("out") catch |e| if (e != error.PathAlreadyExists) return e;
+    if (mlir.c.LLVMPrintModuleToFile(ir, "out/output.ll", &err) != 0) {
+        std.debug.print("Emit Error: {s}\n", .{err});
         mlir.c.LLVMDisposeMessage(err);
         return error.ObjectFileEmissionFailed;
     }
 
-    // Link object file and run executable
-    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    // Link
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    const allocator = arena.allocator();
+    const alloc = arena.allocator();
 
-    var args: std.ArrayList([]const u8) = .empty;
-    defer args.deinit(allocator);
-    try args.append(allocator, "clang");
-    const opt_level_arg = try std.fmt.allocPrint(allocator, "-O{s}", .{optimization_level orelse "0"});
-    try args.append(allocator, opt_level_arg);
-    if (debug_info) {
-        try args.append(allocator, "-g");
-    }
-    try args.append(allocator, "-o");
-    try args.append(allocator, "out/output_program");
-    try args.append(allocator, "out/output.ll");
-    // Link the language runtime (static)
-    const exe_path = try std.fs.selfExeDirPathAlloc(allocator);
-    defer allocator.free(exe_path);
-    const runtime_path = try std.fs.path.join(
-        allocator,
-        &.{ exe_path[0 .. exe_path.len - 4], "lib/libsr_runtime.a" },
-    );
-    defer allocator.free(runtime_path);
-    try args.append(allocator, runtime_path);
-    // Ensure local out dir is searched at link and runtime for shared libs
-    try args.append(allocator, "-Wl,-rpath,./out");
-    try args.append(allocator, "-Lout");
-    // Link MLIR async runtime only when async lowering is present.
-    var mod_op = mlir.Operation{ .handle = mlir.c.mlirModuleGetOperation(module) };
-    const async_attr = mod_op.getDiscardableAttributeByName(mlir.StringRef.from("sr.has_async"));
-    if (!async_attr.isNull()) {
-        try args.append(allocator, "-L/usr/local/lib");
-        try args.append(allocator, "-Wl,-rpath,/usr/local/lib");
-        try args.append(allocator, "-lmlir_async_runtime");
-    }
+    var cmd = std.ArrayList([]const u8){};
+    try cmd.appendSlice(alloc, &[_][]const u8{ "clang", try std.fmt.allocPrint(alloc, "-O{s}", .{opt_lvl orelse "0"}) });
+    if (debug) try cmd.append(alloc, "-g");
+    try cmd.appendSlice(alloc, &[_][]const u8{ "-o", "out/output_program", "out/output.ll" });
 
-    // Append user-provided link args (e.g., -L/usr/local/lib, -lraylib, ./out/mylib.so)
-    for (link_args) |la| {
-        try args.append(allocator, la);
-    }
+    const exe_dir = try std.fs.selfExeDirPathAlloc(alloc);
+    const rt_path = try std.fs.path.join(alloc, &.{ exe_dir[0 .. exe_dir.len - 4], "lib/libsr_runtime.a" });
+    try cmd.append(alloc, rt_path);
+    try cmd.appendSlice(alloc, &[_][]const u8{ "-Wl,-rpath,./out", "-Lout" });
 
-    var child: std.process.Child = .init(args.items, allocator);
-    child.spawn() catch {
-        return error.LinkFailed;
-    };
-    const term = child.wait() catch {
-        return error.LinkFailed;
-    };
-    switch (term) {
-        .Exited => |code| {
-            if (code != 0) {
-                return error.LinkFailed;
-            }
-        },
-        else => return error.LinkFailed,
+    var op = mlir.Operation{ .handle = mlir.c.mlirModuleGetOperation(module) };
+    if (!op.getDiscardableAttributeByName(mlir.StringRef.from("sr.has_async")).isNull()) {
+        try cmd.appendSlice(alloc, &[_][]const u8{ "-L/usr/local/lib", "-Wl,-rpath,/usr/local/lib", "-lmlir_async_runtime" });
     }
+    try cmd.appendSlice(alloc, link_args);
+
+    var child = std.process.Child.init(cmd.items, alloc);
+    const term = child.spawnAndWait() catch return error.LinkFailed;
+    if (term != .Exited or term.Exited != 0) return error.LinkFailed;
 }
 
-/// Run the compiled `out/output_program` executable (helper used by tests).
-/// Launch the compiled program and return its exit code.
 pub fn runWithStatus() !u8 {
-    const argv = &[_][]const u8{"out/output_program"};
-    var child: std.process.Child = .init(argv, std.heap.page_allocator);
-    try child.spawn();
-    const term = try child.wait();
+    var child = std.process.Child.init(&[_][]const u8{"out/output_program"}, std.heap.page_allocator);
+    const term = try child.spawnAndWait();
     return switch (term) {
-        .Exited => |code| @intCast(code),
+        .Exited => |c| @intCast(c),
         else => error.ProgramFailed,
     };
 }
 
-/// Launch the compiled program, ignoring its exit status (legacy helper).
 pub fn run() void {
-    _ = runWithStatus() catch unreachable;
+    _ = runWithStatus() catch {};
 }

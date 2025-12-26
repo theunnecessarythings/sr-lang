@@ -22,130 +22,99 @@ const Context = @import("compile.zig").Context;
 const Pipeline = pipeline_mod.Pipeline;
 const Builder = tir.Builder;
 const List = std.ArrayList;
-/// Metadata for a value binding tracked during lowering (value id + type info).
+
+/// Metadata for a value binding tracked during lowering.
 pub const ValueBinding = struct {
-    /// SSA value identifier produced for the binding.
     value: tir.ValueId,
-    /// Declared or inferred type for the bound value.
     ty: types.TypeId,
-    /// Indicates whether the binding refers to a storage slot instead of a pure value.
     is_slot: bool,
 };
 
-/// Snapshot entry showing the previous binding for a name so it can be restored.
+/// Snapshot entry showing the previous binding for a name.
 pub const EnvBindingSnapshot = struct {
-    /// Identifier whose binding is being restored.
     name: ast.StrId,
-    /// Prior binding that should be reinstated after binding overrides.
     prev: ?ValueBinding,
 };
 
-/// Tracks temporary expression type overrides introduced during lowering.
 const ExprTypeOverrideFrame = struct {
-    /// Stores temporary overrides from lowering heuristics keyed by expr ID.
     map: std.AutoArrayHashMapUnmanaged(u32, types.TypeId) = .{},
-
-    /// Release the map that tracks temporary type overrides.
     fn deinit(self: *ExprTypeOverrideFrame, gpa: std.mem.Allocator) void {
         self.map.deinit(gpa);
     }
 };
 
 const FunctionDeclContext = call_resolution.FunctionDeclContext;
-
-/// Driver for lowering AST units into TIR, managing builder contexts.
 pub const LowerTir = @This();
 
-/// Allocator for TIR lowering resources.
 gpa: std.mem.Allocator,
-/// Compilation context shared across pipeline stages.
 context: *Context,
-/// Pipeline configuration controlling which passes run.
 pipeline: *Pipeline,
-/// Checker used to validate AST nodes during lowering.
 chk: *checker.Checker,
-/// Stack of lowering contexts per file/function scope.
 lower_context: List(*LowerContext) = .{},
-/// When enabled, generate a test harness and suppress user-defined main.
 test_mode: bool = false,
-/// Accumulated list of lowered test functions (symbol + type).
 test_funcs: std.ArrayList(TestFunc) = .{},
-/// Ensures the harness is emitted only once.
 harness_emitted: bool = false,
-/// Name of the entry package that drives lowering (defaults to "main").
 entry_pkg_name: StrId,
-/// Tracks whether the entry package was selected from discovered tests.
 entry_pkg_locked: bool = false,
 
 const TestFunc = struct { sym: StrId, ty: types.TypeId, name: ?ast.StrId };
 
-/// Per-function/module lowering state that tracks loops and expression overrides.
 pub const LowerContext = struct {
-    /// Stack of active loop contexts for control-flow lowering.
     loop_stack: List(cf.LoopCtx) = .{},
-    /// Stack storing expression type overrides introduced by lowering heuristics.
     expr_type_override_stack: List(ExprTypeOverrideFrame) = .{},
-    /// Scratch list for match binding names to avoid reallocations.
     pattern_binding_names: List(ast.StrId) = .{},
-    /// Scratch list for saving/restoring bindings during match lowering.
     binding_snapshots: List(EnvBindingSnapshot) = .{},
-    /// Allocator owned by the lowering context.
+    // Scratch buffers to reduce allocs in hot loops
+    mlir_scratch_pieces: List(tir.MlirPieceId) = .{},
+    mlir_scratch_values: List(tir.ValueId) = .{},
+
     gpa: std.mem.Allocator,
-    /// Active TIR builder emitting instructions for the current function.
     builder: ?*tir.Builder = null,
 
-    /// Destroy all comptime state and snapshots owned by this context.
     pub fn deinit(self: *LowerContext, gga: std.mem.Allocator) void {
         self.loop_stack.deinit(gga);
-        while (self.expr_type_override_stack.items.len > 0) {
-            self.expr_type_override_stack.items[self.expr_type_override_stack.items.len - 1].deinit(gga);
-            self.expr_type_override_stack.items.len -= 1;
+        while (self.expr_type_override_stack.pop()) |frame| {
+            var f = frame;
+            f.deinit(gga);
         }
         self.expr_type_override_stack.deinit(gga);
         self.pattern_binding_names.deinit(gga);
         self.binding_snapshots.deinit(gga);
+        self.mlir_scratch_pieces.deinit(gga);
+        self.mlir_scratch_values.deinit(gga);
     }
 };
 
-/// Prefix exported symbols with their package name unless they belong to `main`.
 pub fn qualifySymbolName(self: *LowerTir, a: *ast.Ast, base: StrId) !StrId {
     if (a.unit.package_name.isNone()) return base;
+
+    const ts = self.context.type_store;
     const pkg_id = a.unit.package_name.unwrap();
-    const pkg_name = self.context.type_store.strs.get(pkg_id);
+    const pkg_name = ts.strs.get(pkg_id);
+
     if (std.mem.eql(u8, pkg_name, "main")) return base;
-    const base_name = self.context.type_store.strs.get(base);
+
+    const base_name = ts.strs.get(base);
     const symbol = try std.fmt.allocPrint(self.gpa, "{s}__{s}", .{ pkg_name, base_name });
     defer self.gpa.free(symbol);
-    return self.context.type_store.strs.intern(symbol);
+    return ts.strs.intern(symbol);
 }
 
-/// Find an AST unit by file id.
 fn astForFileId(self: *LowerTir, file_id: u32) ?*ast.Ast {
     var pkg_iter = self.context.compilation_unit.packages.iterator();
     while (pkg_iter.next()) |pkg| {
-        var src_iter = pkg.value_ptr.sources.iterator();
-        while (src_iter.next()) |entry| {
-            if (entry.value_ptr.file_id == file_id) {
-                return entry.value_ptr.ast;
-            }
+        var source_iter = pkg.value_ptr.sources.iterator();
+        while (source_iter.next()) |entry| {
+            if (entry.value_ptr.file_id == file_id) return entry.value_ptr.ast;
         }
     }
     return null;
 }
 
-/// Global flag tracking whether MLIR dialect/pass registrations were initialized.
 pub var g_mlir_inited: bool = false;
-/// Cached MLIR context shared across lowering runs.
 pub var g_mlir_ctx: mlir.Context = undefined;
 
-/// Instantiate a TIR lowering driver with the provided context/pipeline/checker.
-pub fn init(
-    gpa: std.mem.Allocator,
-    context: *Context,
-    pipeline: *Pipeline,
-    chk: *checker.Checker,
-    test_mode: bool,
-) LowerTir {
+pub fn init(gpa: std.mem.Allocator, context: *Context, pipeline: *Pipeline, chk: *checker.Checker, test_mode: bool) LowerTir {
     return .{
         .gpa = gpa,
         .context = context,
@@ -153,29 +122,25 @@ pub fn init(
         .chk = chk,
         .lower_context = .{},
         .test_mode = test_mode,
-        .test_funcs = .empty,
         .entry_pkg_name = context.type_store.strs.intern("main"),
-        .entry_pkg_locked = false,
     };
 }
 
-/// Release owned buffers used by the lowering driver.
 pub fn deinit(self: *LowerTir) void {
     self.test_funcs.deinit(self.gpa);
 }
 
-/// Report a lowering failure at `loc`, emit a diagnostic, and surface `LoweringBug`.
 fn throwErr(self: *LowerTir, loc: Loc) anyerror {
     std.debug.dumpCurrentStackTrace(null);
     try self.context.diags.addError(loc, .tir_lowering_failed, .{});
     return error.LoweringBug;
 }
 
-/// Lower every file in dependency order, producing a complete TIR module for main.
 pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
     var unit_by_file: std.AutoHashMap(u32, *package.FileUnit) = .init(self.gpa);
     defer unit_by_file.deinit();
 
+    // Populate lookup map
     var pkg_iter = self.context.compilation_unit.packages.iterator();
     while (pkg_iter.next()) |pkg| {
         var source_iter = pkg.value_ptr.sources.iterator();
@@ -186,37 +151,16 @@ pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
 
     if (self.test_mode) try self.collectTestFunctions(&unit_by_file);
 
+    // Process levels
     for (levels.levels.items) |level| {
-        if (level.items.len == 0) continue;
-
         for (level.items) |file_id| {
-            const unit = unit_by_file.get(file_id) orelse continue;
-            if (unit.ast == null) continue;
-            const t = try self.gpa.create(tir.TIR);
-            t.* = tir.TIR.init(self.gpa, self.context.type_store);
-            const ctx = try self.gpa.create(LowerContext);
-            ctx.* = LowerContext{
-                .expr_type_override_stack = .{},
-                .gpa = self.gpa,
-                .builder = null,
-            };
-            self.runAst(unit.ast.?, t, ctx) catch {
-                ctx.deinit(self.gpa);
-                self.gpa.destroy(ctx);
-                t.deinit();
-                self.gpa.destroy(t);
-                self.throwErr(.init(file_id, 0, 0)) catch {};
-                return error.TirLoweringFailed;
-            };
-            ctx.deinit(self.gpa);
-            self.gpa.destroy(ctx);
-            unit.tir = t;
+            try self.lowerFileUnit(file_id, &unit_by_file);
         }
     }
 
+    // Resolve entry package
     const entry_pkg_name_str = self.context.type_store.strs.get(self.entry_pkg_name);
-    var entry_pkg: *package.Package = blk: {
-        if (self.context.compilation_unit.packages.getPtr(entry_pkg_name_str)) |pkg| break :blk pkg;
+    const entry_pkg = self.context.compilation_unit.packages.getPtr(entry_pkg_name_str) orelse blk: {
         var it = self.context.compilation_unit.packages.iterator();
         const first = it.next() orelse return error.PackageNotFound;
         self.entry_pkg_name = self.context.type_store.strs.intern(first.value_ptr.name);
@@ -226,47 +170,76 @@ pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
     return entry_pkg.sources.entries.get(0).value.tir.?;
 }
 
-/// Gather all test functions across packages so the harness can invoke them.
+fn lowerFileUnit(self: *LowerTir, file_id: u32, unit_by_file: *std.AutoHashMap(u32, *package.FileUnit)) !void {
+    const unit = unit_by_file.get(file_id) orelse return;
+    const ast_ptr = unit.ast orelse return;
+
+    const t = try self.gpa.create(tir.TIR);
+    t.* = tir.TIR.init(self.gpa, self.context.type_store);
+
+    const ctx = try self.gpa.create(LowerContext);
+    ctx.* = LowerContext{ .gpa = self.gpa };
+    defer {
+        ctx.deinit(self.gpa);
+        self.gpa.destroy(ctx);
+    }
+
+    self.runAst(ast_ptr, t, ctx) catch {
+        t.deinit();
+        self.gpa.destroy(t);
+        return self.throwErr(.init(file_id, 0, 0));
+    };
+    unit.tir = t;
+}
+
 fn collectTestFunctions(self: *LowerTir, unit_by_file: *std.AutoHashMap(u32, *package.FileUnit)) !void {
+    const ts = self.context.type_store;
+    const test_sid = ts.strs.intern("test");
+
     var it = unit_by_file.iterator();
     while (it.next()) |entry| {
         const unit = entry.value_ptr.*;
         const ast_unit = unit.ast orelse continue;
-
         const decls = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
+
         for (decls) |did| {
             const decl = ast_unit.exprs.Decl.get(did);
             if (ast_unit.kind(decl.value) != .FunctionLit) continue;
+
             const fnr = ast_unit.exprs.get(.FunctionLit, decl.value);
             if (!fnr.flags.is_test) continue;
-            if (did.toRaw() >= ast_unit.type_info.decl_types.items.len) continue;
-            const ty_opt = ast_unit.type_info.decl_types.items[did.toRaw()] orelse continue;
-            if (self.context.type_store.getKind(ty_opt) == .TypeError) continue;
+
+            const raw_did = did.toRaw();
+            if (raw_did >= ast_unit.type_info.decl_types.items.len) continue;
+
+            const ty_opt = ast_unit.type_info.decl_types.items[raw_did] orelse continue;
+            if (ts.getKind(ty_opt) == .TypeError) continue;
 
             const sym = (try self.symbolNameForDecl(ast_unit, did)) orelse continue;
             var test_name: ?ast.StrId = null;
+
             if (!fnr.attrs.isNone()) {
                 const attrs = ast_unit.exprs.attr_pool.slice(fnr.attrs.asRange());
-                const test_sid = self.context.type_store.strs.intern("test");
                 for (attrs) |aid| {
                     const arow = ast_unit.exprs.Attribute.get(aid);
-                    if (!arow.name.eq(test_sid)) continue;
-                    if (arow.value.isNone()) continue;
-                    const val_id = arow.value.unwrap();
-                    if (ast_unit.kind(val_id) != .Literal) continue;
-                    const lit = ast_unit.exprs.get(.Literal, val_id);
-                    if (lit.kind == .string) {
-                        test_name = lit.data.string;
-                        break;
+                    if (arow.name.eq(test_sid) and !arow.value.isNone()) {
+                        const val_id = arow.value.unwrap();
+                        if (ast_unit.kind(val_id) == .Literal) {
+                            const lit = ast_unit.exprs.get(.Literal, val_id);
+                            if (lit.kind == .string) {
+                                test_name = lit.data.string;
+                                break;
+                            }
+                        }
                     }
                 }
             }
+
             if (!self.entry_pkg_locked) {
-                if (!ast_unit.unit.package_name.isNone()) {
-                    self.entry_pkg_name = ast_unit.unit.package_name.unwrap();
-                } else {
-                    self.entry_pkg_name = self.context.type_store.strs.intern("main");
-                }
+                self.entry_pkg_name = if (!ast_unit.unit.package_name.isNone())
+                    ast_unit.unit.package_name.unwrap()
+                else
+                    ts.strs.intern("main");
                 self.entry_pkg_locked = true;
             }
 
@@ -275,26 +248,164 @@ fn collectTestFunctions(self: *LowerTir, unit_by_file: *std.AutoHashMap(u32, *pa
     }
 }
 
-fn isMainPackageName(self: *const LowerTir, ast_unit: *ast.Ast) bool {
-    if (ast_unit.unit.package_name.isNone()) return true;
-    const pkg_id = ast_unit.unit.package_name.unwrap();
-    const pkg_name = self.context.type_store.strs.get(pkg_id);
-    const entry_name = self.context.type_store.strs.get(self.entry_pkg_name);
-    return std.mem.eql(u8, pkg_name, entry_name);
+fn emitTestHarness(self: *LowerTir, _: *LowerContext, _: *ast.Ast, b: *Builder) !void {
+    if (self.test_funcs.items.len == 0) return;
+
+    const ts = self.context.type_store;
+    const i32_ty = ts.tI32();
+    var f = try b.beginFunction(self.context, ts.strs.intern("main"), i32_ty, false, false, .empty(), false, false, .none());
+    var blk = try b.beginBlock(&f);
+
+    const zero = b.tirValue(.ConstInt, &blk, i32_ty, .none(), .{ .value = 0 });
+    var failures = zero;
+
+    const ptr_u8_const = ts.mkPtr(ts.tU8(), true);
+    const rt_print_sym = ts.strs.intern("rt_print");
+    const printf_sym = ts.strs.intern("printf");
+
+    for (self.test_funcs.items) |tf| {
+        if (ts.getKind(tf.ty) != .Function) continue;
+        const fn_info = ts.get(.Function, tf.ty);
+        const call_v = b.call(&blk, fn_info.result, tf.sym, &.{}, .none());
+        try self.emitTestResult(b, &f, &blk, call_v, fn_info.result, ts.strs.get(tf.name orelse tf.sym), &failures, ptr_u8_const, rt_print_sym);
+    }
+
+    try self.emitTestSummary(b, &blk, failures, ptr_u8_const, printf_sym);
+    try b.setReturnVal(&blk, failures, .none());
+    try b.endBlock(&f, blk);
+    try b.endFunction(f);
+    self.harness_emitted = true;
 }
 
-/// Lower a single AST unit into the provided TIR builder/context.
+fn emitTestResult(
+    self: *LowerTir,
+    b: *Builder,
+    f: *Builder.FunctionFrame,
+    blk: *Builder.BlockFrame,
+    call_v: tir.ValueId,
+    ret_ty: types.TypeId,
+    test_name: []const u8,
+    failures: *tir.ValueId,
+    ptr_u8_ty: types.TypeId,
+    rt_print_sym: StrId,
+) !void {
+    const ts = self.context.type_store;
+    const i32_ty = ts.tI32();
+    const usize_ty = ts.tUsize();
+
+    const pass_msg_bytes = try std.fmt.allocPrint(self.gpa, "\x1b[32mTest '{s}' passed\x1b[0m\n", .{test_name});
+    defer self.gpa.free(pass_msg_bytes);
+    const pass_msg = b.tirValue(.ConstString, blk, ts.tString(), .none(), .{ .text = ts.strs.intern(pass_msg_bytes) });
+
+    if (ts.getKind(ret_ty) == .ErrorSet) {
+        const fail_msg_bytes = try std.fmt.allocPrint(self.gpa, "\x1b[31mTest '{s}' failed\x1b[0m\n", .{test_name});
+        defer self.gpa.free(fail_msg_bytes);
+        const fail_msg = b.tirValue(.ConstString, blk, ts.tString(), .none(), .{ .text = ts.strs.intern(fail_msg_bytes) });
+
+        const is_err = b.binBool(blk, .CmpNe, b.extractField(blk, i32_ty, call_v, 0, .none()), b.tirValue(.ConstInt, blk, i32_ty, .none(), .{ .value = 0 }), .none());
+
+        failures.* = b.bin(blk, .Add, i32_ty, failures.*, b.un1(blk, .CastNormal, i32_ty, is_err, .none()), .none());
+
+        var pass_blk = try b.beginBlock(f);
+        var fail_blk = try b.beginBlock(f);
+        const cont_blk = try b.beginBlock(f);
+
+        try b.condBr(blk, is_err, fail_blk.id, &.{}, pass_blk.id, &.{}, .none());
+        try b.endBlock(f, blk.*);
+
+        // Fail Path
+        _ = b.call(&fail_blk, ts.tVoid(), rt_print_sym, &.{ b.extractField(&fail_blk, ptr_u8_ty, fail_msg, 0, .none()), b.extractField(&fail_blk, usize_ty, fail_msg, 1, .none()) }, .none());
+        try b.br(&fail_blk, cont_blk.id, &.{}, .none());
+        try b.endBlock(f, fail_blk);
+
+        // Pass Path
+        _ = b.call(&pass_blk, ts.tVoid(), rt_print_sym, &.{ b.extractField(&pass_blk, ptr_u8_ty, pass_msg, 0, .none()), b.extractField(&pass_blk, usize_ty, pass_msg, 1, .none()) }, .none());
+        try b.br(&pass_blk, cont_blk.id, &.{}, .none());
+        try b.endBlock(f, pass_blk);
+
+        blk.* = cont_blk;
+    } else {
+        _ = b.call(blk, ts.tVoid(), rt_print_sym, &.{ b.extractField(blk, ptr_u8_ty, pass_msg, 0, .none()), b.extractField(blk, usize_ty, pass_msg, 1, .none()) }, .none());
+    }
+}
+
+fn emitTestSummary(self: *LowerTir, b: *Builder, blk: *Builder.BlockFrame, failures: tir.ValueId, ptr_u8_ty: types.TypeId, printf_sym: StrId) !void {
+    const ts = self.context.type_store;
+    const i32_ty = ts.tI32();
+    const passed = b.bin(blk, .Sub, i32_ty, b.tirValue(.ConstInt, blk, i32_ty, .none(), .{ .value = self.test_funcs.items.len }), failures, .none());
+    const summary_fmt = b.tirValue(.ConstString, blk, ts.tString(), .none(), .{ .text = ts.strs.intern("\x1b[36mSummary:\x1b[0m \x1b[32m%d passed\x1b[0m; \x1b[31m%d failed\x1b[0m\n") });
+    _ = b.call(blk, i32_ty, printf_sym, &.{ b.extractField(blk, ptr_u8_ty, summary_fmt, 0, .none()), passed, failures }, .none());
+}
+
+pub fn optionalPayload(self: *LowerTir, blk: *Builder.BlockFrame, opt_ty: types.TypeId, opt_val: tir.ValueId, loc: tir.OptLocId) tir.ValueId {
+    const ts = self.context.type_store;
+    const opt = ts.get(.Optional, opt_ty);
+    if (ts.isOptionalPointer(opt_ty)) return blk.builder.tirValue(.CastBit, blk, opt.elem, loc, .{ .value = opt_val });
+    const ek = ts.getKind(opt.elem);
+    if (ek == .Void or ek == .Any) return self.safeUndef(blk, opt.elem, loc);
+    return blk.builder.extractField(blk, opt.elem, opt_val, 1, loc);
+}
+
+pub fn optionalFlag(self: *LowerTir, blk: *Builder.BlockFrame, opt_ty: types.TypeId, opt_val: tir.ValueId, loc: tir.OptLocId) tir.ValueId {
+    const ts = self.context.type_store;
+    if (ts.isOptionalPointer(opt_ty)) {
+        const payload = blk.builder.tirValue(.CastBit, blk, ts.get(.Optional, opt_ty).elem, loc, .{ .value = opt_val });
+        const usize_ty = ts.tUsize();
+        return blk.builder.binBool(blk, .CmpNe, blk.builder.tirValue(.CastBit, blk, usize_ty, loc, .{ .value = payload }), blk.builder.constNull(blk, usize_ty, loc), loc);
+    }
+    return blk.builder.extractField(blk, ts.tBool(), opt_val, 0, loc);
+}
+
+pub fn optionalWrapWithFlag(self: *LowerTir, blk: *Builder.BlockFrame, opt_ty: types.TypeId, flag: tir.ValueId, payload: tir.ValueId, loc: tir.OptLocId) tir.ValueId {
+    const ts = self.context.type_store;
+    if (ts.isOptionalPointer(opt_ty)) {
+        return blk.builder.tirValue(.Select, blk, opt_ty, loc, .{
+            .cond = flag,
+            .then_value = blk.builder.tirValue(.CastBit, blk, opt_ty, loc, .{ .value = payload }),
+            .else_value = blk.builder.constNull(blk, opt_ty, loc),
+        });
+    }
+    const elem_ty = ts.get(.Optional, opt_ty).elem;
+    const ek = ts.getKind(elem_ty);
+
+    if (ek == .Void or ek == .Any) {
+        return blk.builder.structMake(blk, opt_ty, &[_]tir.Rows.StructFieldInit{.{ .index = 0, .name = .none(), .value = flag }}, loc);
+    }
+    return blk.builder.structMake(blk, opt_ty, &[_]tir.Rows.StructFieldInit{
+        .{ .index = 0, .name = .none(), .value = flag },
+        .{ .index = 1, .name = .none(), .value = payload },
+    }, loc);
+}
+
+pub fn optionalWrapSome(self: *LowerTir, blk: *Builder.BlockFrame, opt_ty: types.TypeId, payload: tir.ValueId, loc: tir.OptLocId) tir.ValueId {
+    const ts = self.context.type_store;
+    if (ts.isOptionalPointer(opt_ty)) return blk.builder.tirValue(.CastBit, blk, opt_ty, loc, .{ .value = payload });
+
+    const some_flag = blk.builder.tirValue(.ConstBool, blk, ts.tBool(), loc, .{ .value = true });
+    const elem_ty = ts.get(.Optional, opt_ty).elem;
+    const ek = ts.getKind(elem_ty);
+
+    if (ek == .Void or ek == .Any) {
+        return blk.builder.structMake(blk, opt_ty, &[_]tir.Rows.StructFieldInit{.{ .index = 0, .name = .none(), .value = some_flag }}, loc);
+    }
+    return blk.builder.structMake(blk, opt_ty, &[_]tir.Rows.StructFieldInit{
+        .{ .index = 0, .name = .none(), .value = some_flag },
+        .{ .index = 1, .name = .none(), .value = payload },
+    }, loc);
+}
+
+fn isMainPackageName(self: *const LowerTir, ast_unit: *ast.Ast) bool {
+    if (ast_unit.unit.package_name.isNone()) return true;
+    const ts = self.context.type_store;
+    return std.mem.eql(u8, ts.strs.get(ast_unit.unit.package_name.unwrap()), ts.strs.get(self.entry_pkg_name));
+}
+
 pub fn runAst(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerContext) !void {
     var b: Builder = .init(self.gpa, t);
     ctx.builder = &b;
 
     try self.lowerGlobalMlir(ctx, ast_unit, &b);
-
-    // Lower top-level decls: functions and globals
-    const decls = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
-    for (decls) |did| try self.lowerTopDecl(ctx, ast_unit, &b, did);
-
-    // Lower methods registered on this AST unit that live outside the top-level scope.
+    for (ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls)) |did| try self.lowerTopDecl(ctx, ast_unit, &b, did);
     try self.lowerRegisteredMethods(ctx, ast_unit, &b);
     try self.lowerSyntheticDecls(ctx, ast_unit, &b);
 
@@ -303,104 +414,69 @@ pub fn runAst(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerConte
     }
 }
 
-/// Return true if the method type is fully generic (`Any`) and shouldn't be lowered.
 fn shouldSkipGenericMethod(self: *const LowerTir, fn_ty: types.TypeId) bool {
-    if (self.context.type_store.getKind(fn_ty) != .Function) return false;
-    const info = self.context.type_store.get(.Function, fn_ty);
-    if (self.isType(info.result, .Any)) {
-        return true;
-    }
-    const params = self.context.type_store.type_pool.slice(info.params);
-    var i: usize = 0;
-    while (i < params.len) : (i += 1) {
-        if (self.isType(params[i], .Any)) {
-            return true;
-        }
+    const ts = self.context.type_store;
+    if (ts.getKind(fn_ty) != .Function) return false;
+    const info = ts.get(.Function, fn_ty);
+    if (self.isType(info.result, .Any)) return true;
+    for (ts.type_pool.slice(info.params)) |param| {
+        if (self.isType(param, .Any)) return true;
     }
     return false;
 }
 
-/// Check whether `fty` ends with an `Any` parameter that is not fully lowered.
 fn hasTrailingAnyRuntimeParam(self: *const LowerTir, fty: types.TypeId) bool {
-    if (self.context.type_store.getKind(fty) != .Function) return false;
-    const info = self.context.type_store.get(.Function, fty);
+    const ts = self.context.type_store;
+    if (ts.getKind(fty) != .Function) return false;
+    const info = ts.get(.Function, fty);
     if (info.is_extern) return false;
-    const params = self.context.type_store.type_pool.slice(info.params);
-    if (params.len == 0) return false;
-    return self.isType(params[params.len - 1], .Any);
+    const params = ts.type_pool.slice(info.params);
+    return if (params.len > 0) self.isType(params[params.len - 1], .Any) else false;
 }
 
-/// Push a fresh expression-type override frame into `ctx`.
 fn pushExprTypeOverrideFrame(self: *LowerTir, ctx: *LowerContext) !void {
     try ctx.expr_type_override_stack.append(self.gpa, .{});
 }
 
-/// Pop the last expression-type override frame.
 fn popExprTypeOverrideFrame(self: *LowerTir, ctx: *LowerContext) void {
-    if (ctx.expr_type_override_stack.items.len == 0) return;
-    const idx = ctx.expr_type_override_stack.items.len - 1;
-    ctx.expr_type_override_stack.items[idx].deinit(self.gpa);
-    ctx.expr_type_override_stack.items.len -= 1;
+    var frame = ctx.expr_type_override_stack.pop() orelse return;
+    frame.deinit(self.gpa);
 }
 
-/// Record that `expr` should temporarily be treated as `ty`.
 pub fn noteExprType(self: *LowerTir, ctx: *LowerContext, expr: ast.ExprId, ty: types.TypeId) !void {
-    if (ctx.expr_type_override_stack.items.len == 0) return;
-    if (self.isType(ty, .Any)) return;
-    var frame = &ctx.expr_type_override_stack.items[ctx.expr_type_override_stack.items.len - 1];
-    try frame.map.put(self.gpa, expr.toRaw(), ty);
+    if (ctx.expr_type_override_stack.items.len == 0 or self.isType(ty, .Any)) return;
+    try ctx.expr_type_override_stack.items[ctx.expr_type_override_stack.items.len - 1].map.put(self.gpa, expr.toRaw(), ty);
 }
 
-/// Look for an expression type override associated with `expr`.
 fn lookupExprTypeOverride(_: *const LowerTir, ctx: *LowerContext, expr: ast.ExprId) ?types.TypeId {
     var i: usize = ctx.expr_type_override_stack.items.len;
     while (i > 0) {
         i -= 1;
-        const frame = &ctx.expr_type_override_stack.items[i];
-        if (frame.map.get(expr.toRaw())) |entry| {
-            return entry;
-        }
+        if (ctx.expr_type_override_stack.items[i].map.get(expr.toRaw())) |entry| return entry;
     }
     return null;
 }
 
-/// Turn a literal expression into a `ConstInit` when it matches the desired `ty`.
 fn constInitFromLiteral(self: *LowerTir, a: *ast.Ast, expr: ast.ExprId, ty: types.TypeId) ?tir.ConstInit {
     if (a.kind(expr) != .Literal) return null;
     const lit = a.exprs.get(.Literal, expr);
 
-    const ty_kind = self.context.type_store.getKind(ty);
-    return switch (ty_kind) {
-        .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => blk: {
-            const info = switch (lit.data) {
-                .int => |int_info| int_info,
-                else => return null,
-            };
-            if (!info.valid) break :blk null;
-            const max_i64: u128 = @intCast(std.math.maxInt(i64));
-            if (info.value > max_i64) break :blk null;
-            break :blk tir.ConstInit{ .int = @intCast(info.value) };
+    switch (self.context.type_store.getKind(ty)) {
+        .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => {
+            const info = if (lit.data == .int) lit.data.int else return null;
+            if (!info.valid or info.value > std.math.maxInt(i64)) return null;
+            return tir.ConstInit{ .int = @intCast(info.value) };
         },
-        .F32, .F64 => blk: {
-            const info = switch (lit.data) {
-                .float => |float_info| float_info,
-                else => return null,
-            };
-            if (!info.valid) break :blk null;
-            break :blk tir.ConstInit{ .float = info.value };
+        .F32, .F64 => {
+            const info = if (lit.data == .float) lit.data.float else return null;
+            if (!info.valid) return null;
+            return tir.ConstInit{ .float = info.value };
         },
-        .Bool => blk: {
-            const value = switch (lit.data) {
-                .bool => |b| b,
-                else => return null,
-            };
-            break :blk tir.ConstInit{ .bool = value };
-        },
-        else => null,
-    };
+        .Bool => return if (lit.data == .bool) tir.ConstInit{ .bool = lit.data.bool } else null,
+        else => return null,
+    }
 }
 
-/// Lower the built-in `dynarray.append` call by invoking the runtime helper.
 fn lowerDynArrayAppend(
     self: *LowerTir,
     f: *Builder.FunctionFrame,
@@ -410,65 +486,47 @@ fn lowerDynArrayAppend(
     args: []const tir.ValueId,
 ) !tir.ValueId {
     std.debug.assert(binding.builtin != null and binding.builtin.? == .dynarray_append);
-    std.debug.assert(args.len >= 2);
-
     const ts = self.context.type_store;
-    const owner_kind = ts.getKind(binding.owner_type);
-    std.debug.assert(owner_kind == .DynArray);
-
     const dyn_info = ts.get(.DynArray, binding.owner_type);
-    const elem_ty = dyn_info.elem;
     const usize_ty = ts.tUsize();
-    const ptr_elem_ty = ts.mkPtr(elem_ty, false);
+
+    const ptr_elem_ty = ts.mkPtr(dyn_info.elem, false);
     const ptr_ptr_elem_ty = ts.mkPtr(ptr_elem_ty, false);
     const ptr_usize_ty = ts.mkPtr(usize_ty, false);
-    const ptr_void_ty = ts.mkPtr(ts.tVoid(), false);
 
+    // Cached constants
+    const idx0 = blk.builder.gepConst(0);
     const array_ptr = args[0];
-    const value = args[1];
 
-    const data_ptr_ptr = blk.builder.gep(blk, ptr_ptr_elem_ty, array_ptr, &.{ blk.builder.gepConst(0), blk.builder.gepConst(0) }, loc);
-    const len_ptr = blk.builder.gep(blk, ptr_usize_ty, array_ptr, &.{ blk.builder.gepConst(0), blk.builder.gepConst(1) }, loc);
-    const cap_ptr = blk.builder.gep(blk, ptr_usize_ty, array_ptr, &.{ blk.builder.gepConst(0), blk.builder.gepConst(2) }, loc);
+    const data_ptr_ptr = blk.builder.gep(blk, ptr_ptr_elem_ty, array_ptr, &.{ idx0, idx0 }, loc);
+    const len_ptr = blk.builder.gep(blk, ptr_usize_ty, array_ptr, &.{ idx0, blk.builder.gepConst(1) }, loc);
+    const cap_ptr = blk.builder.gep(blk, ptr_usize_ty, array_ptr, &.{ idx0, blk.builder.gepConst(2) }, loc);
 
     const len_val = blk.builder.tirValue(.Load, blk, usize_ty, loc, .{ .ptr = len_ptr, .@"align" = 0 });
     const cap_val = blk.builder.tirValue(.Load, blk, usize_ty, loc, .{ .ptr = cap_ptr, .@"align" = 0 });
 
-    const need_grow_raw = blk.builder.binBool(blk, .CmpEq, len_val, cap_val, loc);
-
     var grow_blk = try f.builder.beginBlock(f);
     const cont_blk = try f.builder.beginBlock(f);
 
-    const grow_cond = self.forceLocalCond(blk, need_grow_raw, loc);
+    const grow_cond = self.forceLocalCond(blk, blk.builder.binBool(blk, .CmpEq, len_val, cap_val, loc), loc);
     try f.builder.condBr(blk, grow_cond, grow_blk.id, &.{}, cont_blk.id, &.{}, loc);
-    {
-        const old = blk.*;
-        try f.builder.endBlock(f, old);
-    }
+    try f.builder.endBlock(f, blk.*);
 
     {
         // Growth path
         const data_ptr = grow_blk.builder.tirValue(.Load, &grow_blk, ptr_elem_ty, loc, .{ .ptr = data_ptr_ptr, .@"align" = 0 });
         const zero_const = grow_blk.builder.tirValue(.ConstInt, &grow_blk, usize_ty, loc, .{ .value = 0 });
-        const cap_is_zero = grow_blk.builder.binBool(&grow_blk, .CmpEq, cap_val, zero_const, loc);
-        const one_const = grow_blk.builder.tirValue(.ConstInt, &grow_blk, usize_ty, loc, .{ .value = 1 });
-        const two_const = grow_blk.builder.tirValue(.ConstInt, &grow_blk, usize_ty, loc, .{ .value = 2 });
-        const doubled = grow_blk.builder.bin(&grow_blk, .Mul, usize_ty, cap_val, two_const, loc);
         const new_cap = grow_blk.builder.tirValue(.Select, &grow_blk, usize_ty, loc, .{
-            .cond = cap_is_zero,
-            .then_value = one_const,
-            .else_value = doubled,
+            .cond = grow_blk.builder.binBool(&grow_blk, .CmpEq, cap_val, zero_const, loc),
+            .then_value = grow_blk.builder.tirValue(.ConstInt, &grow_blk, usize_ty, loc, .{ .value = 1 }),
+            .else_value = grow_blk.builder.bin(&grow_blk, .Mul, usize_ty, cap_val, grow_blk.builder.tirValue(.ConstInt, &grow_blk, usize_ty, loc, .{ .value = 2 }), loc),
         });
 
-        const elem_size: u64 = @intCast(check_types.typeSize(self.context, elem_ty));
-        const elem_size_const = grow_blk.builder.tirValue(.ConstInt, &grow_blk, usize_ty, loc, .{ .value = elem_size });
-        const new_bytes = grow_blk.builder.bin(&grow_blk, .Mul, usize_ty, new_cap, elem_size_const, loc);
+        const elem_size = grow_blk.builder.tirValue(.ConstInt, &grow_blk, usize_ty, loc, .{ .value = @as(u64, @intCast(check_types.typeSize(self.context, dyn_info.elem))) });
+        const new_bytes = grow_blk.builder.bin(&grow_blk, .Mul, usize_ty, new_cap, elem_size, loc);
 
-        const data_ptr_void = grow_blk.builder.tirValue(.CastBit, &grow_blk, ptr_void_ty, loc, .{ .value = data_ptr });
-        const new_data_void = self.callRuntimeReallocPtr(&grow_blk, data_ptr_void, new_bytes, loc);
-        const new_data_ptr = grow_blk.builder.tirValue(.CastBit, &grow_blk, ptr_elem_ty, loc, .{ .value = new_data_void });
-
-        _ = grow_blk.builder.tirValue(.Store, &grow_blk, ptr_elem_ty, loc, .{ .ptr = data_ptr_ptr, .value = new_data_ptr, .@"align" = 0 });
+        const new_data_void = self.callRuntimeReallocPtr(&grow_blk, grow_blk.builder.tirValue(.CastBit, &grow_blk, ts.mkPtr(ts.tVoid(), false), loc, .{ .value = data_ptr }), new_bytes, loc);
+        _ = grow_blk.builder.tirValue(.Store, &grow_blk, ptr_elem_ty, loc, .{ .ptr = data_ptr_ptr, .value = grow_blk.builder.tirValue(.CastBit, &grow_blk, ptr_elem_ty, loc, .{ .value = new_data_void }), .@"align" = 0 });
         _ = grow_blk.builder.tirValue(.Store, &grow_blk, usize_ty, loc, .{ .ptr = cap_ptr, .value = new_cap, .@"align" = 0 });
 
         try f.builder.br(&grow_blk, cont_blk.id, &.{}, loc);
@@ -476,45 +534,33 @@ fn lowerDynArrayAppend(
     }
 
     blk.* = cont_blk;
-
     const data_ptr_cur = blk.builder.tirValue(.Load, blk, ptr_elem_ty, loc, .{ .ptr = data_ptr_ptr, .@"align" = 0 });
-    const len_cur = blk.builder.tirValue(.Load, blk, usize_ty, loc, .{ .ptr = len_ptr, .@"align" = 0 });
+    const slot_ptr = blk.builder.gep(blk, ptr_elem_ty, data_ptr_cur, &.{blk.builder.gepValue(len_val)}, loc);
+    _ = blk.builder.tirValue(.Store, blk, dyn_info.elem, loc, .{ .ptr = slot_ptr, .value = args[1], .@"align" = 0 });
 
-    const len_index = blk.builder.gepValue(len_cur);
-    const slot_ptr = blk.builder.gep(blk, ptr_elem_ty, data_ptr_cur, &.{len_index}, loc);
-    _ = blk.builder.tirValue(.Store, blk, elem_ty, loc, .{ .ptr = slot_ptr, .value = value, .@"align" = 0 });
-
-    const one_inc = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = 1 });
-    const new_len = blk.builder.bin(blk, .Add, usize_ty, len_cur, one_inc, loc);
+    const new_len = blk.builder.bin(blk, .Add, usize_ty, len_val, blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = 1 }), loc);
     _ = blk.builder.tirValue(.Store, blk, usize_ty, loc, .{ .ptr = len_ptr, .value = new_len, .@"align" = 0 });
 
     return self.safeUndef(blk, ts.tVoid(), loc);
 }
 
-/// Attempt to lower `expr_id` to a `ConstInit` consistent with `ty`, consulting the checker if needed.
 fn constInitFromExpr(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, expr_id: ast.ExprId, ty: types.TypeId) !?tir.ConstInit {
-    if (self.constInitFromLiteral(a, expr_id, ty)) |ci| {
-        return ci;
-    }
+    if (self.constInitFromLiteral(a, expr_id, ty)) |ci| return ci;
 
-    // General case: for simple scalar types, evaluate the expression at comptime and
-    // materialize as a constant initializer.
-    const result_kind = self.context.type_store.getKind(ty);
-    const allow_ct_scalar = switch (result_kind) {
-        .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64, .Bool => true,
-        else => false,
-    };
-    if (allow_ct_scalar) {
-        var cv = try self.getCachedComptimeValue(a, expr_id);
-        if (cv) |*val| {
-            defer val.destroy(self.gpa);
-            switch (val.*) {
-                .Int => |v| return tir.ConstInit{ .int = @intCast(v) },
-                .Float => |v| return tir.ConstInit{ .float = v },
-                .Bool => |v| return tir.ConstInit{ .bool = v },
-                else => {},
+    switch (self.context.type_store.getKind(ty)) {
+        .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64, .Bool => {
+            if (try self.getCachedComptimeValue(a, expr_id)) |val| {
+                var vl = val;
+                defer vl.destroy(self.gpa);
+                return switch (val) {
+                    .Int => |v| tir.ConstInit{ .int = @intCast(v) },
+                    .Float => |v| tir.ConstInit{ .float = v },
+                    .Bool => |v| tir.ConstInit{ .bool = v },
+                    else => null,
+                };
             }
-        }
+        },
+        else => {},
     }
 
     if (a.kind(expr_id) == .StructLit) {
@@ -526,59 +572,38 @@ fn constInitFromExpr(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, expr_id: 
         var field_const_inits = std.ArrayList(tir.ConstInit){};
         defer field_const_inits.deinit(self.gpa);
 
-        // This assumes fields are in order.
         for (field_inits, 0..) |sfv_id, i| {
-            const field_init = a.exprs.StructFieldValue.get(sfv_id);
-            const field_decl = self.context.type_store.Field.get(field_decls[i]);
-            if (try self.constInitFromExpr(ctx, a, field_init.value, field_decl.ty)) |field_ci| {
-                _ = try field_const_inits.append(self.gpa, field_ci);
-            } else {
-                return null; // Not a constant struct literal
-            }
+            if (try self.constInitFromExpr(ctx, a, a.exprs.StructFieldValue.get(sfv_id).value, self.context.type_store.Field.get(field_decls[i]).ty)) |field_ci| {
+                try field_const_inits.append(self.gpa, field_ci);
+            } else return null;
         }
-
-        const owned_fields = try field_const_inits.toOwnedSlice(self.gpa);
-        return tir.ConstInit{ .aggregate = owned_fields };
+        return tir.ConstInit{ .aggregate = try field_const_inits.toOwnedSlice(self.gpa) };
     }
-
     return null;
 }
 
-/// Emit an init function that lowers every global `mlir` declaration in `a`.
 fn lowerGlobalMlir(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder) !void {
-    var global_mlir_decls: List(ast.DeclId) = .empty;
-    defer global_mlir_decls.deinit(self.gpa);
+    var decls = std.ArrayList(ast.DeclId){};
+    defer decls.deinit(self.gpa);
 
-    const decls = a.exprs.decl_pool.slice(a.unit.decls);
-    for (decls) |did| {
+    for (a.exprs.decl_pool.slice(a.unit.decls)) |did| {
         const d = a.exprs.Decl.get(did);
-        if (a.kind(d.value) == .MlirBlock and d.pattern.isNone()) {
-            try global_mlir_decls.append(self.gpa, did);
-        }
+        if (a.kind(d.value) == .MlirBlock and d.pattern.isNone()) try decls.append(self.gpa, did);
     }
+    if (decls.items.len == 0) return;
 
-    if (global_mlir_decls.items.len == 0) return;
-
-    const name = b.intern("__sr_global_mlir_init");
-    var f = try b.beginFunction(self.context, name, self.context.type_store.tVoid(), false, false, .empty(), false, false, .none());
+    var f = try b.beginFunction(self.context, b.intern("__sr_global_mlir_init"), self.context.type_store.tVoid(), false, false, .empty(), false, false, .none());
     var blk = try b.beginBlock(&f);
     var env = cf.Env{};
     defer env.deinit(self.gpa);
 
-    for (global_mlir_decls.items) |did| {
-        const d = a.exprs.Decl.get(did);
-        _ = try self.lowerExpr(ctx, a, &env, &f, &blk, d.value, null, .rvalue);
-    }
+    for (decls.items) |did| _ = try self.lowerExpr(ctx, a, &env, &f, &blk, a.exprs.Decl.get(did).value, null, .rvalue);
 
-    if (blk.term.isNone()) {
-        // This synthesized initializer has no source span; emit a location-less return.
-        try b.setReturn(&blk, .none(), .none());
-    }
+    if (blk.term.isNone()) try b.setReturn(&blk, .none(), .none());
     try b.endBlock(&f, blk);
     try b.endFunction(f);
 }
 
-/// Lower a single `mlir` block expression, translating its pieces and args.
 fn lowerMlirBlock(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -591,176 +616,128 @@ fn lowerMlirBlock(
     loc: tir.OptLocId,
 ) !tir.ValueId {
     const row = a.exprs.get(.MlirBlock, id);
-    const expr_ty = self.getExprType(ctx, a, id);
-    var ty0 = expr_ty;
+    const ts = self.context.type_store;
+    var ty0 = self.getExprType(ctx, a, id);
+
     if (self.isType(ty0, .Any)) {
         ty0 = switch (row.kind) {
-            .Module => self.context.type_store.tMlirModule(),
-            .Attribute => self.context.type_store.mkMlirAttribute(row.text),
-            .Type => self.context.type_store.mkTypeType(self.context.type_store.mkMlirType(row.text)),
+            .Module => ts.tMlirModule(),
+            .Attribute => ts.mkMlirAttribute(row.text),
+            .Type => ts.mkTypeType(ts.mkMlirType(row.text)),
             .Operation => ty0,
         };
     }
     if (expected_ty) |want| {
-        if (self.isType(expr_ty, .Any) and !self.isType(want, .Any)) {
-            ty0 = want;
-        }
+        if (self.isType(ty0, .Any) and !self.isType(want, .Any)) ty0 = want;
     }
 
-    // Lower args
-    const ast_piece_ids = a.exprs.mlir_piece_pool.slice(row.pieces);
-    var tir_piece_ids = List(tir.MlirPieceId){};
-    defer tir_piece_ids.deinit(self.gpa);
-    for (ast_piece_ids) |pid| {
+    ctx.mlir_scratch_pieces.clearRetainingCapacity();
+    for (a.exprs.mlir_piece_pool.slice(row.pieces)) |pid| {
         const piece = a.exprs.MlirPiece.get(pid);
         var splice_value: comp.ComptimeValue = .Void;
         var splice_ty: ?types.TypeId = null;
+
         if (piece.kind == .splice) {
-            const allow_cached = ctx.expr_type_override_stack.items.len == 0;
-            if (allow_cached) {
-                if (a.type_info.getMlirSpliceValue(pid)) |cached| {
-                    splice_value = try comp.cloneComptimeValue(self.gpa, cached.*);
-                } else {
-                    splice_value = try self.resolveMlirSpliceValue(ctx, a, pid, piece.text, row.loc);
-                }
-            } else {
-                splice_value = try self.resolveMlirSpliceValue(ctx, a, pid, piece.text, row.loc);
-            }
+            splice_value = try self.resolveMlirSpliceOrCached(ctx, a, pid, piece.text, row.loc);
             if (a.type_info.getMlirSpliceInfo(pid)) |info| {
-                switch (info) {
-                    .value_param => |vp| splice_ty = vp.ty,
-                    .type_param => splice_ty = info.type_param.ty,
-                    .decl => {},
-                }
+                splice_ty = switch (info) {
+                    .value_param => |vp| vp.ty,
+                    .type_param => info.type_param.ty,
+                    else => null,
+                };
             }
         }
-        const new_id = blk.builder.t.instrs.addMlirPieceRow(
-            .{ .kind = piece.kind, .text = piece.text, .value = splice_value, .ty = splice_ty },
-        );
-        tir_piece_ids.append(self.gpa, new_id) catch @panic("OOM");
+        try ctx.mlir_scratch_pieces.append(self.gpa, blk.builder.t.instrs.MlirPiece.add(blk.builder.t.instrs.allocator, .{ .kind = piece.kind, .text = piece.text, .value = splice_value, .ty = splice_ty }));
     }
-    const pieces_range = blk.builder.t.instrs.mlir_piece_pool.pushMany(self.gpa, tir_piece_ids.items);
 
+    ctx.mlir_scratch_values.clearRetainingCapacity();
     const arg_ids = a.exprs.expr_pool.slice(row.args);
-    var arg_vals = try self.gpa.alloc(tir.ValueId, arg_ids.len);
-    defer self.gpa.free(arg_vals);
-    for (arg_ids, 0..) |arg_id, i| {
-        arg_vals[i] = try self.lowerExpr(ctx, a, env, f, blk, arg_id, null, .rvalue);
-    }
-    const args_range = blk.builder.t.instrs.value_pool.pushMany(self.gpa, arg_vals);
+    try ctx.mlir_scratch_values.ensureTotalCapacity(self.gpa, arg_ids.len);
+    for (arg_ids) |arg_id| ctx.mlir_scratch_values.appendAssumeCapacity(try self.lowerExpr(ctx, a, env, f, blk, arg_id, null, .rvalue));
 
     const result_id = blk.builder.freshValue();
-    const iid = blk.builder.t.instrs.add(.MlirBlock, .{
+    try blk.instrs.append(self.gpa, blk.builder.t.instrs.add(.MlirBlock, .{
         .result = .some(result_id),
         .ty = ty0,
         .kind = row.kind,
         .expr = id,
         .text = row.text,
-        .pieces = pieces_range,
-        .args = args_range,
+        .pieces = blk.builder.t.instrs.mlir_piece_pool.pushMany(self.gpa, ctx.mlir_scratch_pieces.items),
+        .args = blk.builder.t.instrs.value_pool.pushMany(self.gpa, ctx.mlir_scratch_values.items),
         .loc = loc,
-    });
-    blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+    }));
+
     if (expected_ty) |want| {
-        if (!ty0.eq(want)) {
-            return self.emitCoerce(blk, result_id, ty0, want, loc);
-        }
+        if (!ty0.eq(want)) return self.emitCoerce(blk, result_id, ty0, want, loc);
     }
     return result_id;
 }
 
-/// Resolve the `ComptimeValue` that a splice `piece_id` should inject into the MLIR block.
-fn resolveMlirSpliceValue(
-    self: *LowerTir,
-    ctx: *LowerContext,
-    a: *ast.Ast,
-    piece_id: ast.MlirPieceId,
-    name: StrId,
-    loc_id: ast.LocId,
-) !comp.ComptimeValue {
+fn resolveMlirSpliceOrCached(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, pid: ast.MlirPieceId, text: StrId, loc: ast.LocId) !comp.ComptimeValue {
+    if (ctx.expr_type_override_stack.items.len == 0) {
+        if (a.type_info.getMlirSpliceValue(pid)) |cached| return try comp.cloneComptimeValue(self.gpa, cached.*);
+    }
+    return self.resolveMlirSpliceValue(ctx, a, pid, text, loc);
+}
+
+fn resolveMlirSpliceValue(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, piece_id: ast.MlirPieceId, name: StrId, loc_id: ast.LocId) !comp.ComptimeValue {
     const info = a.type_info.getMlirSpliceInfo(piece_id) orelse unreachable;
     const diag_loc = a.exprs.locs.get(loc_id);
-    const name_str = a.exprs.strs.get(name);
+
     switch (info) {
         .decl => |decl_info| {
             const decl = a.exprs.Decl.get(decl_info.decl_id);
             const decl_value_ty = self.getExprType(ctx, a, decl.value);
-            if (self.context.type_store.getKind(decl_value_ty) == .TypeType) {
-                const type_value = self.context.type_store.get(.TypeType, decl_value_ty).of;
-                return comp.ComptimeValue{ .Type = type_value };
+            const ts = self.context.type_store;
+
+            if (ts.getKind(decl_value_ty) == .TypeType) {
+                return comp.ComptimeValue{ .Type = ts.get(.TypeType, decl_value_ty).of };
             }
-            if (try self.getCachedComptimeValue(a, decl.value)) |value| {
-                return value;
-            }
-            try self.context.diags.addError(diag_loc, .mlir_splice_not_comptime, .{name_str});
+            if (try self.getCachedComptimeValue(a, decl.value)) |value| return value;
+            try self.context.diags.addError(diag_loc, .mlir_splice_not_comptime, .{a.exprs.strs.get(name)});
             return error.LoweringBug;
         },
         .value_param => |param_info| {
-            if (try self.cloneComptimeAliasValue(a, param_info.name)) |value| {
-                return value;
-            }
-            try self.context.diags.addError(diag_loc, .mlir_splice_unbound, .{name_str});
+            if (try self.cloneComptimeAliasValue(a, param_info.name)) |value| return value;
+            try self.context.diags.addError(diag_loc, .mlir_splice_unbound, .{a.exprs.strs.get(name)});
             return error.LoweringBug;
         },
         .type_param => |param_info| {
-            if (self.lookupComptimeAliasType(a, param_info.name)) |ty| {
-                return comp.ComptimeValue{ .Type = ty };
-            }
-            try self.context.diags.addError(diag_loc, .mlir_splice_unbound, .{name_str});
+            if (self.lookupComptimeAliasType(a, param_info.name)) |ty| return comp.ComptimeValue{ .Type = ty };
+            try self.context.diags.addError(diag_loc, .mlir_splice_unbound, .{a.exprs.strs.get(name)});
             return error.LoweringBug;
         },
     }
 }
 
-/// Return a cloned cached comptime value for `expr`, if the checker already computed one.
 fn getCachedComptimeValue(self: *LowerTir, a: *ast.Ast, expr: ast.ExprId) !?comp.ComptimeValue {
-    if (a.type_info.getComptimeValue(expr)) |cached| {
-        const cloned = try comp.cloneComptimeValue(self.gpa, cached.*);
-        return cloned;
-    }
+    if (a.type_info.getComptimeValue(expr)) |cached| return try comp.cloneComptimeValue(self.gpa, cached.*);
     return null;
 }
 
-// ============================
-// Utilities / common helpers
-// ============================
+const LowerMode = enum { rvalue, lvalue_addr };
 
-/// Distinguishes whether lowering expects an rvalue or the address of an lvalue.
-const LowerMode = enum {
-    /// Evaluate expressions to their computed value.
-    rvalue,
-    /// Produce the address/location of an lvalue.
-    lvalue_addr,
-};
-
-/// Determine whether `ty` represents a void/`()` value.
 pub fn isVoid(self: *const LowerTir, ty: types.TypeId) bool {
     return self.context.type_store.getKind(ty) == .Void;
 }
 
-/// Return the optional source location associated with `id` (expr/pattern/stmt), if any.
 pub fn optLoc(a: *ast.Ast, id: anytype) tir.OptLocId {
-    var store, const Kind = switch (@TypeOf(id)) {
-        ast.ExprId => .{ a.exprs, ast.ExprKind },
-        ast.PatternId => .{ a.pats, ast.PatternKind },
-        ast.StmtId => .{ a.stmts, ast.StmtKind },
-        else => @compileError("invalid type"),
-    };
-    const kind = store.index.kinds.items[id.toRaw()];
-    inline for (@typeInfo(Kind).@"enum".fields) |field| {
-        const tag: Kind = @enumFromInt(field.value);
-        if (tag == kind) {
-            const row = store.get(tag, id);
-            if (comptime @hasField(@TypeOf(row), "loc")) {
-                return .some(row.loc);
-            }
+    const T = @TypeOf(id);
+    var store = if (T == ast.ExprId) a.exprs else if (T == ast.PatternId) a.pats else a.stmts;
+    const kind_val = store.index.kinds.items[id.toRaw()];
+
+    // Generic loc extraction dependent on kind enum
+    const KindEnum = if (T == ast.ExprId) ast.ExprKind else if (T == ast.PatternId) ast.PatternKind else ast.StmtKind;
+    inline for (@typeInfo(KindEnum).@"enum".fields) |field| {
+        if (@intFromEnum(kind_val) == field.value) {
+            const row = store.get(@enumFromInt(field.value), id);
+            if (comptime @hasField(@TypeOf(row), "loc")) return .some(row.loc);
             return .none();
         }
     }
     return .none();
 }
 
-/// Produce an undef value of `ty`, falling back to `Any` when `ty` is void so that SSA stays valid.
 pub fn safeUndef(self: *LowerTir, blk: *Builder.BlockFrame, ty: types.TypeId, loc: tir.OptLocId) tir.ValueId {
     if (self.isVoid(ty) or self.context.type_store.getKind(ty) == .Any) {
         return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
@@ -768,75 +745,37 @@ pub fn safeUndef(self: *LowerTir, blk: *Builder.BlockFrame, ty: types.TypeId, lo
     return blk.builder.tirValue(.ConstUndef, blk, ty, loc, .{});
 }
 
-/// Helper that returns an expression's source location for diagnostics.
 fn exprDiagLoc(a: *ast.Ast, id: ast.ExprId) Loc {
     const loc_id = optLoc(a, id);
-    if (!loc_id.isNone()) {
-        return a.exprs.locs.get(loc_id.unwrap());
-    }
-    return Loc{ .file_id = @intCast(a.file_id), .start = 0, .end = 0 };
+    return if (!loc_id.isNone()) a.exprs.locs.get(loc_id.unwrap()) else Loc{ .file_id = @intCast(a.file_id), .start = 0, .end = 0 };
 }
 
-/// Confirm the recorded type for `id` is not a type error while lowering.
 fn ensureExprTypeNotError(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, id: ast.ExprId) anyerror!void {
-    const ty = self.getExprType(ctx, a, id);
-    if (self.context.type_store.getKind(ty) == .TypeError) {
-        const diag_loc = exprDiagLoc(a, id);
-        try self.context.diags.addError(diag_loc, .tir_lowering_failed, .{});
+    if (self.context.type_store.getKind(self.getExprType(ctx, a, id)) == .TypeError) {
+        try self.context.diags.addError(exprDiagLoc(a, id), .tir_lowering_failed, .{});
         return error.LoweringBug;
     }
 }
 
-/// Guard that the checker stamped a type for `id` before lowering proceeds.
 fn ensureExprTypeStamped(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, id: ast.ExprId) anyerror!void {
-    // Specialized generics populate overrides without mutating the base type table.
     if (self.lookupExprTypeOverride(ctx, id) != null) return;
     const idx = id.toRaw();
-    if (idx >= a.type_info.expr_types.items.len or a.type_info.expr_types.items[idx] == null) {
-        return self.throwErr(exprDiagLoc(a, id));
-    }
+    if (idx >= a.type_info.expr_types.items.len or a.type_info.expr_types.items[idx] == null) return self.throwErr(exprDiagLoc(a, id));
 }
 
-/// Call the runtime `rt_alloc` helper and unwrap the returned optional pointer.
-fn callRuntimeAllocPtr(
-    self: *LowerTir,
-    blk: *Builder.BlockFrame,
-    size_bytes: tir.ValueId,
-    loc: tir.OptLocId,
-) tir.ValueId {
+fn callRuntimeAllocPtr(self: *LowerTir, blk: *Builder.BlockFrame, size_bytes: tir.ValueId, loc: tir.OptLocId) tir.ValueId {
     const ts = self.context.type_store;
-    const void_ptr_ty = ts.mkPtr(ts.tVoid(), false);
-    const opt_ptr_ty = ts.mkOptional(void_ptr_ty);
-    const alloc_name = blk.builder.intern("rt_alloc");
-    const alloc_result = blk.builder.call(blk, opt_ptr_ty, alloc_name, &.{size_bytes}, loc);
-    return self.optionalPayload(blk, opt_ptr_ty, alloc_result, loc);
+    const opt_ptr_ty = ts.mkOptional(ts.mkPtr(ts.tVoid(), false));
+    return self.optionalPayload(blk, opt_ptr_ty, blk.builder.call(blk, opt_ptr_ty, blk.builder.intern("rt_alloc"), &.{size_bytes}, loc), loc);
 }
 
-/// Call the runtime `rt_realloc` helper and return its normalized pointer result.
-fn callRuntimeReallocPtr(
-    self: *LowerTir,
-    blk: *Builder.BlockFrame,
-    old_ptr: tir.ValueId,
-    size_bytes: tir.ValueId,
-    loc: tir.OptLocId,
-) tir.ValueId {
+fn callRuntimeReallocPtr(self: *LowerTir, blk: *Builder.BlockFrame, old_ptr: tir.ValueId, size_bytes: tir.ValueId, loc: tir.OptLocId) tir.ValueId {
     const ts = self.context.type_store;
-    const void_ptr_ty = ts.mkPtr(ts.tVoid(), false);
-    const opt_ptr_ty = ts.mkOptional(void_ptr_ty);
-    const realloc_name = blk.builder.intern("rt_realloc");
-    const realloc_result = blk.builder.call(blk, opt_ptr_ty, realloc_name, &.{ old_ptr, size_bytes }, loc);
-    return self.optionalPayload(blk, opt_ptr_ty, realloc_result, loc);
+    const opt_ptr_ty = ts.mkOptional(ts.mkPtr(ts.tVoid(), false));
+    return self.optionalPayload(blk, opt_ptr_ty, blk.builder.call(blk, opt_ptr_ty, blk.builder.intern("rt_realloc"), &.{ old_ptr, size_bytes }, loc), loc);
 }
 
-/// Cast the fixed-size array value into a dynarray representation for slicing.
-fn coerceArrayToDynArray(
-    self: *LowerTir,
-    blk: *Builder.BlockFrame,
-    array_value: tir.ValueId,
-    array_ty: types.TypeId,
-    dyn_ty: types.TypeId,
-    loc: tir.OptLocId,
-) ?tir.ValueId {
+fn coerceArrayToDynArray(self: *LowerTir, blk: *Builder.BlockFrame, array_value: tir.ValueId, array_ty: types.TypeId, dyn_ty: types.TypeId, loc: tir.OptLocId) ?tir.ValueId {
     const ts = self.context.type_store;
     const arr = ts.get(.Array, array_ty);
     const dyn = ts.get(.DynArray, dyn_ty);
@@ -844,35 +783,25 @@ fn coerceArrayToDynArray(
     const usize_ty = ts.tUsize();
 
     if (arr.len == 0) {
-        const null_ptr = blk.builder.constNull(blk, ptr_ty, loc);
         const zero = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = 0 });
         return blk.builder.structMake(blk, dyn_ty, &[_]tir.Rows.StructFieldInit{
-            .{ .index = 0, .name = .none(), .value = null_ptr },
+            .{ .index = 0, .name = .none(), .value = blk.builder.constNull(blk, ptr_ty, loc) },
             .{ .index = 1, .name = .none(), .value = zero },
             .{ .index = 2, .name = .none(), .value = zero },
         }, loc);
     }
 
-    const len_u64 = std.math.cast(u64, arr.len) orelse return null;
-    const elem_size = check_types.typeSize(self.context, dyn.elem);
-    const elem_size_u64 = std.math.cast(u64, elem_size) orelse return null;
+    const len_u64 = @as(u64, @intCast(arr.len));
+    const elem_size_u64 = @as(u64, @intCast(check_types.typeSize(self.context, dyn.elem)));
     const total_bytes = std.math.mul(u64, elem_size_u64, len_u64) catch return null;
 
-    const bytes_const = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = total_bytes });
-    const raw_ptr = self.callRuntimeAllocPtr(blk, bytes_const, loc);
-    const data_ptr = blk.builder.tirValue(.CastBit, blk, ptr_ty, loc, .{ .value = raw_ptr });
+    const data_ptr = blk.builder.tirValue(.CastBit, blk, ptr_ty, loc, .{ .value = self.callRuntimeAllocPtr(blk, blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = total_bytes }), loc) });
 
-    var idx: usize = 0;
-    while (idx < arr.len) : (idx += 1) {
-        const idx_u64 = std.math.cast(u64, idx) orelse return null;
-        const idx_val = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = idx_u64 });
-        var elem_val = blk.builder.indexOp(blk, arr.elem, array_value, idx_val, loc);
-        if (!arr.elem.eq(dyn.elem)) {
-            elem_val = self.emitCoerce(blk, elem_val, arr.elem, dyn.elem, loc);
-        }
-        const offset = blk.builder.gepConst(idx_u64);
-        const elem_ptr = blk.builder.gep(blk, ptr_ty, data_ptr, &.{offset}, loc);
-        _ = blk.builder.tirValue(.Store, blk, dyn.elem, loc, .{ .ptr = elem_ptr, .value = elem_val, .@"align" = 0 });
+    for (0..arr.len) |idx| {
+        const idx_u64 = @as(u64, @intCast(idx));
+        var elem_val = blk.builder.indexOp(blk, arr.elem, array_value, blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = idx_u64 }), loc);
+        if (!arr.elem.eq(dyn.elem)) elem_val = self.emitCoerce(blk, elem_val, arr.elem, dyn.elem, loc);
+        _ = blk.builder.tirValue(.Store, blk, dyn.elem, loc, .{ .ptr = blk.builder.gep(blk, ptr_ty, data_ptr, &.{blk.builder.gepConst(idx_u64)}, loc), .value = elem_val, .@"align" = 0 });
     }
 
     const len_const = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = len_u64 });
@@ -883,46 +812,21 @@ fn coerceArrayToDynArray(
     }, loc);
 }
 
-/// Cast the fixed-size array value into a slice representation.
-fn coerceArrayToSlice(
-    self: *LowerTir,
-    blk: *Builder.BlockFrame,
-    array_value: tir.ValueId,
-    array_ty: types.TypeId,
-    slice_ty: types.TypeId,
-    loc: tir.OptLocId,
-) tir.ValueId {
+fn coerceArrayToSlice(self: *LowerTir, blk: *Builder.BlockFrame, array_value: tir.ValueId, array_ty: types.TypeId, slice_ty: types.TypeId, loc: tir.OptLocId) tir.ValueId {
     const ts = self.context.type_store;
     const arr = ts.get(.Array, array_ty);
     const slice = ts.get(.Slice, slice_ty);
-
-    // Spill array to stack to get a pointer
     const ptr_array_ty = ts.mkPtr(array_ty, false);
-    const slot = blk.builder.tirValue(.Alloca, blk, ptr_array_ty, loc, .{
-        .count = tir.OptValueId.none(),
-        .@"align" = 0,
-    });
-    _ = blk.builder.tirValue(.Store, blk, array_ty, loc, .{
-        .ptr = slot,
-        .value = array_value,
-        .@"align" = 0,
-    });
 
-    // Cast pointer to element pointer
-    const ptr_elem_ty = ts.mkPtr(slice.elem, slice.is_const);
-    const elem_ptr = blk.builder.tirValue(.CastBit, blk, ptr_elem_ty, loc, .{ .value = slot });
+    // Spill array to stack
+    const slot = blk.builder.tirValue(.Alloca, blk, ptr_array_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
+    _ = blk.builder.tirValue(.Store, blk, array_ty, loc, .{ .ptr = slot, .value = array_value, .@"align" = 0 });
 
-    // Create length constant
-    const usize_ty = ts.tUsize();
-    const len_val = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = @as(u64, @intCast(arr.len)) });
-
-    // Create slice struct { ptr, len }
     return blk.builder.structMake(blk, slice_ty, &[_]tir.Rows.StructFieldInit{
-        .{ .index = 0, .name = .none(), .value = elem_ptr },
-        .{ .index = 1, .name = .none(), .value = len_val },
+        .{ .index = 0, .name = .none(), .value = blk.builder.tirValue(.CastBit, blk, ts.mkPtr(slice.elem, slice.is_const), loc, .{ .value = slot }) },
+        .{ .index = 1, .name = .none(), .value = blk.builder.tirValue(.ConstInt, blk, ts.tUsize(), loc, .{ .value = @as(u64, @intCast(arr.len)) }) },
     }, loc);
 }
-
 /// Insert an explicit coercion that realizes what the checker proved assignable/castable.
 pub fn emitCoerce(
     self: *LowerTir,
@@ -935,131 +839,136 @@ pub fn emitCoerce(
     if (got.eq(want)) return v;
 
     const ts = self.context.type_store;
-    // Special-case: coercions between type handles (TypeType) are no-ops for lowering.
-    const got_k0 = ts.getKind(got);
-    const want_k0 = ts.getKind(want);
-    if (got_k0 == .TypeType and want_k0 == .TypeType) return v;
-
     const gk = ts.getKind(got);
     const wk = ts.getKind(want);
 
+    // Special-case: coercions between type handles (TypeType) are no-ops.
+    if (gk == .TypeType and wk == .TypeType) return v;
+
     switch (wk) {
-        else => {},
-        .ErrorSet => blk: {
-            const es = ts.get(.ErrorSet, want);
-            const tag_value: u32, const field_index: u32 = if (got.eq(es.value_ty))
-                .{ 0, 0 } // Ok(T)
-            else if (got.eq(es.error_ty))
-                .{ 1, 1 } // Err(E)
-            else
-                break :blk; // (e.g., for anyerror -> !T).
-
-            const i32_ty = ts.tI32();
-            const payload_union_ty = ts.mkUnion(&[_]types.TypeStore.StructFieldArg{
-                .{ .name = blk.builder.intern("Ok"), .ty = es.value_ty },
-                .{ .name = blk.builder.intern("Err"), .ty = es.error_ty },
-            });
-
-            // Create the tag (0 or 1)
-            const tag = blk.builder.tirValue(.ConstInt, blk, i32_ty, loc, .{ .value = tag_value });
-
-            // Create the union payload: { Ok: T } or { Err: E }
-            const payload = blk.builder.tirValue(.UnionMake, blk, payload_union_ty, loc, .{
-                .field_index = field_index,
-                .value = v,
-            });
-
-            // Create the final ErrorSet struct: { tag, payload }
-            return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
-                .{ .index = 0, .name = .none(), .value = tag },
-                .{ .index = 1, .name = .none(), .value = payload },
-            }, loc);
+        .ErrorSet => return self.coerceToErrorSet(blk, v, got, want, loc),
+        .Optional => return self.coerceToOptional(blk, v, got, want, loc),
+        .DynArray => if (gk == .Array) {
+            if (self.coerceArrayToDynArray(blk, v, got, want, loc)) |dyn_val| return dyn_val;
         },
-        .DynArray => {
-            if (gk == .Array) {
-                if (self.coerceArrayToDynArray(blk, v, got, want, loc)) |dyn_val| {
-                    return dyn_val;
-                }
-            }
-            // Fall through: no special coercion, let other cases handle
+        .Slice => if (gk == .Array) {
+            return self.coerceArrayToSlice(blk, v, got, want, loc);
         },
-        .Slice => {
-            if (gk == .Array) {
-                return self.coerceArrayToSlice(blk, v, got, want, loc);
-            }
-        },
-        .Optional => {
-            const opt = ts.get(.Optional, want);
-            const bool_ty = ts.tBool();
-            const want_ptr = ts.isOptionalPointer(want);
-
-            if (gk == .Optional) {
-                // Case: ?U -> ?T
-                const got_opt = ts.get(.Optional, got);
-                if (got_opt.elem.eq(opt.elem) and want_ptr == ts.isOptionalPointer(got)) {
-                    return v; // identical layout
-                }
-
-                if (want_ptr) {
-                    if (ts.isOptionalPointer(got)) {
-                        var payload = blk.builder.tirValue(.CastBit, blk, got_opt.elem, loc, .{ .value = v });
-                        if (!got_opt.elem.eq(opt.elem)) {
-                            payload = self.emitCoerce(blk, payload, got_opt.elem, opt.elem, loc);
-                        }
-                        return blk.builder.tirValue(.CastBit, blk, want, loc, .{ .value = payload });
-                    }
-                    const flag = self.optionalFlag(blk, got, v, loc);
-                    var payload = self.optionalPayload(blk, got, v, loc);
-                    payload = self.emitCoerce(blk, payload, got_opt.elem, opt.elem, loc);
-                    return self.optionalWrapWithFlag(blk, want, flag, payload, loc);
-                }
-
-                // Extract fields from ?U
-                const flag = blk.builder.extractField(blk, bool_ty, v, 0, loc);
-                var payload = blk.builder.extractField(blk, got_opt.elem, v, 1, loc);
-
-                // Coerce payload U -> T. If source is ?any (commonly used for null),
-                // avoid casting the undefined payload; use an undef of T instead.
-                if (self.context.type_store.getKind(got_opt.elem) == .Any) {
-                    payload = blk.builder.tirValue(.ConstUndef, blk, opt.elem, loc, .{});
-                } else {
-                    payload = self.emitCoerce(blk, payload, got_opt.elem, opt.elem, loc);
-                }
-
-                // Rebuild ?T
-                return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
-                    .{ .index = 0, .name = .none(), .value = flag },
-                    .{ .index = 1, .name = .none(), .value = payload },
-                }, loc);
-            } else {
-                // Case: U -> ?T
-                // Coerce payload U -> T
-                const payload = self.emitCoerce(blk, v, got, opt.elem, loc);
-
-                // Build ?T with a 'true' flag
-                return self.optionalWrapSome(blk, want, payload, loc);
-            }
+        .Ptr => if (gk == .Ptr) {
+            return blk.builder.tirValue(.CastBit, blk, want, loc, .{ .value = v });
         },
         .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64 => {
-            const is_num_got = switch (gk) {
-                .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64 => true,
-                else => false,
-            };
-            if (is_num_got)
-                return blk.builder.tirValue(.CastNormal, blk, want, loc, .{ .value = v });
+            switch (gk) {
+                .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64 => {
+                    return blk.builder.tirValue(.CastNormal, blk, want, loc, .{ .value = v });
+                },
+                else => {},
+            }
         },
-        .Ptr => if (gk == .Ptr)
-            return blk.builder.tirValue(.CastBit, blk, want, loc, .{ .value = v }),
+        else => {},
     }
     // Fallback: materialize/assignable
     return blk.builder.tirValue(.CastNormal, blk, want, loc, .{ .value = v });
+}
+
+fn coerceToErrorSet(
+    self: *LowerTir,
+    blk: *Builder.BlockFrame,
+    v: tir.ValueId,
+    got: types.TypeId,
+    want: types.TypeId,
+    loc: tir.OptLocId,
+) tir.ValueId {
+    const ts = self.context.type_store;
+    const es = ts.get(.ErrorSet, want);
+
+    // Determine tag and index directly
+    var tag_value: u32 = 0;
+    var field_index: u32 = 0;
+
+    if (got.eq(es.error_ty)) {
+        tag_value = 1;
+        field_index = 1;
+    } else if (!got.eq(es.value_ty)) {
+        // Fallback if neither matches perfectly (e.g. coerce subtype)
+        return blk.builder.tirValue(.CastNormal, blk, want, loc, .{ .value = v });
+    }
+
+    const payload_union_ty = ts.mkUnion(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = blk.builder.intern("Ok"), .ty = es.value_ty },
+        .{ .name = blk.builder.intern("Err"), .ty = es.error_ty },
+    });
+
+    const tag = blk.builder.tirValue(.ConstInt, blk, ts.tI32(), loc, .{ .value = tag_value });
+    const payload = blk.builder.tirValue(.UnionMake, blk, payload_union_ty, loc, .{
+        .field_index = field_index,
+        .value = v,
+    });
+
+    return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
+        .{ .index = 0, .name = .none(), .value = tag },
+        .{ .index = 1, .name = .none(), .value = payload },
+    }, loc);
+}
+
+fn coerceToOptional(
+    self: *LowerTir,
+    blk: *Builder.BlockFrame,
+    v: tir.ValueId,
+    got: types.TypeId,
+    want: types.TypeId,
+    loc: tir.OptLocId,
+) tir.ValueId {
+    const ts = self.context.type_store;
+    const opt = ts.get(.Optional, want);
+    const want_ptr = ts.isOptionalPointer(want);
+
+    if (ts.getKind(got) == .Optional) {
+        const got_opt = ts.get(.Optional, got);
+        // Case: ?U -> ?T. If elements match and ptr-ness matches, it's a no-op.
+        if (got_opt.elem.eq(opt.elem) and want_ptr == ts.isOptionalPointer(got)) return v;
+
+        if (want_ptr) {
+            if (ts.isOptionalPointer(got)) {
+                // Ptr -> Ptr bitcast/coerce
+                var payload = blk.builder.tirValue(.CastBit, blk, got_opt.elem, loc, .{ .value = v });
+                if (!got_opt.elem.eq(opt.elem)) {
+                    payload = self.emitCoerce(blk, payload, got_opt.elem, opt.elem, loc);
+                }
+                return blk.builder.tirValue(.CastBit, blk, want, loc, .{ .value = payload });
+            }
+            // Struct -> Ptr
+            const flag = self.optionalFlag(blk, got, v, loc);
+            var payload = self.optionalPayload(blk, got, v, loc);
+            payload = self.emitCoerce(blk, payload, got_opt.elem, opt.elem, loc);
+            return self.optionalWrapWithFlag(blk, want, flag, payload, loc);
+        }
+
+        // Standard Struct Optional
+        const flag = blk.builder.extractField(blk, ts.tBool(), v, 0, loc);
+        var payload = blk.builder.extractField(blk, got_opt.elem, v, 1, loc);
+
+        if (ts.getKind(got_opt.elem) == .Any) {
+            payload = blk.builder.tirValue(.ConstUndef, blk, opt.elem, loc, .{});
+        } else {
+            payload = self.emitCoerce(blk, payload, got_opt.elem, opt.elem, loc);
+        }
+
+        return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
+            .{ .index = 0, .name = .none(), .value = flag },
+            .{ .index = 1, .name = .none(), .value = payload },
+        }, loc);
+    }
+
+    // Case: U -> ?T (Wrap Some)
+    const payload = self.emitCoerce(blk, v, got, opt.elem, loc);
+    return self.optionalWrapSome(blk, want, payload, loc);
 }
 
 // ============================
 // Top-level lowering
 // ============================
 
-/// Attempt to lower a specific declaration `did` when it resolves to a function literal.
 fn tryLowerNamedFunction(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -1080,314 +989,133 @@ fn tryLowerNamedFunction(
     if (fn_lit.flags.is_test) {
         _ = self.context.type_store.tTestError();
     }
+
+    // Check for comptime parameters
     const params = a.exprs.param_pool.slice(fn_lit.params);
-    var skip_params: usize = 0;
-    while (skip_params < params.len and a.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
-    if (skip_params != 0) return;
+    for (params) |pid| {
+        if (a.exprs.Param.get(pid).is_comptime) return;
+    }
 
     const name = if (should_mangle) try self.qualifySymbolName(a, base_name) else base_name;
     try self.lowerFunction(ctx, a, b, name, decl.value, sig_override);
 }
 
-/// Extract the binding name if `pid` is a simple identifier binding.
 fn bindingNameOfPattern(a: *ast.Ast, pid: ast.PatternId) ?StrId {
-    return switch (a.kind(pid)) {
-        .Binding => a.pats.get(.Binding, pid).name,
-        else => null,
-    };
+    if (a.kind(pid) == .Binding) return a.pats.get(.Binding, pid).name;
+    return null;
 }
 
-/// Lower all synthetic function declarations generated by the checker.
 fn lowerSyntheticDecls(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder) !void {
     const syn_decls = a.type_info.synthetic_decls.items;
     for (syn_decls) |raw_id| {
-        const syn_did = ast.DeclId.fromRaw(raw_id);
-        const orig_did = self.findOriginalDeclForSynthetic(a, syn_did) orelse continue;
-        const decl = a.exprs.Decl.get(orig_did);
-        if (a.kind(decl.value) != .FunctionLit) continue;
+        try self.lowerSingleSyntheticDecl(ctx, a, b, raw_id);
+    }
+}
 
-        var base_name: ?StrId = null;
-        if (!decl.pattern.isNone()) {
-            base_name = bindingNameOfPattern(a, decl.pattern.unwrap());
-        } else if (!decl.method_path.isNone()) {
-            base_name = try self.methodSymbolShortName(a, orig_did);
+fn lowerSingleSyntheticDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, raw_id: u32) !void {
+    const syn_did = ast.DeclId.fromRaw(raw_id);
+    const orig_did = self.findOriginalDeclForSynthetic(a, syn_did) orelse return;
+    const decl = a.exprs.Decl.get(orig_did);
+
+    if (a.kind(decl.value) != .FunctionLit) return;
+
+    var base_name: ?StrId = null;
+    if (!decl.pattern.isNone()) {
+        base_name = bindingNameOfPattern(a, decl.pattern.unwrap());
+    } else if (!decl.method_path.isNone()) {
+        base_name = try self.methodSymbolShortName(a, orig_did);
+    }
+    const base = base_name orelse return;
+
+    // Generate specialized name
+    const spec_name_str = try std.fmt.allocPrint(self.gpa, "{s}_spec_{d}", .{ self.context.type_store.strs.get(base), raw_id });
+    defer self.gpa.free(spec_name_str);
+    const qualified_name = try self.qualifySymbolName(a, self.context.type_store.strs.intern(spec_name_str));
+
+    if (raw_id >= a.type_info.decl_types.items.len) return;
+    const spec_sig = a.type_info.decl_types.items[raw_id] orelse return;
+
+    // 1. Apply Expression Type Overrides
+    var pushed_override = false;
+    if (a.type_info.getSpecializationExprSnapshot(syn_did)) |snapshot| {
+        try self.pushExprTypeOverrideFrame(ctx);
+        pushed_override = true;
+        for (snapshot.expr_ids, 0..) |raw_expr_id, i| {
+            try self.noteExprType(ctx, ast.ExprId.fromRaw(raw_expr_id), snapshot.expr_types[i]);
         }
-        const base = base_name orelse continue;
+    }
+    defer if (pushed_override) self.popExprTypeOverrideFrame(ctx);
 
-        const base_str = self.context.type_store.strs.get(base);
-        const spec_name_str = try std.fmt.allocPrint(self.gpa, "{s}_spec_{d}", .{ base_str, raw_id });
-        defer self.gpa.free(spec_name_str);
-        const spec_name = self.context.type_store.strs.intern(spec_name_str);
-        const qualified_name = try self.qualifySymbolName(a, spec_name);
+    // 2. Apply Call Specialization Snapshot
+    var applied_call_snapshot = false;
+    var call_spec_backups: List(struct { raw: u32, prev: ?types.CallSpecialization }) = .{};
 
-        if (raw_id >= a.type_info.decl_types.items.len) continue;
-        const spec_sig = a.type_info.decl_types.items[raw_id] orelse continue;
-        var pushed_override = false;
-        if (a.type_info.getSpecializationExprSnapshot(syn_did)) |snapshot| {
-            try self.pushExprTypeOverrideFrame(ctx);
-            pushed_override = true;
-            var i: usize = 0;
-            while (i < snapshot.expr_ids.len) : (i += 1) {
-                const expr_id = ast.ExprId.fromRaw(snapshot.expr_ids[i]);
-                const ty = snapshot.expr_types[i];
-                try self.noteExprType(ctx, expr_id, ty);
+    if (a.type_info.getSpecializationCallSnapshot(syn_did)) |call_snapshot| {
+        applied_call_snapshot = true;
+        try call_spec_backups.ensureTotalCapacity(self.gpa, call_snapshot.expr_ids.len);
+
+        for (call_snapshot.expr_ids, 0..) |raw, idx| {
+            const spec = call_snapshot.specs[idx];
+            if (a.type_info.call_specializations.getEntry(raw)) |entry| {
+                call_spec_backups.appendAssumeCapacity(.{ .raw = raw, .prev = entry.value_ptr.* });
+                entry.value_ptr.* = spec;
+            } else {
+                call_spec_backups.appendAssumeCapacity(.{ .raw = raw, .prev = null });
+                try a.type_info.call_specializations.put(self.gpa, raw, spec);
             }
         }
-        defer if (pushed_override) self.popExprTypeOverrideFrame(ctx);
+    }
+    defer if (applied_call_snapshot) {
+        for (call_spec_backups.items) |backup| {
+            if (backup.prev) |prev_spec| {
+                if (a.type_info.call_specializations.getEntry(backup.raw)) |entry| {
+                    entry.value_ptr.* = prev_spec;
+                }
+            } else {
+                _ = a.type_info.call_specializations.swapRemove(backup.raw);
+            }
+        }
+        call_spec_backups.deinit(self.gpa);
+    };
 
-        var applied_call_snapshot = false;
-        var call_spec_backups: List(struct { raw: u32, prev: ?types.CallSpecialization }) = .{};
-        if (a.type_info.getSpecializationCallSnapshot(syn_did)) |call_snapshot| {
-            applied_call_snapshot = true;
-            var idx: usize = 0;
-            while (idx < call_snapshot.expr_ids.len) : (idx += 1) {
-                const raw = call_snapshot.expr_ids[idx];
-                const spec = call_snapshot.specs[idx];
-                if (a.type_info.call_specializations.getEntry(raw)) |entry| {
-                    try call_spec_backups.append(self.gpa, .{ .raw = raw, .prev = entry.value_ptr.* });
-                    entry.value_ptr.* = spec;
-                } else {
-                    try call_spec_backups.append(self.gpa, .{ .raw = raw, .prev = null });
-                    try a.type_info.call_specializations.put(self.gpa, raw, spec);
+    // 3. Apply Comptime Binding Snapshot
+    var applied_comptime_snapshot = false;
+    var comptime_backups: List(struct { name: StrId, prev_ty: ?types.TypeId, prev_val: ?comp.ComptimeValue }) = .{};
+
+    if (a.type_info.getSpecializationComptimeSnapshot(syn_did)) |snapshot| {
+        applied_comptime_snapshot = true;
+        const names = snapshot.names;
+        try comptime_backups.ensureTotalCapacity(self.gpa, names.len);
+
+        for (names, 0..) |name, idx| {
+            const prev_ty = a.type_info.lookupComptimeBindingType(name);
+            const prev_val = a.type_info.cloneComptimeBindingValue(self.gpa, name) catch null;
+            comptime_backups.appendAssumeCapacity(.{ .name = name, .prev_ty = prev_ty, .prev_val = prev_val });
+
+            const cloned_val = try comp.cloneComptimeValue(self.gpa, snapshot.values[idx]);
+            try a.type_info.setComptimeBinding(name, snapshot.types[idx], cloned_val);
+        }
+    }
+    defer if (applied_comptime_snapshot) {
+        for (comptime_backups.items) |backup| {
+            a.type_info.removeComptimeBinding(backup.name);
+            if (backup.prev_ty) |pty| {
+                if (backup.prev_val) |*pval| {
+                    const cloned = comp.cloneComptimeValue(self.gpa, pval.*) catch @panic("OOM");
+                    a.type_info.setComptimeBinding(backup.name, pty, cloned) catch @panic("OOM");
                 }
             }
-        }
-        defer {
-            if (applied_call_snapshot) {
-                for (call_spec_backups.items) |backup| {
-                    if (backup.prev) |prev_spec| {
-                        if (a.type_info.call_specializations.getEntry(backup.raw)) |entry| {
-                            entry.value_ptr.* = prev_spec;
-                        }
-                    } else {
-                        _ = a.type_info.call_specializations.swapRemove(backup.raw);
-                    }
-                }
-                call_spec_backups.deinit(self.gpa);
+            if (backup.prev_val) |pval| {
+                var val = pval;
+                val.destroy(self.gpa);
             }
         }
+        comptime_backups.deinit(self.gpa);
+    };
 
-        var applied_comptime_snapshot = false;
-        var comptime_backups: List(struct { name: StrId, prev_ty: ?types.TypeId, prev_val: ?comp.ComptimeValue }) = .{};
-        if (a.type_info.getSpecializationComptimeSnapshot(syn_did)) |snapshot| {
-            applied_comptime_snapshot = true;
-            const names = snapshot.names;
-            const tys = snapshot.types;
-            const vals = snapshot.values;
-            var idx: usize = 0;
-            while (idx < names.len) : (idx += 1) {
-                const name = names[idx];
-                const ty = tys[idx];
-                const val = vals[idx];
-                const prev_ty = a.type_info.lookupComptimeBindingType(name);
-                const prev_val = a.type_info.cloneComptimeBindingValue(self.gpa, name) catch null;
-                comptime_backups.append(self.gpa, .{ .name = name, .prev_ty = prev_ty, .prev_val = prev_val }) catch @panic("OOM");
-                const cloned_val = comp.cloneComptimeValue(self.gpa, val) catch @panic("OOM");
-                a.type_info.setComptimeBinding(name, ty, cloned_val) catch @panic("OOM");
-            }
-        }
-        defer {
-            if (applied_comptime_snapshot) {
-                for (comptime_backups.items) |backup| {
-                    a.type_info.removeComptimeBinding(backup.name);
-                    if (backup.prev_ty) |pty| {
-                        if (backup.prev_val) |*pval| {
-                            const cloned = comp.cloneComptimeValue(self.gpa, pval.*) catch @panic("OOM");
-                            a.type_info.setComptimeBinding(backup.name, pty, cloned) catch @panic("OOM");
-                        }
-                    }
-                    if (backup.prev_val) |*pval| {
-                        var mv = pval.*;
-                        mv.destroy(self.gpa);
-                    }
-                }
-                comptime_backups.deinit(self.gpa);
-            }
-        }
-
-        try self.lowerFunction(ctx, a, b, qualified_name, decl.value, spec_sig);
-    }
+    try self.lowerFunction(ctx, a, b, qualified_name, decl.value, spec_sig);
 }
 
-/// Emit a native harness `main` that executes every collected test.
-fn emitTestHarness(self: *LowerTir, _: *LowerContext, _: *ast.Ast, b: *Builder) !void {
-    if (self.test_funcs.items.len == 0) return;
-    const ts = self.context.type_store;
-    const i32_ty = ts.tI32();
-    const usize_ty = ts.tUsize();
-    const attrs = tir.RangeAttribute.empty();
-    const name = self.context.type_store.strs.intern("main");
-
-    var f = try b.beginFunction(self.context, name, i32_ty, false, false, attrs, false, false, .none());
-    var blk = try b.beginBlock(&f);
-
-    const zero = b.tirValue(.ConstInt, &blk, i32_ty, .none(), .{ .value = 0 });
-    var failures = zero;
-    const total_const = b.tirValue(.ConstInt, &blk, i32_ty, .none(), .{ .value = self.test_funcs.items.len });
-
-    const ptr_u8_const = ts.mkPtr(ts.tU8(), true);
-    const rt_print_sym = self.context.type_store.strs.intern("rt_print");
-    const printf_sym = self.context.type_store.strs.intern("printf");
-
-    for (self.test_funcs.items) |tf| {
-        if (ts.getKind(tf.ty) != .Function) continue;
-        const fn_info = ts.get(.Function, tf.ty);
-        const ret_ty = fn_info.result;
-        const call_v = b.call(&blk, ret_ty, tf.sym, &.{}, .none());
-
-        const name_sid = tf.name orelse tf.sym;
-        const test_name = self.context.type_store.strs.get(name_sid);
-        const pass_msg_bytes = try std.fmt.allocPrint(self.gpa, "\x1b[32mTest '{s}' passed\x1b[0m\n", .{test_name});
-        defer self.gpa.free(pass_msg_bytes);
-        const fail_msg_bytes = try std.fmt.allocPrint(self.gpa, "\x1b[31mTest '{s}' failed\x1b[0m\n", .{test_name});
-        defer self.gpa.free(fail_msg_bytes);
-        const pass_msg = b.tirValue(.ConstString, &blk, ts.tString(), .none(), .{ .text = self.context.type_store.strs.intern(pass_msg_bytes) });
-        const fail_msg = b.tirValue(.ConstString, &blk, ts.tString(), .none(), .{ .text = self.context.type_store.strs.intern(fail_msg_bytes) });
-
-        if (ts.getKind(ret_ty) == .ErrorSet) {
-            const tag = b.extractField(&blk, ts.tI32(), call_v, 0, .none());
-            const is_err = b.binBool(&blk, .CmpNe, tag, zero, .none());
-            const as_i32 = b.un1(&blk, .CastNormal, i32_ty, is_err, .none());
-            failures = b.bin(&blk, .Add, i32_ty, failures, as_i32, .none());
-
-            const pass_ptr = b.extractField(&blk, ptr_u8_const, pass_msg, 0, .none());
-            const pass_len = b.extractField(&blk, usize_ty, pass_msg, 1, .none());
-            const fail_ptr = b.extractField(&blk, ptr_u8_const, fail_msg, 0, .none());
-            const fail_len = b.extractField(&blk, usize_ty, fail_msg, 1, .none());
-
-            var pass_blk = try b.beginBlock(&f);
-            var fail_blk = try b.beginBlock(&f);
-            const cont_blk = try b.beginBlock(&f);
-
-            try b.condBr(&blk, is_err, fail_blk.id, &.{}, pass_blk.id, &.{}, .none());
-            try b.endBlock(&f, blk);
-
-            _ = b.call(&fail_blk, ts.tVoid(), rt_print_sym, &.{ fail_ptr, fail_len }, .none());
-            try b.br(&fail_blk, cont_blk.id, &.{}, .none());
-            try b.endBlock(&f, fail_blk);
-
-            _ = b.call(&pass_blk, ts.tVoid(), rt_print_sym, &.{ pass_ptr, pass_len }, .none());
-            try b.br(&pass_blk, cont_blk.id, &.{}, .none());
-            try b.endBlock(&f, pass_blk);
-
-            blk = cont_blk;
-        } else {
-            const ptr = b.extractField(&blk, ptr_u8_const, pass_msg, 0, .none());
-            const len = b.extractField(&blk, usize_ty, pass_msg, 1, .none());
-            _ = b.call(&blk, ts.tVoid(), rt_print_sym, &.{ ptr, len }, .none());
-        }
-    }
-
-    const passed = b.bin(&blk, .Sub, i32_ty, total_const, failures, .none());
-    const summary_fmt = b.tirValue(.ConstString, &blk, ts.tString(), .none(), .{ .text = self.context.type_store.strs.intern("\x1b[36mSummary:\x1b[0m \x1b[32m%d passed\x1b[0m; \x1b[31m%d failed\x1b[0m\n") });
-    const fmt_ptr = b.extractField(&blk, ptr_u8_const, summary_fmt, 0, .none());
-    _ = b.call(&blk, i32_ty, printf_sym, &.{ fmt_ptr, passed, failures }, .none());
-
-    try b.setReturnVal(&blk, failures, .none());
-    try b.endBlock(&f, blk);
-    try b.endFunction(f);
-    self.harness_emitted = true;
-}
-
-/// Extract the payload value from the optional `opt_val` (pointer or struct-backed).
-pub fn optionalPayload(
-    self: *LowerTir,
-    blk: *Builder.BlockFrame,
-    opt_ty: types.TypeId,
-    opt_val: tir.ValueId,
-    loc: tir.OptLocId,
-) tir.ValueId {
-    const opt = self.context.type_store.get(.Optional, opt_ty);
-    if (self.context.type_store.isOptionalPointer(opt_ty)) {
-        return blk.builder.tirValue(.CastBit, blk, opt.elem, loc, .{ .value = opt_val });
-    }
-    const ek = self.context.type_store.getKind(opt.elem);
-    if (ek == .Void or ek == .Any) {
-        return self.safeUndef(blk, opt.elem, loc);
-    }
-    return blk.builder.extractField(blk, opt.elem, opt_val, 1, loc);
-}
-
-/// Read the flag that indicates whether `opt_val` actually contains a value.
-pub fn optionalFlag(
-    self: *LowerTir,
-    blk: *Builder.BlockFrame,
-    opt_ty: types.TypeId,
-    opt_val: tir.ValueId,
-    loc: tir.OptLocId,
-) tir.ValueId {
-    if (self.context.type_store.isOptionalPointer(opt_ty)) {
-        const opt = self.context.type_store.get(.Optional, opt_ty);
-        const payload = blk.builder.tirValue(.CastBit, blk, opt.elem, loc, .{ .value = opt_val });
-        const usize_ty = self.context.type_store.tUsize();
-        const payload_bits = blk.builder.tirValue(.CastBit, blk, usize_ty, loc, .{ .value = payload });
-        const zero = blk.builder.constNull(blk, usize_ty, loc);
-        return blk.builder.binBool(blk, .CmpNe, payload_bits, zero, loc);
-    }
-    const bool_ty = self.context.type_store.tBool();
-    return blk.builder.extractField(blk, bool_ty, opt_val, 0, loc);
-}
-
-/// Build an optional value by combining an explicit `flag` with a `payload`.
-pub fn optionalWrapWithFlag(
-    self: *LowerTir,
-    blk: *Builder.BlockFrame,
-    opt_ty: types.TypeId,
-    flag: tir.ValueId,
-    payload: tir.ValueId,
-    loc: tir.OptLocId,
-) tir.ValueId {
-    if (self.context.type_store.isOptionalPointer(opt_ty)) {
-        const some_val = blk.builder.tirValue(.CastBit, blk, opt_ty, loc, .{ .value = payload });
-        const none_val = blk.builder.constNull(blk, opt_ty, loc);
-        return blk.builder.tirValue(.Select, blk, opt_ty, loc, .{
-            .cond = flag,
-            .then_value = some_val,
-            .else_value = none_val,
-        });
-    }
-    const elem_ty = self.context.type_store.get(.Optional, opt_ty).elem;
-    const ek = self.context.type_store.getKind(elem_ty);
-    if (ek == .Void or ek == .Any) {
-        return blk.builder.structMake(blk, opt_ty, &[_]tir.Rows.StructFieldInit{
-            .{ .index = 0, .name = .none(), .value = flag },
-        }, loc);
-    }
-    return blk.builder.structMake(blk, opt_ty, &[_]tir.Rows.StructFieldInit{
-        .{ .index = 0, .name = .none(), .value = flag },
-        .{ .index = 1, .name = .none(), .value = payload },
-    }, loc);
-}
-
-/// Construct a `Some(payload)` optional value with the payload already available.
-pub fn optionalWrapSome(
-    self: *LowerTir,
-    blk: *Builder.BlockFrame,
-    opt_ty: types.TypeId,
-    payload: tir.ValueId,
-    loc: tir.OptLocId,
-) tir.ValueId {
-    if (self.context.type_store.isOptionalPointer(opt_ty)) {
-        return blk.builder.tirValue(.CastBit, blk, opt_ty, loc, .{ .value = payload });
-    }
-    const bool_ty = self.context.type_store.tBool();
-    const some_flag = blk.builder.tirValue(.ConstBool, blk, bool_ty, loc, .{ .value = true });
-
-    const elem_ty = self.context.type_store.get(.Optional, opt_ty).elem;
-    const ek = self.context.type_store.getKind(elem_ty);
-    if (ek == .Void or ek == .Any) {
-        return blk.builder.structMake(blk, opt_ty, &[_]tir.Rows.StructFieldInit{
-            .{ .index = 0, .name = .none(), .value = some_flag },
-        }, loc);
-    }
-
-    return blk.builder.structMake(blk, opt_ty, &[_]tir.Rows.StructFieldInit{
-        .{ .index = 0, .name = .none(), .value = some_flag },
-        .{ .index = 1, .name = .none(), .value = payload },
-    }, loc);
-}
-
-/// Return tru when `did` belongs to the compilation unit's top-level decl list.
 fn isTopLevelDecl(a: *ast.Ast, did: ast.DeclId) bool {
     const decls = a.exprs.decl_pool.slice(a.unit.decls);
     for (decls) |top| {
@@ -1399,29 +1127,32 @@ fn isTopLevelDecl(a: *ast.Ast, did: ast.DeclId) bool {
 fn lowerRegisteredMethods(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder) !void {
     var it = self.context.type_store.method_table.iterator();
     while (it.next()) |entry| {
-        const method = entry.value_ptr.*;
-        if (method.decl_ast != a) continue;
-        if (method.builtin != null) continue;
-        if (isTopLevelDecl(a, method.decl_id)) continue;
-
-        // Ensure expression types reflect the concrete owner specialization for this method
-        _ = a.type_info.applyMethodExprSnapshot(method.owner_type, method.method_name);
-        const decl = a.exprs.Decl.get(method.decl_id);
-        if (a.kind(decl.value) != .FunctionLit) continue;
-
-        const base_name = try self.methodSymbolName(a, method.decl_id, method.owner_type);
-        try self.tryLowerNamedFunction(ctx, a, b, method.decl_id, base_name, true, method.func_type);
+        try self.lowerSingleRegisteredMethod(ctx, a, b, entry.value_ptr.*);
     }
 }
 
-/// Handle top-level declarations (globals/methods) by emitting lowered functions or globals.
+fn lowerSingleRegisteredMethod(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, method: types.MethodEntry) !void {
+    if (method.decl_ast != a) return;
+    if (method.builtin != null) return;
+    if (isTopLevelDecl(a, method.decl_id)) return;
+
+    _ = a.type_info.applyMethodExprSnapshot(method.owner_type, method.method_name);
+
+    const decl = a.exprs.Decl.get(method.decl_id);
+    if (a.kind(decl.value) != .FunctionLit) return;
+
+    const base_name = try self.methodSymbolName(a, method.decl_id, method.owner_type);
+    try self.tryLowerNamedFunction(ctx, a, b, method.decl_id, base_name, true, method.func_type);
+}
+
 fn lowerTopDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, did: ast.DeclId) !void {
     const d = a.exprs.Decl.get(did);
     const kind = a.kind(d.value);
-    if (kind == .MlirBlock and d.pattern.isNone()) {
-        return; // handled by lowerGlobalMlir
-    }
 
+    // 1. MLIR Blocks
+    if (kind == .MlirBlock and d.pattern.isNone()) return;
+
+    // 2. Functions (Methods or Standard Functions)
     if (kind == .FunctionLit and !a.exprs.get(.FunctionLit, d.value).flags.is_extern) {
         var name_opt: ?StrId = null;
         if (!d.method_path.isNone()) {
@@ -1432,48 +1163,48 @@ fn lowerTopDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, d
 
         if (name_opt) |nm| {
             if (self.test_mode and self.isMainPackageName(a)) {
-                const nm_str = self.context.type_store.strs.get(nm);
-                if (std.mem.eql(u8, nm_str, "main")) return;
+                if (std.mem.eql(u8, self.context.type_store.strs.get(nm), "main")) return;
             }
+
             const is_method = !d.method_path.isNone();
             const method_entry = if (is_method) self.methodEntryForDecl(a, did) else null;
             var owner_ty_fallback: ?types.TypeId = null;
+
             if (is_method and method_entry == null) {
                 const fn_ty = self.getExprType(ctx, a, d.value);
-                if (self.context.type_store.getKind(fn_ty) == .Function) {
-                    const fn_info = self.context.type_store.get(.Function, fn_ty);
-                    const params = self.context.type_store.type_pool.slice(fn_info.params);
+                const ts = self.context.type_store;
+                if (ts.getKind(fn_ty) == .Function) {
+                    const fn_info = ts.get(.Function, fn_ty);
+                    const params = ts.type_pool.slice(fn_info.params);
                     if (params.len > 0) {
                         const p0 = params[0];
-                        owner_ty_fallback = if (self.context.type_store.getKind(p0) == .Ptr)
-                            self.context.type_store.get(.Ptr, p0).elem
-                        else
-                            p0;
+                        owner_ty_fallback = if (ts.getKind(p0) == .Ptr) ts.get(.Ptr, p0).elem else p0;
                     }
                 }
                 if (owner_ty_fallback == null) return;
             } else if (method_entry) |entry| {
                 owner_ty_fallback = entry.owner_type;
             }
+
             if (is_method and owner_ty_fallback == null) return;
 
             const base_name = if (owner_ty_fallback) |oty|
                 try self.methodSymbolName(a, did, oty)
             else
                 nm;
+
             try self.tryLowerNamedFunction(ctx, a, b, did, base_name, true, null);
         }
         return;
     }
-    // Global: emit only for value declarations. Type declarations (TypeType)
-    // should not materialize runtime globals.
+
+    // 3. Globals
     if (!d.pattern.isNone()) {
-        // Global names should be fully qualified to avoid clashes across packages.
         const nm = try self.symbolNameForDecl(a, did) orelse return;
         const ty = getDeclType(a, did) orelse return;
-        if (self.context.type_store.getKind(ty) == .TypeType) {
-            return; // skip type declarations
-        }
+
+        if (self.context.type_store.getKind(ty) == .TypeType) return;
+
         if (try self.constInitFromExpr(ctx, a, d.value, ty)) |ci| {
             _ = b.addGlobalWithInit(nm, ty, ci);
         } else {
@@ -1482,49 +1213,49 @@ fn lowerTopDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, d
     }
 }
 
-/// Lower the AST attribute range into a list of TIR attribute ids.
-fn lowerAttrs(
-    self: *LowerTir,
-    a: *ast.Ast,
-    b: *Builder,
-    range: ast.OptRangeAttr,
-) !tir.RangeAttribute {
+fn lowerAttrs(self: *LowerTir, a: *ast.Ast, b: *Builder, range: ast.OptRangeAttr) !tir.RangeAttribute {
     if (range.isNone()) return .empty();
+
     const attrs = a.exprs.attr_pool.slice(range.asRange());
     var attr_list: List(tir.AttributeId) = .empty;
     defer attr_list.deinit(self.gpa);
 
     for (attrs) |aid| {
         const arow = a.exprs.Attribute.get(aid);
-        var val_id = tir.OptValueId.none();
-        if (!arow.value.isNone()) {
-            const val_expr = arow.value.unwrap();
-            if (try self.getCachedComptimeValue(a, val_expr)) |cv| {
-                var owned_cv = cv;
-                defer owned_cv.destroy(self.gpa);
-                const vid = b.freshValue();
-                var iid: tir.InstrId = undefined;
-                switch (owned_cv) {
-                    .Int => |v| iid = b.t.instrs.add(.ConstInt, .{ .result = vid, .ty = self.context.type_store.tI64(), .value = v, .loc = .none() }),
-                    .Float => |v| iid = b.t.instrs.add(.ConstFloat, .{ .result = vid, .ty = self.context.type_store.tF64(), .value = v, .loc = .none() }),
-                    .Bool => |v| iid = b.t.instrs.add(.ConstBool, .{ .result = vid, .ty = self.context.type_store.tBool(), .value = v, .loc = .none() }),
-                    .String => |s| iid = b.t.instrs.add(.ConstString, .{ .result = vid, .ty = self.context.type_store.tString(), .text = b.intern(s), .loc = .none() }),
-                    else => {},
-                }
-                b.t.value_defs.ensureTotalCapacity(b.gpa, vid.toRaw() + 1) catch @panic("OOM");
-                if (b.t.value_defs.items.len <= vid.toRaw()) {
-                    b.t.value_defs.appendNTimes(b.gpa, tir.InstrId.fromRaw(std.math.maxInt(u32)), vid.toRaw() + 1 - b.t.value_defs.items.len) catch @panic("OOM");
-                }
-                b.t.value_defs.items[vid.toRaw()] = iid;
-                val_id = .some(vid);
-            }
-        }
+        const val_id = if (!arow.value.isNone()) try self.lowerAttributeValue(a, b, arow.value.unwrap()) else tir.OptValueId.none();
         try attr_list.append(self.gpa, b.t.instrs.Attribute.add(self.gpa, .{ .name = arow.name, .value = val_id }));
     }
     return b.t.instrs.attribute_pool.pushMany(self.gpa, attr_list.items);
 }
 
-/// Lower a function literal into TIR.
+fn lowerAttributeValue(self: *LowerTir, a: *ast.Ast, b: *Builder, val_expr: ast.ExprId) !tir.OptValueId {
+    if (try self.getCachedComptimeValue(a, val_expr)) |cv| {
+        var owned_cv = cv;
+        defer owned_cv.destroy(self.gpa);
+
+        const vid = b.freshValue();
+        const ts = self.context.type_store;
+        const iid: tir.InstrId = switch (owned_cv) {
+            .Int => |v| b.t.instrs.add(.ConstInt, .{ .result = vid, .ty = ts.tI64(), .value = v, .loc = .none() }),
+            .Float => |v| b.t.instrs.add(.ConstFloat, .{ .result = vid, .ty = ts.tF64(), .value = v, .loc = .none() }),
+            .Bool => |v| b.t.instrs.add(.ConstBool, .{ .result = vid, .ty = ts.tBool(), .value = v, .loc = .none() }),
+            .String => |s| b.t.instrs.add(.ConstString, .{ .result = vid, .ty = ts.tString(), .text = b.intern(s), .loc = .none() }),
+            else => return .none(),
+        };
+
+        const raw_vid = vid.toRaw();
+        try b.t.value_defs.ensureTotalCapacity(b.allocator, raw_vid + 1);
+        if (b.t.value_defs.items.len <= raw_vid) {
+            // Using maxInt as placeholder for undefined/uninitialized
+            b.t.value_defs.appendNTimesAssumeCapacity(tir.InstrId.fromRaw(std.math.maxInt(u32)), raw_vid + 1 - b.t.value_defs.items.len);
+        }
+        b.t.value_defs.items[raw_vid] = iid;
+
+        return .some(vid);
+    }
+    return .none();
+}
+
 pub fn lowerFunction(
     self: *LowerTir,
     lower_ctx: *LowerContext,
@@ -1535,8 +1266,9 @@ pub fn lowerFunction(
     sig_override: ?types.TypeId,
 ) !void {
     const fid = sig_override orelse self.getExprType(lower_ctx, a, fun_eid);
-    if (self.context.type_store.getKind(fid) != .Function) return;
-    const fnty = self.context.type_store.get(.Function, fid);
+    const ts = self.context.type_store;
+    if (ts.getKind(fid) != .Function) return;
+    const fnty = ts.get(.Function, fid);
 
     const fnr = a.exprs.get(.FunctionLit, fun_eid);
     const fn_loc = tir.OptLocId.some(fnr.loc);
@@ -1544,40 +1276,16 @@ pub fn lowerFunction(
     try self.pushExprTypeOverrideFrame(lower_ctx);
     defer self.popExprTypeOverrideFrame(lower_ctx);
 
-    const triton_fn_sid = a.exprs.strs.intern("triton");
-    const triton_kernel_sid = a.exprs.strs.intern("triton_kernel");
-    var is_triton_fn = false;
-    if (!fnr.attrs.isNone()) {
-        const attrs = a.exprs.attr_pool.slice(fnr.attrs.asRange());
-        const mlir_fn_str = a.exprs.strs.intern("mlir_fn");
-        for (attrs) |aid| {
-            const arow = a.exprs.Attribute.get(aid);
-            if (arow.name.eq(mlir_fn_str)) {
-                return; // skip lowering this function
-            }
-            if (arow.name.eq(triton_fn_sid) or arow.name.eq(triton_kernel_sid)) {
-                is_triton_fn = true;
-            }
-        }
-    }
+    const flags = self.parseFunctionAttributes(a, fnr.attrs);
+    if (flags.is_mlir_fn) return;
 
     if (!fnr.body.isNone()) {
-        const body_id = fnr.body.unwrap();
-        const has_override = self.lookupExprTypeOverride(lower_ctx, body_id) != null;
-        const raw = body_id.toRaw();
-        const has_direct = raw < a.type_info.expr_types.items.len and a.type_info.expr_types.items[raw] != null;
-        if (!has_override and !has_direct) {
-            return;
-        }
+        if (!self.shouldLowerBody(lower_ctx, a, fnr.body.unwrap())) return;
     }
 
     const attrs = try self.lowerAttrs(a, b, fnr.attrs);
-    var raw_asm: cst.OptStrId = .none();
-    if (!fnr.raw_asm.isNone()) {
-        const asm_txt = a.exprs.strs.get(fnr.raw_asm.unwrap());
-        const asm_sid = b.intern(asm_txt);
-        raw_asm = .some(asm_sid);
-    }
+    const raw_asm: cst.OptStrId = if (fnr.raw_asm.isNone()) .none() else .some(b.intern(a.exprs.strs.get(fnr.raw_asm.unwrap())));
+
     var f = try b.beginFunction(
         self.context,
         name,
@@ -1585,49 +1293,27 @@ pub fn lowerFunction(
         fnty.is_variadic,
         fnty.is_extern,
         attrs,
-        is_triton_fn,
+        flags.is_triton,
         fnr.flags.is_async,
         raw_asm,
     );
 
-    // Params
     const params = a.exprs.param_pool.slice(fnr.params);
-    var i: usize = 0;
-    const runtime_param_tys = self.context.type_store.type_pool.slice(fnty.params);
-    var runtime_index: usize = 0;
-    while (i < params.len) : (i += 1) {
-        const p = a.exprs.Param.get(params[i]);
-        const pty = runtime_param_tys[runtime_index];
-        const pname = if (!p.pat.isNone()) bindingNameOfPattern(a, p.pat.unwrap()) else null;
-        _ = try b.addParam(&f, pname, pty);
-        runtime_index += 1;
-    }
+    const runtime_param_tys = ts.type_pool.slice(fnty.params);
 
-    // Entry block + env
+    try self.setupFunctionParams(a, b, &f, params, runtime_param_tys);
+
     var blk = try b.beginBlock(&f);
     var env = cf.Env{};
     defer env.deinit(self.gpa);
 
-    // Bind params
-    i = 0;
-    const param_vals = f.param_vals.items;
-    runtime_index = 0;
-    while (i < params.len) : (i += 1) {
-        const p = a.exprs.Param.get(params[i]);
-        if (!p.pat.isNone()) {
-            const pname = bindingNameOfPattern(a, p.pat.unwrap()) orelse continue;
-            const pty = runtime_param_tys[runtime_index];
-            try env.bind(self.gpa, pname, .{ .value = param_vals[runtime_index], .ty = pty, .is_slot = false }, b, &blk, optLoc(a, p.pat.unwrap()));
-        }
-        runtime_index += 1;
-    }
+    try self.bindFunctionParams(a, b, &env, &f, &blk, params, runtime_param_tys);
 
-    // Body
     if (!fnr.body.isNone()) {
         const body_id = fnr.body.unwrap();
         try env.pushScope(self.gpa);
+        defer _ = env.popScope(self.gpa);
         try self.lowerExprAsStmtList(lower_ctx, a, &env, &f, &blk, body_id);
-        _ = env.popScope(self.gpa);
     }
 
     if (blk.term.isNone()) {
@@ -1638,7 +1324,54 @@ pub fn lowerFunction(
     try b.endFunction(f);
 }
 
-/// Evaluate `id` as a sequence of statements, running any defers and ignoring the final value.
+const FnFlags = struct { is_triton: bool, is_mlir_fn: bool };
+
+fn parseFunctionAttributes(_: *LowerTir, a: *ast.Ast, attrs_opt: ast.OptRangeAttr) FnFlags {
+    if (attrs_opt.isNone()) return .{ .is_triton = false, .is_mlir_fn = false };
+    const attrs = a.exprs.attr_pool.slice(attrs_opt.asRange());
+    const mlir_fn_str = a.exprs.strs.intern("mlir_fn");
+    const triton_fn_sid = a.exprs.strs.intern("triton");
+    const triton_kernel_sid = a.exprs.strs.intern("triton_kernel");
+
+    var flags = FnFlags{ .is_triton = false, .is_mlir_fn = false };
+    for (attrs) |aid| {
+        const name = a.exprs.Attribute.get(aid).name;
+        if (name.eq(mlir_fn_str)) flags.is_mlir_fn = true;
+        if (name.eq(triton_fn_sid) or name.eq(triton_kernel_sid)) flags.is_triton = true;
+    }
+    return flags;
+}
+
+fn shouldLowerBody(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, body_id: ast.ExprId) bool {
+    const has_override = self.lookupExprTypeOverride(ctx, body_id) != null;
+    const raw = body_id.toRaw();
+    // Use unsafe access if we can guarantee bounds, otherwise standard check
+    if (raw < a.type_info.expr_types.items.len) {
+        return has_override or a.type_info.expr_types.items[raw] != null;
+    }
+    return has_override;
+}
+
+fn setupFunctionParams(_: *LowerTir, a: *ast.Ast, b: *Builder, f: *Builder.FunctionFrame, params: []const ast.ParamId, runtime_tys: []const types.TypeId) !void {
+    for (params, 0..) |pid, i| {
+        const p = a.exprs.Param.get(pid);
+        const pname = if (!p.pat.isNone()) bindingNameOfPattern(a, p.pat.unwrap()) else null;
+        _ = try b.addParam(f, pname, runtime_tys[i]);
+    }
+}
+
+fn bindFunctionParams(self: *LowerTir, a: *ast.Ast, b: *Builder, env: *cf.Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, params: []const ast.ParamId, runtime_tys: []const types.TypeId) !void {
+    const param_vals = f.param_vals.items;
+    for (params, 0..) |pid, i| {
+        const p = a.exprs.Param.get(pid);
+        if (!p.pat.isNone()) {
+            if (bindingNameOfPattern(a, p.pat.unwrap())) |pname| {
+                try env.bind(self.gpa, pname, .{ .value = param_vals[i], .ty = runtime_tys[i], .is_slot = false }, b, blk, optLoc(a, p.pat.unwrap()));
+            }
+        }
+    }
+}
+
 pub fn lowerExprAsStmtList(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -1648,27 +1381,29 @@ pub fn lowerExprAsStmtList(
     blk: *Builder.BlockFrame,
     id: ast.ExprId,
 ) !void {
-    if (a.kind(id) == .Block) {
-        const b = a.exprs.get(.Block, id);
-        const stmts = a.stmts.stmt_pool.slice(b.items);
-        const start: u32 = @intCast(env.defers.items.len);
-        try env.pushScope(self.gpa);
-        for (stmts) |sid| {
-            if (!blk.term.isNone()) break;
-            try self.lowerStmt(ctx, a, env, f, blk, sid);
-        }
-        if (blk.term.isNone()) {
-            const slice = env.defers.items[start..env.defers.items.len];
-            if (slice.len > 0) try cf.emitDefers(self, ctx, a, env, f, blk, slice, false);
-        }
-        env.defers.items.len = start;
-        _ = env.popScope(self.gpa);
-    } else {
+    if (a.kind(id) != .Block) {
         _ = try self.lowerExpr(ctx, a, env, f, blk, id, null, .rvalue);
+        return;
     }
+
+    const b_node = a.exprs.get(.Block, id);
+    const start: u32 = @intCast(env.defers.items.len);
+
+    try env.pushScope(self.gpa);
+    defer _ = env.popScope(self.gpa);
+
+    for (a.stmts.stmt_pool.slice(b_node.items)) |sid| {
+        if (!blk.term.isNone()) break;
+        try self.lowerStmt(ctx, a, env, f, blk, sid);
+    }
+
+    if (blk.term.isNone()) {
+        const slice = env.defers.items[start..];
+        if (slice.len > 0) try cf.emitDefers(self, ctx, a, env, f, blk, slice, false);
+    }
+    env.defers.items.len = start;
 }
 
-/// Lower a declaration statement, destructuring patterns or evaluating the RHS for side effects.
 fn lowerDecl(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -1680,24 +1415,20 @@ fn lowerDecl(
 ) !void {
     const drow = a.stmts.get(.Decl, sid);
     const d = a.exprs.Decl.get(drow.decl);
-    if (!d.method_path.isNone() and a.kind(d.value) == .FunctionLit) {
-        return; // Method bodies are lowered separately via the method table.
-    }
+
+    if (!d.method_path.isNone() and a.kind(d.value) == .FunctionLit) return;
+
     const value_ty = self.getExprType(ctx, a, d.value);
     const decl_ty = getDeclType(a, drow.decl) orelse value_ty;
+
     if (!d.pattern.isNone()) {
-        // Destructure once for all names: bind as values for const, or slots for mut.
         try self.destructureDeclFromExpr(ctx, a, env, f, blk, d.pattern.unwrap(), d.value, decl_ty, !d.flags.is_const);
     } else {
-        if (!d.method_path.isNone()) {
-            if (a.kind(d.value) == .FunctionLit) return;
-        }
-        // No pattern: just evaluate for side-effects.
+        if (!d.method_path.isNone() and a.kind(d.value) == .FunctionLit) return;
         _ = try self.lowerExpr(ctx, a, env, f, blk, d.value, decl_ty, .rvalue);
     }
 }
 
-/// Lower a `return` statement by computing the result value and emitting the terminator.
 fn lowerReturn(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -1707,12 +1438,9 @@ fn lowerReturn(
     blk: *Builder.BlockFrame,
     sid: ast.StmtId,
 ) !void {
-    const r = a.stmts.get(.Return, sid);
-    const stmt_loc = optLoc(a, sid);
-    try self.lowerReturnCommon(ctx, a, env, f, blk, r.value, stmt_loc);
+    try self.lowerReturnCommon(ctx, a, env, f, blk, a.stmts.get(.Return, sid).value, optLoc(a, sid));
 }
 
-/// Shared lowering logic for a `return` value that runs normal/err defers and emits the terminator.
 fn lowerReturnCommon(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -1723,57 +1451,70 @@ fn lowerReturnCommon(
     value_opt: ast.OptExprId,
     stmt_loc: tir.OptLocId,
 ) !void {
-    const defer_mark: u32 = 0;
-
-    if (!value_opt.isNone()) {
-        const frow = f.builder.t.funcs.Function.get(f.id);
-        var expect = frow.result;
-        if (frow.is_async and self.context.type_store.getKind(expect) == .Future) {
-            expect = self.context.type_store.get(.Future, expect).elem;
-        }
-        const value_expr = value_opt.unwrap();
-        const value_loc = optLoc(a, value_expr);
-        const v = try self.lowerExpr(ctx, a, env, f, blk, value_expr, expect, .rvalue);
-
-        const expect_kind = self.context.type_store.getKind(expect);
-        const has_err_defers = expect_kind == .ErrorSet and cf.hasErrDefersFrom(self, env, defer_mark);
-
-        if (has_err_defers) {
-            var err_blk = try f.builder.beginBlock(f);
-            var ok_blk = try f.builder.beginBlock(f);
-            const tag_ty = self.context.type_store.tI32();
-            const tag = blk.builder.extractField(blk, tag_ty, v, 0, value_loc);
-            const zero = blk.builder.tirValue(.ConstInt, blk, tag_ty, value_loc, .{ .value = 0 });
-            const is_err = blk.builder.binBool(blk, .CmpNe, tag, zero, value_loc);
-            const br_cond = self.forceLocalCond(blk, is_err, value_loc);
-            try f.builder.condBr(blk, br_cond, err_blk.id, &.{}, ok_blk.id, &.{}, stmt_loc);
-
-            const defer_slice = env.defers.items[defer_mark..env.defers.items.len];
-
-            try cf.emitDefers(self, ctx, a, env, f, &err_blk, defer_slice, true);
-            try cf.emitDefers(self, ctx, a, env, f, &err_blk, defer_slice, false);
-            try f.builder.setReturnVal(&err_blk, v, stmt_loc);
-            try f.builder.endBlock(f, err_blk);
-
-            try cf.emitDefers(self, ctx, a, env, f, &ok_blk, defer_slice, false);
-            try f.builder.setReturnVal(&ok_blk, v, stmt_loc);
-            try f.builder.endBlock(f, ok_blk);
-
-            env.defers.items.len = defer_mark;
-            return;
-        } else {
-            try cf.runNormalDefersFrom(self, ctx, a, env, f, blk, defer_mark);
-            try f.builder.setReturnVal(blk, v, stmt_loc);
-            return;
-        }
-    } else {
-        try cf.runNormalDefersFrom(self, ctx, a, env, f, blk, defer_mark);
+    if (value_opt.isNone()) {
+        try cf.runNormalDefersFrom(self, ctx, a, env, f, blk, 0);
         try f.builder.setReturnVoid(blk, stmt_loc);
         return;
     }
+
+    const value_expr = value_opt.unwrap();
+    var expect = f.builder.t.funcs.Function.get(f.id).result;
+    const ts = self.context.type_store;
+
+    // Unwrap future result type if async
+    if (f.builder.t.funcs.Function.get(f.id).is_async and ts.getKind(expect) == .Future) {
+        expect = ts.get(.Future, expect).elem;
+    }
+
+    const v = try self.lowerExpr(ctx, a, env, f, blk, value_expr, expect, .rvalue);
+    const value_loc = optLoc(a, value_expr);
+
+    if (ts.getKind(expect) == .ErrorSet and cf.hasErrDefersFrom(self, env, 0)) {
+        try self.emitReturnWithErrDefers(ctx, a, env, f, blk, v, value_loc, stmt_loc, 0);
+    } else {
+        try cf.runNormalDefersFrom(self, ctx, a, env, f, blk, 0);
+        try f.builder.setReturnVal(blk, v, stmt_loc);
+    }
 }
 
-/// Emit stores/destructures for a top-level assignment, supporting `_` discard and slots.
+fn emitReturnWithErrDefers(
+    self: *LowerTir,
+    ctx: *LowerContext,
+    a: *ast.Ast,
+    env: *cf.Env,
+    f: *Builder.FunctionFrame,
+    blk: *Builder.BlockFrame,
+    v: tir.ValueId,
+    value_loc: tir.OptLocId,
+    stmt_loc: tir.OptLocId,
+    defer_mark: u32,
+) !void {
+    var err_blk = try f.builder.beginBlock(f);
+    var ok_blk = try f.builder.beginBlock(f);
+
+    const tag_ty = self.context.type_store.tI32();
+    const tag = blk.builder.extractField(blk, tag_ty, v, 0, value_loc);
+    const zero = blk.builder.tirValue(.ConstInt, blk, tag_ty, value_loc, .{ .value = 0 });
+    const is_err = blk.builder.binBool(blk, .CmpNe, tag, zero, value_loc);
+
+    try f.builder.condBr(blk, self.forceLocalCond(blk, is_err, value_loc), err_blk.id, &.{}, ok_blk.id, &.{}, stmt_loc);
+
+    const defer_slice = env.defers.items[defer_mark..];
+
+    // Error Path: run both normal and error defers
+    try cf.emitDefers(self, ctx, a, env, f, &err_blk, defer_slice, true);
+    try cf.emitDefers(self, ctx, a, env, f, &err_blk, defer_slice, false);
+    try f.builder.setReturnVal(&err_blk, v, stmt_loc);
+    try f.builder.endBlock(f, err_blk);
+
+    // OK Path: run only normal defers
+    try cf.emitDefers(self, ctx, a, env, f, &ok_blk, defer_slice, false);
+    try f.builder.setReturnVal(&ok_blk, v, stmt_loc);
+    try f.builder.endBlock(f, ok_blk);
+
+    env.defers.items.len = defer_mark;
+}
+
 fn lowerAssign(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -1784,35 +1525,36 @@ fn lowerAssign(
     sid: ast.StmtId,
 ) !void {
     const as = a.stmts.get(.Assign, sid);
-    const stmt_loc = optLoc(a, sid);
-    // Handle discard assignment: `_ = rhs` should only evaluate RHS for side-effects.
+
+    // 1. Handle discard: `_ = rhs`
     if (a.kind(as.left) == .Ident) {
-        const ident = a.exprs.get(.Ident, as.left);
-        if (std.mem.eql(u8, a.exprs.strs.get(ident.name), "_")) {
-            // Do not attempt to read a type for the LHS or perform a store.
+        if (std.mem.eql(u8, a.exprs.strs.get(a.exprs.get(.Ident, as.left).name), "_")) {
             _ = try self.lowerExpr(ctx, a, env, f, blk, as.right, null, .rvalue);
             return;
         }
     }
-    const rty = self.getExprType(ctx, a, as.left);
 
+    const rty = self.getExprType(ctx, a, as.left);
+    const stmt_loc = optLoc(a, sid);
+
+    // 2. Handle simple local assignment optimization
     if (a.kind(as.left) == .Ident) {
-        const ident = a.exprs.get(.Ident, as.left);
-        if (env.lookup(ident.name)) |bnd| {
+        const name = a.exprs.get(.Ident, as.left).name;
+        if (env.lookup(name)) |bnd| {
             if (!bnd.is_slot) {
                 const rhs = try self.lowerExpr(ctx, a, env, f, blk, as.right, rty, .rvalue);
-                try env.bind(self.gpa, ident.name, .{ .value = rhs, .ty = rty, .is_slot = false }, f.builder, blk, stmt_loc);
+                try env.bind(self.gpa, name, .{ .value = rhs, .ty = rty, .is_slot = false }, f.builder, blk, stmt_loc);
                 return;
             }
         }
     }
 
+    // 3. General L-Value Store
     const lhs_ptr = try self.lowerExpr(ctx, a, env, f, blk, as.left, null, .lvalue_addr);
     const rhs = try self.lowerExpr(ctx, a, env, f, blk, as.right, rty, .rvalue);
     _ = f.builder.tirValue(.Store, blk, rty, stmt_loc, .{ .ptr = lhs_ptr, .value = rhs, .@"align" = 0 });
 }
 
-/// Lower a statement ID by dispatching to the appropriate handler (expr, loop, return, etc.).
 fn lowerStmt(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -1823,18 +1565,9 @@ fn lowerStmt(
     sid: ast.StmtId,
 ) !void {
     switch (a.kind(sid)) {
-        .Expr => {
-            const e = a.stmts.get(.Expr, sid).expr;
-            _ = try self.lowerExpr(ctx, a, env, f, blk, e, null, .rvalue);
-        },
-        .Defer => {
-            const d = a.stmts.get(.Defer, sid);
-            try env.defers.append(self.gpa, .{ .expr = d.expr, .is_err = false });
-        },
-        .ErrDefer => {
-            const d = a.stmts.get(.ErrDefer, sid);
-            try env.defers.append(self.gpa, .{ .expr = d.expr, .is_err = true });
-        },
+        .Expr => _ = try self.lowerExpr(ctx, a, env, f, blk, a.stmts.get(.Expr, sid).expr, null, .rvalue),
+        .Defer => try env.defers.append(self.gpa, .{ .expr = a.stmts.get(.Defer, sid).expr, .is_err = false }),
+        .ErrDefer => try env.defers.append(self.gpa, .{ .expr = a.stmts.get(.ErrDefer, sid).expr, .is_err = true }),
         .Break => try cf.lowerBreak(self, ctx, a, env, f, blk, sid),
         .Continue => try cf.lowerContinue(self, ctx, a, env, f, blk, sid),
         .Decl => try self.lowerDecl(ctx, a, env, f, blk, sid),
@@ -1849,54 +1582,37 @@ fn lowerStmt(
 // Expressions
 // ============================
 
-/// Entry describing the callee metadata used by `lowerCall`.
 const CalleeInfo = struct {
-    /// Interned string representing the callee's unqualified name.
     name: StrId,
-    /// Optional fully-qualified symbol name used for diagnostics.
     qualified_name: ?StrId,
-    /// Optional type reported for the callee expression.
     fty: ?types.TypeId,
-    /// AST node that triggered this call/lookup.
     expr: ast.ExprId,
 };
 
-/// Interpret `expr` as a type argument, returning the referenced type when possible.
 fn resolveTypeArg(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, expr: ast.ExprId) ?types.TypeId {
     const ty = self.getExprType(ctx, a, expr);
-    if (self.context.type_store.getKind(ty) != .TypeType) return null;
-    return self.context.type_store.get(.TypeType, ty).of;
+    if (self.context.type_store.getKind(ty) == .TypeType) {
+        return self.context.type_store.get(.TypeType, ty).of;
+    }
+    return null;
 }
 
-/// Build a short symbol name combining the owner and method segments.
-fn methodSymbolShortName(
-    self: *LowerTir,
-    a: *ast.Ast,
-    did: ast.DeclId,
-) !StrId {
+fn methodSymbolShortName(self: *LowerTir, a: *ast.Ast, did: ast.DeclId) !StrId {
     const decl = a.exprs.Decl.get(did);
-    std.debug.assert(!decl.method_path.isNone());
     const seg_ids = a.exprs.method_path_pool.slice(decl.method_path.asRange());
-    std.debug.assert(seg_ids.len >= 2);
-
-    const owner_seg = a.exprs.MethodPathSeg.get(seg_ids[0]);
-    const method_seg = a.exprs.MethodPathSeg.get(seg_ids[seg_ids.len - 1]);
-    const owner_name = a.exprs.strs.get(owner_seg.name);
-    const method_name = a.exprs.strs.get(method_seg.name);
-
+    const owner_name = a.exprs.strs.get(a.exprs.MethodPathSeg.get(seg_ids[0]).name);
+    const method_name = a.exprs.strs.get(a.exprs.MethodPathSeg.get(seg_ids[seg_ids.len - 1]).name);
     const symbol = try std.fmt.allocPrint(self.gpa, "{s}__{s}", .{ owner_name, method_name });
     defer self.gpa.free(symbol);
     return self.context.type_store.strs.intern(symbol);
 }
 
-/// Locate the original declaration that produced the synthetic specialization `syn_id`.
 fn findOriginalDeclForSynthetic(self: *LowerTir, a: *ast.Ast, syn_id: ast.DeclId) ?ast.DeclId {
     if (a.file_id >= self.chk.checker_ctx.items.len) return null;
-    const ctx = self.chk.checker_ctx.items[a.file_id] orelse return null;
-    var it = ctx.specialization_cache.iterator();
-    while (it.next()) |entry| {
-        if (entry.value_ptr.*.eq(syn_id)) {
-            return ast.DeclId.fromRaw(entry.key_ptr.original_decl_id);
+    if (self.chk.checker_ctx.items[a.file_id]) |ctx| {
+        var it = ctx.specialization_cache.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.*.eq(syn_id)) return ast.DeclId.fromRaw(entry.key_ptr.original_decl_id);
         }
     }
     return null;
@@ -1911,18 +1627,25 @@ pub fn methodSymbolName(
 ) !StrId {
     const short_name = try methodSymbolShortName(self, a, did);
     const short_str = self.context.type_store.strs.get(short_name);
-    const symbol = try std.fmt.allocPrint(self.gpa, "{s}_T{d}", .{ short_str, owner_type.toRaw() });
-    defer self.gpa.free(symbol);
 
-    return self.context.type_store.strs.intern(symbol);
+    var buf: [256]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, "{s}_T{d}", .{ short_str, owner_type.toRaw() }) catch |err| switch (err) {
+        error.NoSpaceLeft => {
+            const allocated = try std.fmt.allocPrint(self.gpa, "{s}_T{d}", .{ short_str, owner_type.toRaw() });
+            defer self.gpa.free(allocated);
+            return self.context.type_store.strs.intern(allocated);
+        },
+        else => return err,
+    };
+
+    return self.context.type_store.strs.intern(text);
 }
 
 fn methodEntryForDecl(self: *LowerTir, a: *ast.Ast, decl_id: ast.DeclId) ?*types.MethodEntry {
     var it = self.context.type_store.method_table.iterator();
     while (it.next()) |entry| {
-        const method = entry.value_ptr.*;
-        // Check both DeclId AND the AST pointer to ensure we get the method from the correct file
-        if (method.decl_id.eq(decl_id) and method.decl_ast == a) return entry.value_ptr;
+        const method = entry.value_ptr;
+        if (method.decl_id.eq(decl_id) and method.decl_ast == a) return method;
     }
     return null;
 }
@@ -1944,43 +1667,48 @@ fn prepareMethodCall(
         callee.fty = binding.func_type;
         method_decl_id.* = null;
         method_binding_out.* = binding;
-        if (binding.requires_implicit_receiver) {
-            std.debug.assert(a.kind(row.callee) == .FieldAccess);
-            const field_expr = a.exprs.get(.FieldAccess, row.callee);
-            if (method_arg_buf.*.len != 0) {
-                self.gpa.free(method_arg_buf.*);
-                method_arg_buf.* = &.{};
-            }
-            method_arg_buf.* = try self.gpa.alloc(ast.ExprId, arg_ids.*.len + 1);
-            method_arg_buf.*[0] = field_expr.parent;
-            std.mem.copyForwards(ast.ExprId, method_arg_buf.*[1..], arg_ids.*);
-            arg_ids.* = method_arg_buf.*;
+
+        if (!binding.requires_implicit_receiver) return;
+
+        std.debug.assert(a.kind(row.callee) == .FieldAccess);
+        const field_expr = a.exprs.get(.FieldAccess, row.callee);
+
+        const req_len = arg_ids.*.len + 1;
+        if (method_arg_buf.*.len < req_len) {
+            if (method_arg_buf.*.len > 0) self.gpa.free(method_arg_buf.*);
+            method_arg_buf.* = try self.gpa.alloc(ast.ExprId, req_len);
         }
+
+        method_arg_buf.*[0] = field_expr.parent;
+        @memcpy(method_arg_buf.*[1..], arg_ids.*);
+        arg_ids.* = method_arg_buf.*;
         return;
     }
 
     const symbol_ast = binding.decl_ast;
-
     const base_symbol = try self.methodSymbolName(symbol_ast, binding.decl_id, binding.owner_type);
     const symbol = try self.qualifySymbolName(symbol_ast, base_symbol);
+
     callee.name = symbol;
     callee.fty = binding.func_type;
     method_binding_out.* = binding;
     callee_name.* = self.context.type_store.strs.get(callee.name);
     method_decl_id.* = binding.decl_id;
 
-    if (binding.requires_implicit_receiver) {
-        std.debug.assert(a.kind(row.callee) == .FieldAccess);
-        const field_expr = a.exprs.get(.FieldAccess, row.callee);
-        if (method_arg_buf.*.len != 0) {
-            self.gpa.free(method_arg_buf.*);
-            method_arg_buf.* = &.{};
-        }
-        method_arg_buf.* = try self.gpa.alloc(ast.ExprId, arg_ids.*.len + 1);
-        method_arg_buf.*[0] = field_expr.parent;
-        std.mem.copyForwards(ast.ExprId, method_arg_buf.*[1..], arg_ids.*);
-        arg_ids.* = method_arg_buf.*;
+    if (!binding.requires_implicit_receiver) return;
+
+    std.debug.assert(a.kind(row.callee) == .FieldAccess);
+    const field_expr = a.exprs.get(.FieldAccess, row.callee);
+
+    const req_len = arg_ids.*.len + 1;
+    if (method_arg_buf.*.len < req_len) {
+        if (method_arg_buf.*.len > 0) self.gpa.free(method_arg_buf.*);
+        method_arg_buf.* = try self.gpa.alloc(ast.ExprId, req_len);
     }
+
+    method_arg_buf.*[0] = field_expr.parent;
+    @memcpy(method_arg_buf.*[1..], arg_ids.*);
+    arg_ids.* = method_arg_buf.*;
 }
 
 /// Try to resolve the binding represented by a field-access into an actual method entry.
@@ -1995,28 +1723,21 @@ fn synthesizeMethodBinding(
 
     const field_expr = a.exprs.get(.FieldAccess, field_expr_id);
     try self.ensureExprTypeStamped(ctx, a, field_expr.parent);
-    const refined = try self.refineExprType(ctx, a, env, field_expr.parent, self.getExprType(ctx, a, field_expr.parent));
-    if (refined == null) return null;
 
-    var receiver_ty = refined.?;
+    const raw_ty = self.getExprType(ctx, a, field_expr.parent);
+    const receiver_ty = (try self.refineExprType(ctx, a, env, field_expr.parent, raw_ty)) orelse return null;
+
     var owner_ty = receiver_ty;
     const parent_kind = self.context.type_store.getKind(receiver_ty);
 
     switch (parent_kind) {
-        .Ptr => {
-            const ptr_row = self.context.type_store.get(.Ptr, receiver_ty);
-            owner_ty = ptr_row.elem;
-        },
-        .TypeType => {
-            owner_ty = self.context.type_store.get(.TypeType, receiver_ty).of;
-        },
+        .Ptr => owner_ty = self.context.type_store.get(.Ptr, receiver_ty).elem,
+        .TypeType => owner_ty = self.context.type_store.get(.TypeType, receiver_ty).of,
         else => {},
     }
 
-    const entry_opt = self.context.type_store.getMethod(owner_ty, field_expr.field);
-    if (entry_opt == null) return null;
+    const entry = self.context.type_store.getMethod(owner_ty, field_expr.field) orelse return null;
 
-    const entry = entry_opt.?;
     const wants_receiver = entry.receiver_kind != .none;
     const implicit_receiver = wants_receiver and parent_kind != .TypeType;
     var needs_addr_of = false;
@@ -2024,18 +1745,14 @@ fn synthesizeMethodBinding(
     if (implicit_receiver) {
         switch (entry.receiver_kind) {
             .none => {},
-            .value => {
-                if (!receiver_ty.eq(owner_ty)) return null;
-            },
+            .value => if (!receiver_ty.eq(owner_ty)) return null,
             .pointer, .pointer_const => {
                 if (parent_kind == .Ptr) {
                     const ptr_row = self.context.type_store.get(.Ptr, receiver_ty);
                     if (!ptr_row.elem.eq(owner_ty)) return null;
                 } else if (receiver_ty.eq(owner_ty)) {
                     needs_addr_of = true;
-                } else {
-                    return null;
-                }
+                } else return null;
             },
         }
     }
@@ -2059,67 +1776,68 @@ fn resolveFieldAccessName(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, fiel
     const field_access = a.exprs.get(.FieldAccess, field_expr_id);
     const parent_ty = self.getExprType(ctx, a, field_access.parent);
 
-    if (self.context.type_store.getKind(parent_ty) == .Ast) {
-        const ast_ty = self.context.type_store.get(.Ast, parent_ty);
-        const pkg_name = self.context.interner.get(ast_ty.pkg_name);
-        const filepath = self.context.interner.get(ast_ty.filepath);
-        const pkg = self.context.compilation_unit.packages.getPtr(pkg_name) orelse
-            unreachable;
-        const parent_unit = pkg.sources.getPtr(filepath) orelse
-            unreachable;
+    if (self.context.type_store.getKind(parent_ty) != .Ast) return field_access.field;
 
-        if (parent_unit.ast) |imported_ast| {
-            const field_name = a.exprs.strs.get(field_access.field);
-            const target_sid = imported_ast.exprs.strs.intern(field_name);
-            if (imported_ast.type_info.getExport(target_sid)) |ex| {
-                const drow = imported_ast.exprs.Decl.get(ex.decl_id);
-                return switch (imported_ast.kind(drow.value)) {
-                    .Ident => imported_ast.exprs.get(.Ident, drow.value).name,
-                    .FieldAccess => self.resolveFieldAccessName(ctx, imported_ast, drow.value),
-                    else => field_access.field,
-                };
-            }
-        }
-    }
+    const ast_ty = self.context.type_store.get(.Ast, parent_ty);
+    const pkg_name = self.context.interner.get(ast_ty.pkg_name);
+    const filepath = self.context.interner.get(ast_ty.filepath);
 
-    return field_access.field;
+    const pkg = self.context.compilation_unit.packages.getPtr(pkg_name) orelse unreachable;
+    const parent_unit = pkg.sources.getPtr(filepath) orelse unreachable;
+    const imported_ast = parent_unit.ast orelse return field_access.field;
+
+    const field_name = a.exprs.strs.get(field_access.field);
+    const target_sid = imported_ast.exprs.strs.intern(field_name);
+
+    const ex = imported_ast.type_info.getExport(target_sid) orelse return field_access.field;
+    const drow = imported_ast.exprs.Decl.get(ex.decl_id);
+
+    return switch (imported_ast.kind(drow.value)) {
+        .Ident => imported_ast.exprs.get(.Ident, drow.value).name,
+        .FieldAccess => self.resolveFieldAccessName(ctx, imported_ast, drow.value),
+        else => field_access.field,
+    };
 }
 
 /// Trace a call expression to identify the callee symbol plus qualified name if any.
 fn resolveCallee(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, f: *Builder.FunctionFrame, row: ast.Rows.Call) !CalleeInfo {
     const cctx = self.chk.checker_ctx.items[a.file_id] orelse unreachable;
     var current = row.callee;
-    var depth: usize = 0;
 
+    var depth: usize = 0;
     while (depth < 32) : (depth += 1) {
         switch (a.kind(current)) {
             .Ident => {
                 const ident = a.exprs.get(.Ident, current);
-                if (cctx.symtab.lookup(cctx.symtab.currentId(), ident.name)) |sid| {
-                    const srow = cctx.symtab.syms.get(sid);
-                    if (!srow.origin_decl.isNone()) {
-                        const did = srow.origin_decl.unwrap();
-                        const drow = a.exprs.Decl.get(did);
-                        switch (a.kind(drow.value)) {
-                            .Ident, .FieldAccess => {
-                                current = drow.value;
-                                continue;
-                            },
-                            else => {},
-                        }
-                    }
+                const sid = cctx.symtab.lookup(cctx.symtab.currentId(), ident.name) orelse {
+                    return CalleeInfo{ .name = ident.name, .qualified_name = null, .fty = self.getExprType(ctx, a, row.callee), .expr = current };
+                };
+
+                const srow = cctx.symtab.syms.get(sid);
+                if (srow.origin_decl.isNone()) {
+                    return CalleeInfo{ .name = ident.name, .qualified_name = null, .fty = self.getExprType(ctx, a, row.callee), .expr = current };
                 }
-                return .{ .name = ident.name, .qualified_name = null, .fty = self.getExprType(ctx, a, row.callee), .expr = current };
+
+                const did = srow.origin_decl.unwrap();
+                const drow = a.exprs.Decl.get(did);
+                const val_kind = a.kind(drow.value);
+
+                if (val_kind == .Ident or val_kind == .FieldAccess) {
+                    current = drow.value;
+                    continue;
+                }
+
+                return CalleeInfo{ .name = ident.name, .qualified_name = null, .fty = self.getExprType(ctx, a, row.callee), .expr = current };
             },
             .FieldAccess => {
                 const resolved_name = self.resolveFieldAccessName(ctx, a, current);
-                return .{ .name = resolved_name, .qualified_name = null, .fty = self.getExprType(ctx, a, row.callee), .expr = current };
+                return CalleeInfo{ .name = resolved_name, .qualified_name = null, .fty = self.getExprType(ctx, a, row.callee), .expr = current };
             },
             else => break,
         }
     }
 
-    return .{ .name = f.builder.intern("<indirect>"), .qualified_name = null, .fty = self.getExprType(ctx, a, row.callee), .expr = row.callee };
+    return CalleeInfo{ .name = f.builder.intern("<indirect>"), .qualified_name = null, .fty = self.getExprType(ctx, a, row.callee), .expr = row.callee };
 }
 
 /// Create the payload value for a variant literal call based on the variant type `ety`.
@@ -2139,7 +1857,7 @@ fn buildVariantItem(
     var first_field: ?StrId = null;
     while (a.kind(cur) == .FieldAccess) {
         const fr = a.exprs.get(.FieldAccess, cur);
-        if (first_field == null) first_field = fr.field; // take outermost field (the tag name)
+        if (first_field == null) first_field = fr.field;
         cur = fr.parent;
     }
     std.debug.assert(first_field != null);
@@ -2153,25 +1871,39 @@ fn buildVariantItem(
     var tag_idx: u32 = 0;
     var payload_ty: types.TypeId = self.context.type_store.tVoid();
     var found = false;
+
+    var stack_fields_buf: [64]types.TypeStore.StructFieldArg = undefined;
+    var union_fields_args_slice: []types.TypeStore.StructFieldArg = &.{};
+    var heap_fields_alloc: ?[]types.TypeStore.StructFieldArg = null;
+    defer if (heap_fields_alloc) |ptr| self.gpa.free(ptr);
+
+    if (fields.len <= 64) {
+        union_fields_args_slice = stack_fields_buf[0..fields.len];
+    } else {
+        heap_fields_alloc = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
+        union_fields_args_slice = heap_fields_alloc.?;
+    }
+
     for (fields, 0..) |fld_id, i| {
         const fld = self.context.type_store.Field.get(fld_id);
+        union_fields_args_slice[i] = .{ .name = fld.name, .ty = fld.ty };
+
         if (fld.name.eq(lname)) {
             tag_idx = @intCast(i);
             payload_ty = fld.ty;
             found = true;
-            break;
         }
     }
+
     if (!found) {
-        // Diagnostic: unknown variant tag at this call site (TIR-specific)
         const where: Loc = if (!loc.isNone()) a.exprs.locs.get(loc.unwrap()) else .init(@intCast(a.file_id), 0, 0);
-        // Compose message: "Tag 'Name' in <Type>"
-        var buf = std.ArrayList(u8){};
-        defer buf.deinit(self.gpa);
-        const w = buf.writer(self.gpa);
-        try w.print("tag '{s}' in ", .{a.exprs.strs.get(lname)});
-        try self.context.type_store.formatTypeForDiagnostic(ety, types.FormatOptions{}, w);
-        const sid = self.context.interner.intern(buf.items);
+        var msg_buf: [256]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(&msg_buf);
+
+        fbs.writer().print("tag '{s}' in ", .{a.exprs.strs.get(lname)}) catch {};
+        try self.context.type_store.formatTypeForDiagnostic(ety, types.FormatOptions{}, fbs.writer());
+
+        const sid = self.context.interner.intern(fbs.getWritten());
         _ = self.context.diags.addError(where, .tir_variant_tag_not_found, .{self.context.interner.get(sid)}) catch {};
         return error.LoweringBug;
     }
@@ -2181,33 +1913,34 @@ fn buildVariantItem(
 
     const payload_val: ?tir.ValueId = switch (payload_kind) {
         .Void => null,
-        .Tuple => blk: {
+        .Tuple => blk_t: {
             const tr = self.context.type_store.get(.Tuple, payload_ty);
             const subtys = self.context.type_store.type_pool.slice(tr.elems);
-            var elems = try self.gpa.alloc(tir.ValueId, subtys.len);
-            defer self.gpa.free(elems);
+
+            var elem_buf: [16]tir.ValueId = undefined;
+            var elems_slice: []tir.ValueId = undefined;
+            var heap_elems: ?[]tir.ValueId = null;
+            defer if (heap_elems) |p| self.gpa.free(p);
+
+            if (subtys.len <= 16) {
+                elems_slice = elem_buf[0..subtys.len];
+            } else {
+                heap_elems = try self.gpa.alloc(tir.ValueId, subtys.len);
+                elems_slice = heap_elems.?;
+            }
+
             for (subtys, 0..) |sty, i| {
                 const arg_id = if (i < args.len) args[i] else args[args.len - 1];
-                elems[i] = try self.lowerExpr(ctx, a, env, f, blk, arg_id, sty, .rvalue);
+                elems_slice[i] = try self.lowerExpr(ctx, a, env, f, blk, arg_id, sty, .rvalue);
             }
-            break :blk blk.builder.tupleMake(blk, payload_ty, elems, loc);
+            break :blk_t blk.builder.tupleMake(blk, payload_ty, elems_slice, loc);
         },
         else => try self.lowerExpr(ctx, a, env, f, blk, args[0], payload_ty, .rvalue),
     };
 
-    // tag (i32)
     const tag_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), loc, .{ .value = tag_idx });
+    const union_ty = self.context.type_store.mkUnion(union_fields_args_slice);
 
-    // union type for the payload field
-    var union_fields_args = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
-    defer self.gpa.free(union_fields_args);
-    for (fields, 0..) |fld_id, i| {
-        const fld = self.context.type_store.Field.get(fld_id);
-        union_fields_args[i] = .{ .name = fld.name, .ty = fld.ty };
-    }
-    const union_ty = self.context.type_store.mkUnion(union_fields_args);
-
-    // IMPORTANT: for void payload, do NOT call UnionMake (it would force an llvm.void store).
     const union_val: tir.ValueId = if (payload_val) |pv|
         blk.builder.tirValue(.UnionMake, blk, union_ty, loc, .{ .field_index = tag_idx, .value = pv })
     else
@@ -2225,34 +1958,12 @@ fn constValueFromLiteral(self: *LowerTir, a: *ast.Ast, expr: ast.ExprId) !?comp.
     const lit = a.exprs.get(.Literal, expr);
 
     return switch (lit.kind) {
-        .int => blk: {
-            const info = switch (lit.data) {
-                .int => |int_info| int_info,
-                else => return null,
-            };
-            if (!info.valid) return null;
-            break :blk comp.ComptimeValue{ .Int = @as(i128, @intCast(info.value)) };
-        },
-        .float => blk: {
-            const info = switch (lit.data) {
-                .float => |float_info| float_info,
-                else => return null,
-            };
-            if (!info.valid) return null;
-            break :blk comp.ComptimeValue{ .Float = info.value };
-        },
-        .bool => blk: {
-            const value = switch (lit.data) {
-                .bool => |b| b,
-                else => return null,
-            };
-            break :blk comp.ComptimeValue{ .Bool = value };
-        },
+        .int => if (lit.data == .int and lit.data.int.valid) comp.ComptimeValue{ .Int = @as(i128, @intCast(lit.data.int.value)) } else null,
+        .float => if (lit.data == .float and lit.data.float.valid) comp.ComptimeValue{ .Float = lit.data.float.value } else null,
+        .bool => if (lit.data == .bool) comp.ComptimeValue{ .Bool = lit.data.bool } else null,
         .string => blk: {
-            const s = switch (lit.data) {
-                .string => |s_id| a.exprs.strs.get(s_id),
-                else => return null,
-            };
+            if (lit.data != .string) return null;
+            const s = a.exprs.strs.get(lit.data.string);
             const owned_s = try self.gpa.dupe(u8, s);
             break :blk comp.ComptimeValue{ .String = owned_s };
         },
@@ -2271,30 +1982,33 @@ fn tryComptimeCall(
     id: ast.ExprId,
 ) !?tir.ValueId {
     const row = a.exprs.get(.Call, id);
-    // Avoid requiring a stamped callee type just to check the name.
     const ck = a.kind(row.callee);
-    const callee_name = blk: {
-        if (ck == .Ident) break :blk a.exprs.strs.get(a.exprs.get(.Ident, row.callee).name);
-        if (ck == .FieldAccess) break :blk a.exprs.strs.get(a.exprs.get(.FieldAccess, row.callee).field);
-        break :blk a.exprs.strs.get(f.builder.intern("<indirect>"));
+    const callee_name = switch (ck) {
+        .Ident => a.exprs.strs.get(a.exprs.get(.Ident, row.callee).name),
+        .FieldAccess => a.exprs.strs.get(a.exprs.get(.FieldAccess, row.callee).field),
+        else => return null,
     };
+
+    const len = callee_name.len;
+    if (len < 6 or len > 16) return null;
+
     const loc = optLoc(a, id);
     const arg_ids = a.exprs.expr_pool.slice(row.args);
 
-    if (std.mem.eql(u8, callee_name, "sizeof")) {
-        if (arg_ids.len == 1) {
-            const target_ty = self.getExprType(ctx, a, arg_ids[0]);
-            const sz: u64 = @intCast(check_types.typeSize(self.context, target_ty));
-            const want = self.getExprType(ctx, a, id);
-            return blk.builder.tirValue(.ConstInt, blk, want, loc, .{ .value = sz });
-        }
-        return null;
+    if (len == 6 and std.mem.eql(u8, callee_name, "sizeof")) {
+        if (arg_ids.len != 1) return null;
+        const target_ty = self.getExprType(ctx, a, arg_ids[0]);
+        const sz: u64 = @intCast(check_types.typeSize(self.context, target_ty));
+        const want = self.getExprType(ctx, a, id);
+        return blk.builder.tirValue(.ConstInt, blk, want, loc, .{ .value = sz });
     }
 
-    if (!(std.mem.eql(u8, callee_name, "get_type_by_name") or
-        std.mem.eql(u8, callee_name, "comptime_print") or
-        std.mem.eql(u8, callee_name, "type_of")))
-        return null;
+    const is_print = len == 14 and std.mem.eql(u8, callee_name, "comptime_print");
+    const is_get_type = len == 16 and std.mem.eql(u8, callee_name, "get_type_by_name");
+    const is_type_of = len == 7 and std.mem.eql(u8, callee_name, "type_of");
+
+    if (!(is_print or is_get_type or is_type_of)) return null;
+
     const api_ptr_bnd = env.lookup(f.builder.intern("comptime_api_ptr")) orelse unreachable;
     const api_ptr = api_ptr_bnd.value;
 
@@ -2312,31 +2026,30 @@ fn tryComptimeCall(
     const typed_api_ptr = blk.builder.tirValue(.CastBit, blk, comptime_api_ptr_ty, loc, .{ .value = api_ptr });
 
     const ctx_ptr_ptr = blk.builder.gep(blk, self.context.type_store.mkPtr(ptr_ty, false), typed_api_ptr, &.{ blk.builder.gepConst(0), blk.builder.gepConst(0) }, loc);
-
     const ctx_ptr = blk.builder.tirValue(.Load, blk, ptr_ty, loc, .{ .ptr = ctx_ptr_ptr, .@"align" = 0 });
 
-    const fn_ptr_idx: u64 = if (std.mem.eql(u8, callee_name, "comptime_print")) 1 else if (std.mem.eql(u8, callee_name, "get_type_by_name")) 2 else 3;
-
+    const fn_ptr_idx: u64 = if (is_print) 1 else if (is_get_type) 2 else 3;
     const fn_ptr_ptr = blk.builder.gep(blk, self.context.type_store.mkPtr(fn_ptr_ty, false), typed_api_ptr, &.{ blk.builder.gepConst(0), blk.builder.gepConst(fn_ptr_idx) }, loc);
     const fn_ptr = blk.builder.tirValue(.Load, blk, fn_ptr_ty, loc, .{ .ptr = fn_ptr_ptr, .@"align" = 0 });
 
-    var all_args: List(tir.ValueId) = .empty;
-    defer all_args.deinit(self.gpa);
-    try all_args.append(self.gpa, ctx_ptr);
-    // For type_of, we need to pass the raw ExprId, not the lowered value.
-    if (std.mem.eql(u8, callee_name, "type_of")) {
-        // Ensure there's exactly one argument for type_of
+    var args_buf: [8]tir.ValueId = undefined;
+    args_buf[0] = ctx_ptr;
+    var arg_cursor: usize = 1;
+
+    if (is_type_of) {
         std.debug.assert(arg_ids.len == 1);
         const arg_type_id = self.getExprType(ctx, a, arg_ids[0]);
-        try all_args.append(self.gpa, blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tU32(), loc, .{ .value = arg_type_id.toRaw() }));
+        args_buf[arg_cursor] = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tU32(), loc, .{ .value = arg_type_id.toRaw() });
+        arg_cursor += 1;
     } else {
+        if (1 + arg_ids.len > args_buf.len) return error.TooManyArguments;
         for (arg_ids) |arg_id| {
-            try all_args.append(self.gpa, try self.lowerExpr(ctx, a, env, f, blk, arg_id, null, .rvalue));
+            args_buf[arg_cursor] = try self.lowerExpr(ctx, a, env, f, blk, arg_id, null, .rvalue);
+            arg_cursor += 1;
         }
     }
 
-    const ret_ty = self.getExprType(ctx, a, id);
-    return blk.builder.indirectCall(blk, ret_ty, fn_ptr, all_args.items, loc);
+    return blk.builder.indirectCall(blk, self.getExprType(ctx, a, id), fn_ptr, args_buf[0..arg_cursor], loc);
 }
 
 /// Emit the TIR form of a call expression, handling attributes, comptime args, and lowering the callee.
@@ -2356,24 +2069,21 @@ fn lowerCall(
     const row = a.exprs.get(.Call, id);
     const loc = optLoc(a, id);
 
-    // Variant construction: if expected is a Variant/Error and callee is a path to a case, build VariantMake
     if (expected) |ety| {
         const k = self.context.type_store.getKind(ety);
-        if (k == .Variant or k == .Error) {
-            if (a.kind(row.callee) == .FieldAccess) {
-                return try self.buildVariantItem(ctx, a, env, f, blk, row, ety, k, loc);
-            }
+        if ((k == .Variant or k == .Error) and a.kind(row.callee) == .FieldAccess) {
+            return try self.buildVariantItem(ctx, a, env, f, blk, row, ety, k, loc);
         }
     }
 
     var callee = try self.resolveCallee(ctx, a, f, row);
     var callee_name = a.exprs.strs.get(callee.name);
     const callee_expr = callee.expr;
-    if (callee.fty == null) {
-        callee.fty = self.getExprType(ctx, a, callee_expr);
-    }
+    if (callee.fty == null) callee.fty = self.getExprType(ctx, a, callee_expr);
+
     var specialization_pack_args = false;
     var specialization_pack_start: usize = 0;
+
     if (a.type_info.call_specializations.get(id.toRaw())) |spec| {
         if (spec.target_decl != 0) {
             const target_ast = if (spec.target_file_id == std.math.maxInt(u32) or spec.target_file_id == a.file_id)
@@ -2381,26 +2091,24 @@ fn lowerCall(
             else
                 self.astForFileId(spec.target_file_id) orelse a;
 
-            const is_extern = blk: {
-                if (callee.fty) |fty| {
-                    if (self.context.type_store.getKind(fty) == .Function) {
-                        break :blk self.context.type_store.get(.Function, fty).is_extern;
-                    }
-                }
-                break :blk false;
-            };
+            const is_extern = if (callee.fty) |fty|
+                self.context.type_store.getKind(fty) == .Function and self.context.type_store.get(.Function, fty).is_extern
+            else
+                false;
 
             if (!is_extern) {
+                var spec_name = callee.name;
                 const orig_decl = self.findOriginalDeclForSynthetic(target_ast, ast.DeclId.fromRaw(spec.target_decl));
-                var spec_name: StrId = callee.name;
+
                 if (orig_decl) |odid| {
                     const decl_row = target_ast.exprs.Decl.get(odid);
-                    var base: ?StrId = null;
-                    if (!decl_row.pattern.isNone()) {
-                        base = bindingNameOfPattern(target_ast, decl_row.pattern.unwrap());
-                    } else if (!decl_row.method_path.isNone()) {
-                        base = try self.methodSymbolShortName(target_ast, odid);
-                    }
+                    const base = if (!decl_row.pattern.isNone())
+                        bindingNameOfPattern(target_ast, decl_row.pattern.unwrap())
+                    else if (!decl_row.method_path.isNone())
+                        try self.methodSymbolShortName(target_ast, odid)
+                    else
+                        null;
+
                     if (base) |b| {
                         const base_str = self.context.type_store.strs.get(b);
                         const spec_name_str = try std.fmt.allocPrint(self.gpa, "{s}_spec_{d}", .{ base_str, spec.target_decl });
@@ -2408,6 +2116,7 @@ fn lowerCall(
                         spec_name = self.context.type_store.strs.intern(spec_name_str);
                     }
                 }
+
                 callee.name = spec_name;
                 callee.qualified_name = if (spec_name.eq(callee.name) and callee.qualified_name != null)
                     callee.qualified_name.?
@@ -2415,9 +2124,7 @@ fn lowerCall(
                     try self.qualifySymbolName(target_ast, spec_name);
 
                 if (spec.target_decl < target_ast.type_info.decl_types.items.len) {
-                    if (target_ast.type_info.decl_types.items[spec.target_decl]) |sig| {
-                        callee.fty = sig;
-                    }
+                    if (target_ast.type_info.decl_types.items[spec.target_decl]) |sig| callee.fty = sig;
                 }
                 callee_name = self.context.type_store.strs.get(spec_name);
             }
@@ -2427,33 +2134,23 @@ fn lowerCall(
             specialization_pack_start = spec.pack_start_index;
         }
     }
+
     var arg_ids = a.exprs.expr_pool.slice(row.args);
     var method_arg_buf: []ast.ExprId = &.{};
     var method_decl_id: ?ast.DeclId = null;
     var method_binding: ?types.MethodBinding = null;
-    defer {
-        if (method_arg_buf.len != 0) self.gpa.free(method_arg_buf);
-    }
-    if (a.type_info.getMethodBinding(callee_expr)) |binding| {
-        if (a.kind(callee_expr) == .FieldAccess) {
+    defer if (method_arg_buf.len != 0) self.gpa.free(method_arg_buf);
+
+    // Consolidated method binding logic
+    if (a.kind(callee_expr) == .FieldAccess) {
+        const existing_binding = a.type_info.getMethodBinding(callee_expr);
+        const binding = existing_binding orelse try self.synthesizeMethodBinding(ctx, a, env, callee_expr);
+
+        if (binding) |b| {
             try self.prepareMethodCall(
                 a,
                 row,
-                binding,
-                &callee,
-                &callee_name,
-                &method_decl_id,
-                &method_binding,
-                &arg_ids,
-                &method_arg_buf,
-            );
-        }
-    } else if (a.kind(callee_expr) == .FieldAccess) {
-        if (try self.synthesizeMethodBinding(ctx, a, env, callee_expr)) |binding| {
-            try self.prepareMethodCall(
-                a,
-                row,
-                binding,
+                b,
                 &callee,
                 &callee_name,
                 &method_decl_id,
@@ -2464,25 +2161,23 @@ fn lowerCall(
         }
     }
 
-    // Try to get callee param types
     var param_tys: []const types.TypeId = &.{};
     var treat_trailing_any = specialization_pack_args;
     var trailing_any_tuple_ty: ?types.TypeId = null;
+
     if (callee.fty) |fty| {
-        if (self.hasTrailingAnyRuntimeParam(fty)) {
-            treat_trailing_any = true;
-        }
+        if (self.hasTrailingAnyRuntimeParam(fty)) treat_trailing_any = true;
     }
+
     if (callee.qualified_name == null and method_decl_id == null) {
         if (call_resolution.findFunctionDeclForCall(self.context, a, callee_expr, callee.name)) |decl_ctx| {
-            if (try symbolNameForDecl(self, decl_ctx.ast, decl_ctx.decl_id)) |sym| {
-                callee.qualified_name = sym;
-            }
+            if (try symbolNameForDecl(self, decl_ctx.ast, decl_ctx.decl_id)) |sym| callee.qualified_name = sym;
         }
     }
 
     var vals_list: List(tir.ValueId) = .empty;
     defer vals_list.deinit(self.gpa);
+    try vals_list.ensureTotalCapacity(self.gpa, arg_ids.len + 2); // heuristic pre-allocation
 
     var fixed_params_count: usize = 0;
     var is_variadic_extern = false;
@@ -2495,28 +2190,23 @@ fn lowerCall(
             if (is_variadic_extern and fixed_params_count > 0) fixed_params_count -= 1;
         }
     }
+
     const is_non_extern_any_variadic_candidate = treat_trailing_any;
     if (is_non_extern_any_variadic_candidate and fixed_params_count > 0 and !specialization_pack_args) {
         fixed_params_count -= 1;
     }
-    // Handle fixed arguments
+
     var i: usize = 0;
     while (i < arg_ids.len) : (i += 1) {
-        if (is_non_extern_any_variadic_candidate and i >= fixed_params_count) {
-            break; // Stop here, the 'any' parameter and subsequent args will be packed
-        }
+        if (is_non_extern_any_variadic_candidate and i >= fixed_params_count) break;
 
         const want: ?types.TypeId = if (i < fixed_params_count) param_tys[i] else null;
-        const lower_mode: LowerMode = blk: {
-            if (method_binding) |mb| {
-                if (mb.requires_implicit_receiver and mb.needs_addr_of and i == 0) {
-                    break :blk .lvalue_addr;
-                }
-            }
-            break :blk .rvalue;
-        };
-        const v = try self.lowerExpr(ctx, a, env, f, blk, arg_ids[i], want, lower_mode);
-        try vals_list.append(self.gpa, v);
+        const lower_mode: LowerMode = if (method_binding) |mb|
+            if (mb.requires_implicit_receiver and mb.needs_addr_of and i == 0) .lvalue_addr else .rvalue
+        else
+            .rvalue;
+
+        try vals_list.append(self.gpa, try self.lowerExpr(ctx, a, env, f, blk, arg_ids[i], want, lower_mode));
     }
 
     try self.lowerRemainingArgs(
@@ -2552,17 +2242,12 @@ fn lowerCall(
         method_binding,
     );
 
-    // Final safety: if we still owe a single empty-tuple argument (common for
-    // internal variadic specializations), materialize it so the call is well-formed.
     if (param_tys.len == vals_list.items.len + 1) {
         const last_ty = param_tys[param_tys.len - 1];
         if (self.context.type_store.getKind(last_ty) == .Tuple) {
             const rrow = self.context.type_store.get(.Tuple, last_ty);
-            const elems = self.context.type_store.type_pool.slice(rrow.elems);
-            if (elems.len == 0) {
-                const unit_loc = optLoc(a, id);
-                const unit_val = blk.builder.tupleMake(blk, last_ty, &.{}, unit_loc);
-                try vals_list.append(self.gpa, unit_val);
+            if (self.context.type_store.type_pool.slice(rrow.elems).len == 0) {
+                try vals_list.append(self.gpa, blk.builder.tupleMake(blk, last_ty, &.{}, optLoc(a, id)));
             }
         }
     }
@@ -2583,11 +2268,9 @@ fn lowerCall(
 
     if (method_binding) |mb| {
         if (mb.builtin) |builtin_kind| {
-            switch (builtin_kind) {
-                .dynarray_append => {
-                    std.debug.assert(mode != .lvalue_addr);
-                    return try self.lowerDynArrayAppend(f, blk, loc, mb, vals_list.items);
-                },
+            if (builtin_kind == .dynarray_append) {
+                std.debug.assert(mode != .lvalue_addr);
+                return try self.lowerDynArrayAppend(f, blk, loc, mb, vals_list.items);
             }
         }
     }
@@ -2632,44 +2315,39 @@ fn lowerRemainingArgs(
         if (trailing_len == 1) {
             const idx = start_index;
             if (!self.isSpreadArgExpr(ctx, a, env, arg_ids[idx])) {
-                const single_val = try self.lowerExpr(ctx, a, env, f, blk, arg_ids[idx], null, .rvalue);
-                try vals_list.append(self.gpa, single_val);
+                try vals_list.append(self.gpa, try self.lowerExpr(ctx, a, env, f, blk, arg_ids[idx], null, .rvalue));
                 return;
             }
         }
 
         var extra_vals: List(tir.ValueId) = .empty;
         defer extra_vals.deinit(self.gpa);
+        try extra_vals.ensureTotalCapacity(self.gpa, trailing_len);
 
         var j = fixed_params_count;
         while (j < arg_ids.len) : (j += 1) {
             try extra_vals.append(self.gpa, try self.lowerExpr(ctx, a, env, f, blk, arg_ids[j], null, .rvalue));
         }
 
-        const packed_tuple_ty = trailing_any_tuple_ty_ptr.* orelse blk: {
+        const packed_tuple_ty = trailing_any_tuple_ty_ptr.* orelse blk_t: {
             const ty = try self.computeTrailingAnyTupleType(ctx, a, env, arg_ids, fixed_params_count);
             trailing_any_tuple_ty_ptr.* = ty;
-            break :blk ty;
+            break :blk_t ty;
         };
 
-        const packed_tuple_val = blk.builder.tupleMake(blk, packed_tuple_ty, extra_vals.items, loc);
-        try vals_list.append(self.gpa, packed_tuple_val);
+        try vals_list.append(self.gpa, blk.builder.tupleMake(blk, packed_tuple_ty, extra_vals.items, loc));
         return;
     }
 
     var idx = start_index;
     while (idx < arg_ids.len) : (idx += 1) {
         const want: ?types.TypeId = if (idx < fixed_params_count) param_tys[idx] else null;
-        const lower_mode: LowerMode = blk: {
-            if (method_binding) |mb| {
-                if (mb.requires_implicit_receiver and mb.needs_addr_of and idx == 0) {
-                    break :blk .lvalue_addr;
-                }
-            }
-            break :blk .rvalue;
-        };
-        const v = try self.lowerExpr(ctx, a, env, f, blk, arg_ids[idx], want, lower_mode);
-        try vals_list.append(self.gpa, v);
+        const lower_mode: LowerMode = if (method_binding) |mb|
+            if (mb.requires_implicit_receiver and mb.needs_addr_of and idx == 0) .lvalue_addr else .rvalue
+        else
+            .rvalue;
+
+        try vals_list.append(self.gpa, try self.lowerExpr(ctx, a, env, f, blk, arg_ids[idx], want, lower_mode));
     }
 }
 
@@ -2690,9 +2368,7 @@ fn synthesizeDefaultTrailingArgs(
     is_non_extern_any_variadic_candidate: bool,
     method_binding: ?types.MethodBinding,
 ) !void {
-    if (is_variadic_extern or is_non_extern_any_variadic_candidate or param_tys.len <= vals_list.items.len) {
-        return;
-    }
+    if (is_variadic_extern or is_non_extern_any_variadic_candidate or param_tys.len <= vals_list.items.len) return;
 
     const dctx = if (method_binding) |mb|
         FunctionDeclContext{ .ast = mb.decl_ast, .decl_id = mb.decl_id }
@@ -2705,8 +2381,7 @@ fn synthesizeDefaultTrailingArgs(
 
     const decl_ast = dctx.ast;
     const decl = decl_ast.exprs.Decl.get(dctx.decl_id);
-    if (decl_ast.kind(decl.value) != .FunctionLit)
-        return;
+    if (decl_ast.kind(decl.value) != .FunctionLit) return;
 
     const fnr = decl_ast.exprs.get(.FunctionLit, decl.value);
     const params2 = decl_ast.exprs.param_pool.slice(fnr.params);
@@ -2726,15 +2401,20 @@ fn synthesizeDefaultTrailingArgs(
             }
         }
     }
+
     while (vals_list.items.len < param_tys.len) {
         const idx: usize = vals_list.items.len;
         if (idx >= params2.len) break;
+
         const p = decl_ast.exprs.Param.get(params2[idx]);
         if (p.value.isNone()) break;
+
         const def_expr = p.value.unwrap();
         const want_ty = if (idx < param_tys.len) param_tys[idx] else null;
         const def_v = try self.lowerExpr(ctx, decl_ast, env, f, blk, def_expr, want_ty, .rvalue);
+
         try vals_list.append(self.gpa, def_v);
+
         if (!p.pat.isNone()) {
             if (bindingNameOfPattern(decl_ast, p.pat.unwrap())) |pname| {
                 const bind_ty = if (want_ty) |wt| wt else self.getExprType(ctx, decl_ast, def_expr);
@@ -2749,14 +2429,10 @@ fn isImportMemberExpr(a: *ast.Ast, expr: ast.ExprId) bool {
     var current = expr;
     while (true) {
         switch (a.kind(current)) {
-            .FieldAccess => {
-                const row = a.exprs.get(.FieldAccess, current);
-                current = row.parent;
-                continue;
-            },
+            .FieldAccess => current = a.exprs.get(.FieldAccess, current).parent,
             .Ident => {
                 const ident = a.exprs.get(.Ident, current);
-                return call_resolution.findTopLevelImportByName(a, ident.name) != null;
+                return call_resolution.findDeclId(a, ident.name) != null;
             },
             .Import => return true,
             else => return false,
@@ -2781,12 +2457,10 @@ fn emitCallValue(
     vals: []tir.ValueId,
     loc: tir.OptLocId,
 ) !tir.ValueId {
-    // Choose a concrete return type: callee.fty.ret -> expected -> stamped -> void
     const ret_ty = blk: {
         if (callee.fty) |fty| {
             if (self.context.type_store.getKind(fty) == .Function) {
-                const fr2 = self.context.type_store.get(.Function, fty);
-                const rt = fr2.result;
+                const rt = self.context.type_store.get(.Function, fty).result;
                 if (!self.isVoid(rt) and !self.isType(rt, .Any)) break :blk rt;
             }
         }
@@ -2801,58 +2475,48 @@ fn emitCallValue(
 
     const callee_ty = self.getExprType(ctx, a, row.callee);
     var call_val: tir.ValueId = undefined;
-    const callee_name_str = self.context.type_store.strs.get(callee.name);
-    const callee_kind = self.context.type_store.getKind(callee_ty);
 
-    // Detect if callee is a module member function: mod.name(...)
-    const callee_is_import_member = isImportMemberExpr(a, callee_expr);
-    const callee_is_method_call = a.type_info.getMethodBinding(callee_expr) != null;
+    // Determine if indirect call is forced
     const should_force_indirect = switch (a.kind(callee_expr)) {
         .Ident => false,
-        .FieldAccess => !callee_is_import_member and !callee_is_method_call,
+        .FieldAccess => !isImportMemberExpr(a, callee_expr) and a.type_info.getMethodBinding(callee_expr) == null,
         else => true,
     };
 
-    if (should_force_indirect or (callee_kind == .Ptr and self.context.type_store.getKind(self.context.type_store.get(.Ptr, callee_ty).elem) == .Function)) {
+    const is_ptr_to_func = self.context.type_store.getKind(callee_ty) == .Ptr and
+        self.context.type_store.getKind(self.context.type_store.get(.Ptr, callee_ty).elem) == .Function;
+
+    if (should_force_indirect or is_ptr_to_func) {
         const fn_ptr_val = try self.lowerExpr(ctx, a, env, f, blk, row.callee, callee_ty, .rvalue);
         call_val = blk.builder.indirectCall(blk, ret_ty, fn_ptr_val, vals, loc);
-    } else if (std.mem.eql(u8, callee_name_str, "<indirect>")) {
+    } else if (self.context.type_store.strs.get(callee.name).len == 10 and std.mem.eql(u8, self.context.type_store.strs.get(callee.name), "<indirect>")) {
         const want_ptr_ty = self.context.type_store.mkPtr(callee_ty, false);
         const fn_ptr_val = try self.lowerExpr(ctx, a, env, f, blk, row.callee, want_ptr_ty, .lvalue_addr);
         call_val = blk.builder.indirectCall(blk, ret_ty, fn_ptr_val, vals, loc);
     } else {
-        const callee_sym = if (callee.qualified_name) |sym| sym else callee.name;
+        const callee_sym = callee.qualified_name orelse callee.name;
         call_val = blk.builder.call(blk, ret_ty, callee_sym, vals, loc);
     }
 
     if (mode == .lvalue_addr) {
-        const want_ptr_ty_opt: ?types.TypeId = blk: {
-            if (expected) |want| {
-                if (self.context.type_store.getKind(want) == .Ptr) break :blk want;
-            }
-            break :blk null;
-        };
+        const want_ptr_ty_opt = if (expected) |want|
+            if (self.context.type_store.getKind(want) == .Ptr) want else null
+        else
+            null;
+
         const elem_ty = if (want_ptr_ty_opt) |want_ptr_ty|
             self.context.type_store.get(.Ptr, want_ptr_ty).elem
         else
             ret_ty;
+
         const slot_ty = self.context.type_store.mkPtr(elem_ty, false);
-        const slot = f.builder.tirValue(
-            .Alloca,
-            blk,
-            slot_ty,
-            loc,
-            .{ .count = tir.OptValueId.none(), .@"align" = 0 },
-        );
-        const stored = if (!elem_ty.eq(ret_ty))
-            self.emitCoerce(blk, call_val, ret_ty, elem_ty, loc)
-        else
-            call_val;
+        const slot = f.builder.tirValue(.Alloca, blk, slot_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
+
+        const stored = if (!elem_ty.eq(ret_ty)) self.emitCoerce(blk, call_val, ret_ty, elem_ty, loc) else call_val;
         _ = f.builder.tirValue(.Store, blk, elem_ty, loc, .{ .ptr = slot, .value = stored, .@"align" = 0 });
+
         if (want_ptr_ty_opt) |want_ptr_ty| {
-            if (!want_ptr_ty.eq(slot_ty)) {
-                return self.emitCoerce(blk, slot, slot_ty, want_ptr_ty, loc);
-            }
+            if (!want_ptr_ty.eq(slot_ty)) return self.emitCoerce(blk, slot, slot_ty, want_ptr_ty, loc);
         }
         return slot;
     }
@@ -2860,7 +2524,6 @@ fn emitCallValue(
     return call_val;
 }
 
-/// Lower variadic arguments passed to extern functions, expanding spreads and promoting scalars.
 fn handleExternVariadicArgs(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -2873,161 +2536,140 @@ fn handleExternVariadicArgs(
     vals_list: *List(tir.ValueId),
     fixed_params_count: usize,
 ) !void {
-    // Tracks the lowered state of each variadic argument before emission.
     const VarArgEntry = struct {
-        /// SSA value that carries the lowered argument.
         value: tir.ValueId,
-        /// Recorded SR type for the argument value.
         ty: types.TypeId,
-        /// Optional source location tied to this argument.
         loc: tir.OptLocId,
-        /// Original AST identifier, if available.
         expr: ?ast.ExprId,
     };
+
     var var_entries: List(VarArgEntry) = .empty;
     defer var_entries.deinit(self.gpa);
 
+    // 1. Extract variadic args
     const total_len = vals_list.items.len;
-    const original_vararg_count = total_len - fixed_params_count;
-    var remove_index: usize = 0;
-    while (remove_index < original_vararg_count) : (remove_index += 1) {
-        const arg_pos = fixed_params_count + remove_index;
-        const removed_val = vals_list.items[arg_pos];
-        const expr_id: ?ast.ExprId = if (arg_pos < arg_ids.len) arg_ids[arg_pos] else null;
-        const loc_entry = if (expr_id) |eid| optLoc(a, eid) else optLoc(a, id);
-        const ty_entry = if (expr_id) |eid| self.exprTypeWithEnv(ctx, a, env, eid) else self.exprTypeWithEnv(ctx, a, env, id);
-        try var_entries.append(self.gpa, .{
-            .value = removed_val,
-            .ty = ty_entry,
-            .loc = loc_entry,
-            .expr = expr_id,
-        });
+    if (total_len > fixed_params_count) {
+        const count = total_len - fixed_params_count;
+        try var_entries.ensureTotalCapacity(self.gpa, count);
+
+        var i: usize = 0;
+        while (i < count) : (i += 1) {
+            const arg_pos = fixed_params_count + i;
+            const expr_id = if (arg_pos < arg_ids.len) arg_ids[arg_pos] else null;
+
+            var_entries.appendAssumeCapacity(.{
+                .value = vals_list.items[arg_pos],
+                .ty = if (expr_id) |eid| self.exprTypeWithEnv(ctx, a, env, eid) else self.exprTypeWithEnv(ctx, a, env, id),
+                .loc = if (expr_id) |eid| optLoc(a, eid) else optLoc(a, id),
+                .expr = expr_id,
+            });
+        }
+        vals_list.items.len = fixed_params_count;
     }
-    vals_list.items.len = fixed_params_count;
 
-    var ve_idx: usize = 0;
-    while (ve_idx < var_entries.items.len) {
-        var entry = &var_entries.items[ve_idx];
-        var entry_kind = self.context.type_store.getKind(entry.ty);
+    // 2. Expand spreads and promote types
+    // We use a new list for the final output to avoid O(N^2) shifting
+    var final_entries: List(VarArgEntry) = .empty;
+    defer final_entries.deinit(self.gpa);
+    try final_entries.ensureTotalCapacity(self.gpa, var_entries.items.len);
 
-        if (entry_kind == .Any and entry.expr != null and self.isSpreadArgExpr(ctx, a, env, entry.expr)) {
-            const expr_id = entry.expr.?;
-            const range_row = a.exprs.get(.Range, expr_id);
+    for (var_entries.items) |*entry| {
+        var curr_ty = entry.ty;
+        var curr_kind = self.context.type_store.getKind(curr_ty);
+
+        // Handle Any -> Tuple/Literal expansion
+        if (curr_kind == .Any and entry.expr != null and self.isSpreadArgExpr(ctx, a, env, entry.expr)) {
+            const range_row = a.exprs.get(.Range, entry.expr.?);
             if (!range_row.end.isNone()) {
                 const payload_expr = range_row.end.unwrap();
                 const payload_ty = self.exprTypeWithEnv(ctx, a, env, payload_expr);
                 if (self.context.type_store.getKind(payload_ty) == .Tuple) {
                     entry.value = try self.lowerExpr(ctx, a, env, f, blk, payload_expr, payload_ty, .rvalue);
                     entry.ty = payload_ty;
-                    entry_kind = .Tuple;
+                    curr_ty = payload_ty;
+                    curr_kind = .Tuple;
                 }
             }
         }
 
-        if (entry_kind == .Tuple and self.isSpreadArgExpr(ctx, a, env, entry.expr)) {
-            const tuple_value = entry.value;
-            const tuple_loc = entry.loc;
-            const tuple_ty = entry.ty;
-
-            const tuple_row = self.context.type_store.get(.Tuple, tuple_ty);
+        // Expand Tuples
+        if (curr_kind == .Tuple and self.isSpreadArgExpr(ctx, a, env, entry.expr)) {
+            const tuple_row = self.context.type_store.get(.Tuple, curr_ty);
             const elem_types = self.context.type_store.type_pool.slice(tuple_row.elems);
-            var shift = ve_idx;
-            while (shift + 1 < var_entries.items.len) : (shift += 1) {
-                var_entries.items[shift] = var_entries.items[shift + 1];
-            }
-            var_entries.items.len -= 1;
-            var elem_idx: usize = 0;
-            while (elem_idx < elem_types.len) : (elem_idx += 1) {
-                const elem_ty = elem_types[elem_idx];
+
+            for (elem_types, 0..) |elem_ty, elem_idx| {
                 const resolved_elem_ty = if (self.context.type_store.getKind(elem_ty) == .Any)
-                    self.context.type_store.tUsize() // Resolve Any to its ABI representation (pointer-sized scalar)
+                    self.context.type_store.tUsize()
                 else
                     elem_ty;
-                const elem_val = blk.builder.extractElem(blk, resolved_elem_ty, tuple_value, @intCast(elem_idx), tuple_loc);
-                try var_entries.insert(self.gpa, ve_idx + elem_idx, .{
+
+                const elem_val = blk.builder.extractElem(blk, resolved_elem_ty, entry.value, @intCast(elem_idx), entry.loc);
+                try final_entries.append(self.gpa, .{
                     .value = elem_val,
-                    .ty = elem_ty, // Keep original elem_ty for later checks
-                    .loc = tuple_loc,
-                    // Mark as non-spread so we don't recursively re-expand nested tuple elements.
-                    .expr = null,
+                    .ty = elem_ty,
+                    .loc = entry.loc,
+                    .expr = null, // Consumed spread
                 });
             }
             continue;
         }
-        ve_idx += 1;
+
+        try final_entries.append(self.gpa, entry.*);
     }
 
-    ve_idx = 0;
-    while (ve_idx < var_entries.items.len) : (ve_idx += 1) {
-        var entry = &var_entries.items[ve_idx];
-        const entry_kind = self.context.type_store.getKind(entry.ty);
-        const want_promoted: ?types.TypeId = switch (entry_kind) {
+    // 3. Promote scalars and append to vals_list
+    for (final_entries.items) |*entry| {
+        const k = self.context.type_store.getKind(entry.ty);
+        const promoted_ty: ?types.TypeId = switch (k) {
             .Bool, .I8, .U8, .I16, .U16 => self.context.type_store.tI32(),
             .F32 => self.context.type_store.tF64(),
+            .Any => blk_any: {
+                if (entry.expr) |eid| {
+                    if (a.kind(eid) == .Literal) {
+                        break :blk_any switch (a.exprs.get(.Literal, eid).kind) {
+                            .int, .char => self.context.type_store.tI64(),
+                            .float, .imaginary => self.context.type_store.tF64(),
+                            .bool => self.context.type_store.tI32(),
+                            .string => self.context.type_store.tString(),
+                        };
+                    }
+                }
+                break :blk_any self.context.type_store.tUsize();
+            },
             else => null,
         };
-        if (want_promoted) |want_ty| {
-            entry.value = self.emitCoerce(blk, entry.value, entry.ty, want_ty, entry.loc);
-            entry.ty = want_ty;
-            continue;
-        }
 
-        if (entry_kind == .Any) {
-            if (entry.expr) |expr_id| {
-                const want_any = switch (a.kind(expr_id)) {
-                    .Literal => switch (a.exprs.get(.Literal, expr_id).kind) {
-                        .int, .char => self.context.type_store.tI64(),
-                        .float, .imaginary => self.context.type_store.tF64(),
-                        .bool => self.context.type_store.tI32(),
-                        .string => self.context.type_store.tString(),
-                    },
-                    else => self.context.type_store.tUsize(),
-                };
-                entry.value = try self.lowerExpr(ctx, a, env, f, blk, expr_id, want_any, .rvalue);
-                entry.ty = want_any;
+        if (promoted_ty) |pty| {
+            if (k == .Any) {
+                entry.value = try self.lowerExpr(ctx, a, env, f, blk, entry.expr.?, pty, .rvalue);
+            } else {
+                entry.value = self.emitCoerce(blk, entry.value, entry.ty, pty, entry.loc);
             }
         }
-    }
 
-    for (var_entries.items) |entry| {
         try vals_list.append(self.gpa, entry.value);
     }
 }
 
-/// Return true if `expr` is `a..b` where the end expands to multiple arguments.
-fn isSpreadRangeExpr(
-    self: *LowerTir,
-    ctx: *LowerContext,
-    a: *ast.Ast,
-    env: *cf.Env,
-    expr: ast.ExprId,
-) bool {
+fn isSpreadRangeExpr(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, env: *cf.Env, expr: ast.ExprId) bool {
     if (a.kind(expr) != .Range) return false;
     if (a.type_info.isRangeSpread(expr)) return true;
+
     const row = a.exprs.get(.Range, expr);
     if (!row.start.isNone() or row.end.isNone()) return false;
+
     const end_expr = row.end.unwrap();
     const refined_ty = self.exprTypeWithEnv(ctx, a, env, end_expr);
     const refined_kind = self.context.type_store.getKind(refined_ty);
+
     if (refined_kind == .Tuple or refined_kind == .Any) return true;
-    const stamped_ty = self.getExprType(ctx, a, end_expr);
-    const stamped_kind = self.context.type_store.getKind(stamped_ty);
-    return stamped_kind == .Any;
+    return self.context.type_store.getKind(self.getExprType(ctx, a, end_expr)) == .Any;
 }
 
-/// Check whether the optional `expr` should be treated as a spread argument.
-fn isSpreadArgExpr(
-    self: *LowerTir,
-    ctx: *LowerContext,
-    a: *ast.Ast,
-    env: *cf.Env,
-    expr: ?ast.ExprId,
-) bool {
-    if (expr) |eid| return self.isSpreadRangeExpr(ctx, a, env, eid);
-    return false;
+fn isSpreadArgExpr(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, env: *cf.Env, expr: ?ast.ExprId) bool {
+    return if (expr) |eid| self.isSpreadRangeExpr(ctx, a, env, eid) else false;
 }
 
-/// Compute the tuple type to pack trailing `any` arguments starting at `start_index`.
 fn computeTrailingAnyTupleType(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3036,27 +2678,24 @@ fn computeTrailingAnyTupleType(
     args: []const ast.ExprId,
     start_index: usize,
 ) !types.TypeId {
-    if (start_index >= args.len) {
-        return self.context.type_store.mkTuple(&.{});
-    }
+    if (start_index >= args.len) return self.context.type_store.mkTuple(&.{});
 
     const trailing_len = args.len - start_index;
     if (trailing_len == 1 and !self.isSpreadArgExpr(ctx, a, env, args[start_index])) {
         return self.exprTypeWithEnv(ctx, a, env, args[start_index]);
     }
 
-    var elem_types = std.ArrayList(types.TypeId){};
+    var elem_types = try std.ArrayList(types.TypeId).initCapacity(self.gpa, trailing_len);
     defer elem_types.deinit(self.gpa);
 
     var idx = start_index;
     while (idx < args.len) : (idx += 1) {
-        try elem_types.append(self.gpa, self.exprTypeWithEnv(ctx, a, env, args[idx]));
+        elem_types.appendAssumeCapacity(self.exprTypeWithEnv(ctx, a, env, args[idx]));
     }
 
     return self.context.type_store.mkTuple(elem_types.items);
 }
 
-/// Lower opaque type expressions by returning undef/expected type placeholders.
 fn lowerTypeExprOpaque(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3066,26 +2705,14 @@ fn lowerTypeExprOpaque(
     expected_ty: ?types.TypeId,
 ) tir.ValueId {
     const loc = optLoc(a, id);
-    if (expected_ty) |want| {
-        // For type expressions, materialize exactly the expected type to avoid
-        // inserting redundant CastNormal on opaque type handles.
-        return self.safeUndef(blk, want, loc);
-    }
-    const ty0 = self.getExprType(ctx, a, id);
-    return self.safeUndef(blk, ty0, loc);
+    return self.safeUndef(blk, expected_ty orelse self.getExprType(ctx, a, id), loc);
 }
 
-/// Lower `typeof(expr)` by materializing a type handle for the operand’s stamped type.
 fn lowerTypeOf(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, blk: *Builder.BlockFrame, id: ast.ExprId) tir.ValueId {
-    const row = a.exprs.get(.TypeOf, id);
-    const loc = optLoc(a, id);
-    const result_ty = self.getExprType(ctx, a, id);
-    const target_ty = self.getExprType(ctx, a, row.expr);
-    const type_idx: u64 = @intCast(target_ty.toRaw());
-    return blk.builder.tirValue(.ConstInt, blk, result_ty, loc, .{ .value = type_idx });
+    const target_ty = self.getExprType(ctx, a, a.exprs.get(.TypeOf, id).expr);
+    return blk.builder.tirValue(.ConstInt, blk, self.getExprType(ctx, a, id), optLoc(a, id), .{ .value = @as(u64, @intCast(target_ty.toRaw())) });
 }
 
-/// Lower literal expressions to the corresponding constant SSA values.
 fn lowerLiteral(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3095,7 +2722,6 @@ fn lowerLiteral(
     expected_ty: ?types.TypeId,
 ) anyerror!tir.ValueId {
     const lit = a.exprs.get(.Literal, id);
-    // If the checker didn’t stamp a type, use the caller’s expected type.
     const ty0 = self.getExprType(ctx, a, id);
     const loc = optLoc(a, id);
     const base_ty = if (self.context.type_store.getKind(ty0) == .Optional)
@@ -3105,64 +2731,35 @@ fn lowerLiteral(
 
     var literal_ty = base_ty;
     const v = switch (lit.kind) {
-        .int => blk: {
-            const info = switch (lit.data) {
-                .int => |int_info| int_info,
-                else => unreachable,
-            };
-            std.debug.assert(info.valid);
-            const value64: u64 = @intCast(info.value);
-            break :blk blk.builder.tirValue(.ConstInt, blk, base_ty, loc, .{ .value = value64 });
+        .int => blk_int: {
+            if (lit.data != .int or !lit.data.int.valid) break :blk_int blk.builder.tirValue(.ConstUndef, blk, base_ty, loc, .{});
+            break :blk_int blk.builder.tirValue(.ConstInt, blk, base_ty, loc, .{ .value = @as(u64, @intCast(lit.data.int.value)) });
         },
-        .imaginary => blk: {
-            // ty0 must be Complex(elem). Build from (re=0, im=value)
-            const tk = self.context.type_store.getKind(base_ty);
-            if (tk != .Complex) break :blk blk.builder.tirValue(.ConstUndef, blk, ty0, loc, .{});
+        .imaginary => blk_img: {
+            if (self.context.type_store.getKind(base_ty) != .Complex or lit.data != .imaginary)
+                break :blk_img blk.builder.tirValue(.ConstUndef, blk, ty0, loc, .{});
+
             const crow = self.context.type_store.get(.Complex, base_ty);
-            const elem = crow.elem;
             literal_ty = base_ty;
-            const info = switch (lit.data) {
-                .imaginary => |imag| imag,
-                else => unreachable,
-            };
-            std.debug.assert(info.valid);
-            const parsed = info.value;
-            const re0 = blk.builder.tirValue(.ConstFloat, blk, elem, loc, .{ .value = 0.0 });
-            const imv = blk.builder.tirValue(.ConstFloat, blk, elem, loc, .{ .value = parsed });
-            const cv = blk.builder.tirValue(.ComplexMake, blk, base_ty, loc, .{ .re = re0, .im = imv });
-            break :blk cv;
+            const re0 = blk.builder.tirValue(.ConstFloat, blk, crow.elem, loc, .{ .value = 0.0 });
+            const imv = blk.builder.tirValue(.ConstFloat, blk, crow.elem, loc, .{ .value = lit.data.imaginary.value });
+            break :blk_img blk.builder.tirValue(.ComplexMake, blk, base_ty, loc, .{ .re = re0, .im = imv });
         },
-        .float => blk: {
-            const info = switch (lit.data) {
-                .float => |float_info| float_info,
-                else => unreachable,
-            };
-            std.debug.assert(info.valid);
-            switch (self.context.type_store.getKind(base_ty)) {
-                .F32, .F64 => literal_ty = base_ty,
-                else => literal_ty = self.context.type_store.tF64(),
-            }
-            break :blk blk.builder.tirValue(.ConstFloat, blk, literal_ty, loc, .{ .value = info.value });
+        .float => blk_flt: {
+            if (lit.data != .float or !lit.data.float.valid) break :blk_flt blk.builder.tirValue(.ConstUndef, blk, base_ty, loc, .{});
+            const k = self.context.type_store.getKind(base_ty);
+            literal_ty = if (k == .F32 or k == .F64) base_ty else self.context.type_store.tF64();
+            break :blk_flt blk.builder.tirValue(.ConstFloat, blk, literal_ty, loc, .{ .value = lit.data.float.value });
         },
-        .bool => blk.builder.tirValue(.ConstBool, blk, base_ty, loc, .{ .value = switch (lit.data) {
-            .bool => |b| b,
-            else => unreachable,
-        } }),
-        .string => blk.builder.tirValue(.ConstString, blk, base_ty, loc, .{ .text = switch (lit.data) {
-            .string => |sid| sid,
-            else => unreachable,
-        } }),
-        .char => blk.builder.tirValue(.ConstInt, blk, base_ty, loc, .{ .value = std.math.cast(u64, switch (lit.data) {
-            .char => |codepoint| codepoint,
-            else => unreachable,
-        }).? }),
+        .bool => blk.builder.tirValue(.ConstBool, blk, base_ty, loc, .{ .value = lit.data.bool }),
+        .string => blk.builder.tirValue(.ConstString, blk, base_ty, loc, .{ .text = lit.data.string }),
+        .char => blk.builder.tirValue(.ConstInt, blk, base_ty, loc, .{ .value = @as(u64, @intCast(lit.data.char)) }),
     };
+
     const want_ty = expected_ty orelse ty0;
-    if (!want_ty.eq(literal_ty)) return self.emitCoerce(blk, v, literal_ty, want_ty, loc);
-    return v;
+    return if (!want_ty.eq(literal_ty)) self.emitCoerce(blk, v, literal_ty, want_ty, loc) else v;
 }
 
-/// Lower unary operations, handling address-of, numeric negation, and logical not.
 fn lowerUnary(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3176,80 +2773,63 @@ fn lowerUnary(
 ) anyerror!tir.ValueId {
     const row = a.exprs.get(.Unary, id);
     const loc = optLoc(a, id);
-    const operand_loc = optLoc(a, row.expr);
-    if (row.op == .address_of or mode == .lvalue_addr) {
-        // compute address of the operand
-        const ety = self.getExprType(ctx, a, row.expr);
-        // When user asked address-of explicitly, produce pointer type
-        if (row.op == .address_of) {
-            const ptr = try self.lowerExpr(ctx, a, env, f, blk, row.expr, ety, .lvalue_addr);
-            return ptr;
-        }
-        // lvalue address request falls through to .Ident/.FieldAccess/.IndexAccess implementations
-    }
-    // rvalue unary
-    var ty0 = self.getExprType(ctx, a, id);
 
-    // If the stamp is void/any or non-numeric for +/-, fall back to operand numeric (or i64)
+    if (row.op == .address_of or mode == .lvalue_addr) {
+        const ptr = try self.lowerExpr(ctx, a, env, f, blk, row.expr, self.getExprType(ctx, a, row.expr), .lvalue_addr);
+        return if (row.op == .address_of) ptr else ptr; // lvalue fallthrough implicitly handled
+    }
+
+    var ty0 = self.getExprType(ctx, a, id);
     const is_num = self.isNumeric(ty0);
+
+    // Fallback typing for numeric ops on void/any
     if ((row.op == .pos or row.op == .neg) and (!is_num or self.isType(ty0, .Any) or self.isVoid(ty0))) {
         const et = self.getExprType(ctx, a, row.expr);
-        if (self.isNumeric(et)) {
-            ty0 = et;
-        }
-        if (self.isType(ty0, .Any) or self.isVoid(ty0)) ty0 = self.context.type_store.tI64();
+        ty0 = if (self.isNumeric(et)) et else self.context.type_store.tI64();
     }
 
     const operand_expect: ?types.TypeId = switch (row.op) {
         .pos, .neg => ty0,
         .logical_not => self.context.type_store.tBool(),
-        .address_of => null,
+        .address_of => unreachable,
     };
 
     var v0 = try self.lowerExpr(ctx, a, env, f, blk, row.expr, operand_expect, .rvalue);
 
     const v = switch (row.op) {
         .pos => v0,
-        .neg => blk: {
-            // Use a zero that matches ty0’s kind; if Complex, build complex(0,0)
-            const zero = zblk: {
-                const k = self.context.type_store.getKind(ty0);
-                if (k == .Complex) {
+        .neg => blk_neg: {
+            const zero = blk_z: {
+                if (self.context.type_store.getKind(ty0) == .Complex) {
                     const crow = self.context.type_store.get(.Complex, ty0);
-                    const re0 = blk.builder.tirValue(.ConstFloat, blk, crow.elem, loc, .{ .value = 0.0 });
-                    const im0 = blk.builder.tirValue(.ConstFloat, blk, crow.elem, loc, .{ .value = 0.0 });
-                    break :zblk blk.builder.tirValue(.ComplexMake, blk, ty0, loc, .{ .re = re0, .im = im0 });
+                    const zero_elem = blk.builder.tirValue(.ConstFloat, blk, crow.elem, loc, .{ .value = 0.0 });
+                    break :blk_z blk.builder.tirValue(.ComplexMake, blk, ty0, loc, .{ .re = zero_elem, .im = zero_elem });
                 }
-                if (self.isFloat(ty0))
-                    break :zblk blk.builder.tirValue(.ConstFloat, blk, ty0, loc, .{ .value = 0.0 });
+                if (self.isFloat(ty0)) break :blk_z blk.builder.tirValue(.ConstFloat, blk, ty0, loc, .{ .value = 0.0 });
                 if (self.isType(ty0, .Simd)) {
                     const simd_info = self.context.type_store.get(.Simd, ty0);
-                    const elem_ty = simd_info.elem;
-                    const elem_kind = self.context.type_store.getKind(elem_ty);
-                    const zero_scalar = if (elem_kind == .F32 or elem_kind == .F64)
-                        blk.builder.tirValue(.ConstFloat, blk, elem_ty, loc, .{ .value = 0.0 })
+                    const e_kind = self.context.type_store.getKind(simd_info.elem);
+                    const scalar = if (e_kind == .F32 or e_kind == .F64)
+                        blk.builder.tirValue(.ConstFloat, blk, simd_info.elem, loc, .{ .value = 0.0 })
                     else
-                        blk.builder.tirValue(.ConstInt, blk, elem_ty, loc, .{ .value = 0 });
-                    break :zblk blk.builder.tirValue(.Broadcast, blk, ty0, loc, .{ .value = zero_scalar });
+                        blk.builder.tirValue(.ConstInt, blk, simd_info.elem, loc, .{ .value = 0 });
+                    break :blk_z blk.builder.tirValue(.Broadcast, blk, ty0, loc, .{ .value = scalar });
                 }
-                break :zblk blk.builder.tirValue(.ConstInt, blk, ty0, loc, .{ .value = 0 });
+                break :blk_z blk.builder.tirValue(.ConstInt, blk, ty0, loc, .{ .value = 0 });
             };
-            break :blk blk.builder.bin(blk, .Sub, ty0, zero, v0, loc);
+            break :blk_neg blk.builder.bin(blk, .Sub, ty0, zero, v0, loc);
         },
-        .logical_not => blk: {
-            // Ensure operand is bool for logical ops
+        .logical_not => blk_not: {
             const bty = self.context.type_store.tBool();
-            const got = self.getExprType(ctx, a, row.expr);
-            v0 = self.emitCoerce(blk, v0, got, bty, operand_loc);
-            break :blk blk.builder.un1(blk, .LogicalNot, bty, v0, loc);
+            v0 = self.emitCoerce(blk, v0, self.getExprType(ctx, a, row.expr), bty, optLoc(a, row.expr));
+            break :blk_not blk.builder.un1(blk, .LogicalNot, bty, v0, loc);
         },
         .address_of => unreachable,
     };
-    if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
-    return v;
+
+    return if (expected_ty) |want| self.emitCoerce(blk, v, ty0, want, loc) else v;
 }
 
-/// Lower `range` expressions by materializing the tenable `RangeMake` value.
 fn lowerRange(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3260,30 +2840,21 @@ fn lowerRange(
     id: ast.ExprId,
     expected_ty: ?types.TypeId,
 ) anyerror!tir.ValueId {
+    if (self.isSpreadRangeExpr(ctx, a, env, id)) {
+        return self.lowerExpr(ctx, a, env, f, blk, a.exprs.get(.Range, id).end.unwrap(), expected_ty, .rvalue);
+    }
     const row = a.exprs.get(.Range, id);
     const ty0 = self.getExprType(ctx, a, id);
     const loc = optLoc(a, id);
-    if (self.isSpreadRangeExpr(ctx, a, env, id)) {
-        const inner = row.end.unwrap();
-        return self.lowerExpr(ctx, a, env, f, blk, inner, expected_ty, .rvalue);
-    }
     const usize_ty = self.context.type_store.tUsize();
-    const start_v = if (!row.start.isNone())
-        try self.lowerExpr(ctx, a, env, f, blk, row.start.unwrap(), usize_ty, .rvalue)
-    else
-        blk.builder.tirValue(.ConstUndef, blk, usize_ty, loc, .{});
-    const end_v = if (!row.end.isNone())
-        try self.lowerExpr(ctx, a, env, f, blk, row.end.unwrap(), usize_ty, .rvalue)
-    else
-        blk.builder.tirValue(.ConstUndef, blk, usize_ty, loc, .{});
-    const incl = blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = row.inclusive_right });
-    // Materialize range as TIR RangeMake (typed as []usize)
-    const v = blk.builder.rangeMake(blk, ty0, start_v, end_v, incl, loc);
-    if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
-    return v;
+
+    const start_v = if (!row.start.isNone()) try self.lowerExpr(ctx, a, env, f, blk, row.start.unwrap(), usize_ty, .rvalue) else blk.builder.tirValue(.ConstUndef, blk, usize_ty, loc, .{});
+    const end_v = if (!row.end.isNone()) try self.lowerExpr(ctx, a, env, f, blk, row.end.unwrap(), usize_ty, .rvalue) else blk.builder.tirValue(.ConstUndef, blk, usize_ty, loc, .{});
+
+    const v = blk.builder.rangeMake(blk, ty0, start_v, end_v, blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = row.inclusive_right }), loc);
+    return if (expected_ty) |want| self.emitCoerce(blk, v, ty0, want, loc) else v;
 }
 
-/// Lower dereference expressions, emitting a load or reusing pointer addresses when requested.
 fn lowerDeref(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3295,21 +2866,17 @@ fn lowerDeref(
     expected_ty: ?types.TypeId,
     mode: LowerMode,
 ) !tir.ValueId {
-    if (mode == .lvalue_addr) {
-        // address of deref target is the pointer value itself
-        const row = a.exprs.get(.Deref, id);
-        return try self.lowerExpr(ctx, a, env, f, blk, row.expr, null, .rvalue);
-    }
-    const ty0 = self.getExprType(ctx, a, id);
     const row = a.exprs.get(.Deref, id);
+    if (mode == .lvalue_addr) return self.lowerExpr(ctx, a, env, f, blk, row.expr, null, .rvalue);
+
+    const ty0 = self.getExprType(ctx, a, id);
     const ptr = try self.lowerExpr(ctx, a, env, f, blk, row.expr, null, .rvalue);
     const loc = optLoc(a, id);
     const v = blk.builder.tirValue(.Load, blk, ty0, loc, .{ .ptr = ptr, .@"align" = 0 });
-    if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
-    return v;
+
+    return if (expected_ty) |want| self.emitCoerce(blk, v, ty0, want, loc) else v;
 }
 
-/// Lower array literals (including simd/slice/dynarray/tensor cases) into concrete TIR constructs.
 fn lowerArrayLit(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3321,150 +2888,87 @@ fn lowerArrayLit(
     expected_ty: ?types.TypeId,
 ) anyerror!tir.ValueId {
     const row = a.exprs.get(.ArrayLit, id);
-    const ty0 = expected_ty orelse (self.getExprType(ctx, a, id));
+    const ty0 = expected_ty orelse self.getExprType(ctx, a, id);
     const loc = optLoc(a, id);
     const vk = self.context.type_store.getKind(ty0);
-    switch (vk) {
-        .Array => {
-            const array_ty = self.context.type_store.get(.Array, ty0);
 
-            const ids = a.exprs.expr_pool.slice(row.elems);
-            std.debug.assert(array_ty.len == ids.len);
+    const ids = a.exprs.expr_pool.slice(row.elems);
 
-            var vals = try self.gpa.alloc(tir.ValueId, ids.len);
-            defer self.gpa.free(vals);
-            const expect_elem = array_ty.elem;
-            var i: usize = 0;
-            while (i < ids.len) : (i += 1)
-                vals[i] = try self.lowerExpr(ctx, a, env, f, blk, ids[i], expect_elem, .rvalue);
-            const v = blk.builder.arrayMake(blk, ty0, vals, loc);
-            if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
-            return v;
+    const v = switch (vk) {
+        .Array, .Simd => blk_arr: {
+            const elem_ty = if (vk == .Array) self.context.type_store.get(.Array, ty0).elem else self.context.type_store.get(.Simd, ty0).elem;
+
+            var vals_buf: [32]tir.ValueId = undefined;
+            var vals: []tir.ValueId = if (ids.len <= 32) vals_buf[0..ids.len] else try self.gpa.alloc(tir.ValueId, ids.len);
+            defer if (ids.len > 32) self.gpa.free(vals);
+
+            for (ids, 0..) |eid, i| {
+                vals[i] = try self.lowerExpr(ctx, a, env, f, blk, eid, elem_ty, .rvalue);
+            }
+            break :blk_arr blk.builder.arrayMake(blk, ty0, vals, loc);
         },
-        .Simd => {
-            const simd_ty = self.context.type_store.get(.Simd, ty0);
-            const lanes: usize = @intCast(simd_ty.lanes);
-            const ids = a.exprs.expr_pool.slice(row.elems);
-            std.debug.assert(lanes == ids.len);
-            var vals = try self.gpa.alloc(tir.ValueId, ids.len);
-            defer self.gpa.free(vals);
-            const expect_elem = simd_ty.elem;
-            var i: usize = 0;
-            while (i < ids.len) : (i += 1)
-                vals[i] = try self.lowerExpr(ctx, a, env, f, blk, ids[i], expect_elem, .rvalue);
-            const v = blk.builder.arrayMake(blk, ty0, vals, loc);
-            if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
-            return v;
-        },
-        .Slice => {
-            const slice_ty = self.context.type_store.get(.Slice, ty0);
-            const elem_ty = slice_ty.elem;
+        .Slice, .DynArray => blk_dyn: {
+            const is_slice = vk == .Slice;
+            const elem_ty = if (is_slice) self.context.type_store.get(.Slice, ty0).elem else self.context.type_store.get(.DynArray, ty0).elem;
             const ptr_ty = self.context.type_store.mkPtr(elem_ty, false);
             const usize_ty = self.context.type_store.tUsize();
-            const ids = a.exprs.expr_pool.slice(row.elems);
 
             if (ids.len == 0) {
                 const null_ptr = blk.builder.constNull(blk, ptr_ty, loc);
                 const zero = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = 0 });
-                const slice_val = blk.builder.structMake(blk, ty0, &[_]tir.Rows.StructFieldInit{
-                    .{ .index = 0, .name = .none(), .value = null_ptr },
-                    .{ .index = 1, .name = .none(), .value = zero },
-                }, loc);
-                if (expected_ty) |want| return self.emitCoerce(blk, slice_val, ty0, want, loc);
-                return slice_val;
+                if (is_slice) {
+                    break :blk_dyn blk.builder.structMake(blk, ty0, &[_]tir.Rows.StructFieldInit{
+                        .{ .index = 0, .name = .none(), .value = null_ptr },
+                        .{ .index = 1, .name = .none(), .value = zero },
+                    }, loc);
+                } else {
+                    break :blk_dyn blk.builder.structMake(blk, ty0, &[_]tir.Rows.StructFieldInit{
+                        .{ .index = 0, .name = .none(), .value = null_ptr },
+                        .{ .index = 1, .name = .none(), .value = zero },
+                        .{ .index = 2, .name = .none(), .value = zero },
+                    }, loc);
+                }
+            }
+
+            var elem_buf: [32]tir.ValueId = undefined;
+            var elems: []tir.ValueId = if (ids.len <= 32) elem_buf[0..ids.len] else try self.gpa.alloc(tir.ValueId, ids.len);
+            defer if (ids.len > 32) self.gpa.free(elems);
+
+            for (ids, 0..) |eid, i| {
+                elems[i] = try self.lowerExpr(ctx, a, env, f, blk, eid, elem_ty, .rvalue);
             }
 
             const elem_size = check_types.typeSize(self.context, elem_ty);
-
-            var elems = try self.gpa.alloc(tir.ValueId, ids.len);
-            defer self.gpa.free(elems);
-            var i: usize = 0;
-            while (i < ids.len) : (i += 1) {
-                elems[i] = try self.lowerExpr(ctx, a, env, f, blk, ids[i], elem_ty, .rvalue);
-            }
-
-            const total_bytes: u64 = @intCast(elem_size * ids.len);
-            const bytes_const = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = total_bytes });
-            const raw_ptr = self.callRuntimeAllocPtr(blk, bytes_const, loc);
+            const total_bytes = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = @as(u64, @intCast(elem_size * ids.len)) });
+            const raw_ptr = self.callRuntimeAllocPtr(blk, total_bytes, loc);
             const data_ptr = blk.builder.tirValue(.CastBit, blk, ptr_ty, loc, .{ .value = raw_ptr });
 
-            var idx: usize = 0;
-            while (idx < elems.len) : (idx += 1) {
-                const idx_u64 = std.math.cast(u64, idx) orelse unreachable;
-                const offset = blk.builder.gepConst(idx_u64);
-                const elem_ptr = blk.builder.gep(blk, ptr_ty, data_ptr, &.{offset}, loc);
-                _ = blk.builder.tirValue(.Store, blk, elem_ty, loc, .{ .ptr = elem_ptr, .value = elems[idx], .@"align" = 0 });
+            for (elems, 0..) |ev, idx| {
+                const off = blk.builder.gepConst(@intCast(idx));
+                const ep = blk.builder.gep(blk, ptr_ty, data_ptr, &.{off}, loc);
+                _ = blk.builder.tirValue(.Store, blk, elem_ty, loc, .{ .ptr = ep, .value = ev, .@"align" = 0 });
             }
 
-            const len_u64 = std.math.cast(u64, ids.len) orelse unreachable;
-            const len_const = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = len_u64 });
-            const slice_val = blk.builder.structMake(blk, ty0, &[_]tir.Rows.StructFieldInit{
-                .{ .index = 0, .name = .none(), .value = data_ptr },
-                .{ .index = 1, .name = .none(), .value = len_const },
-            }, loc);
-            if (expected_ty) |want| return self.emitCoerce(blk, slice_val, ty0, want, loc);
-            return slice_val;
+            const len_v = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = @as(u64, @intCast(ids.len)) });
+
+            if (is_slice) {
+                break :blk_dyn blk.builder.structMake(blk, ty0, &[_]tir.Rows.StructFieldInit{
+                    .{ .index = 0, .name = .none(), .value = data_ptr },
+                    .{ .index = 1, .name = .none(), .value = len_v },
+                }, loc);
+            } else {
+                break :blk_dyn blk.builder.structMake(blk, ty0, &[_]tir.Rows.StructFieldInit{
+                    .{ .index = 0, .name = .none(), .value = data_ptr },
+                    .{ .index = 1, .name = .none(), .value = len_v },
+                    .{ .index = 2, .name = .none(), .value = len_v },
+                }, loc);
+            }
         },
-        .DynArray => {
-            const dyn_ty = self.context.type_store.get(.DynArray, ty0);
-            const elem_ty = dyn_ty.elem;
-            const ptr_elem_ty = self.context.type_store.mkPtr(elem_ty, false);
-            const usize_ty = self.context.type_store.tUsize();
-            const ids = a.exprs.expr_pool.slice(row.elems);
-
-            if (ids.len == 0) {
-                const null_ptr = blk.builder.constNull(blk, ptr_elem_ty, loc);
-                const zero = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = 0 });
-                const fields = [_]tir.Rows.StructFieldInit{
-                    .{ .index = 0, .name = .none(), .value = null_ptr },
-                    .{ .index = 1, .name = .none(), .value = zero },
-                    .{ .index = 2, .name = .none(), .value = zero },
-                };
-                const dyn_val = blk.builder.structMake(blk, ty0, &fields, loc);
-                if (expected_ty) |want| return self.emitCoerce(blk, dyn_val, ty0, want, loc);
-                return dyn_val;
-            }
-
-            const elem_size = check_types.typeSize(self.context, elem_ty);
-
-            var elems = try self.gpa.alloc(tir.ValueId, ids.len);
-            defer self.gpa.free(elems);
-            var i: usize = 0;
-            while (i < ids.len) : (i += 1) {
-                elems[i] = try self.lowerExpr(ctx, a, env, f, blk, ids[i], elem_ty, .rvalue);
-            }
-
-            const total_bytes: u64 = @intCast(elem_size * ids.len);
-            const bytes_const = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = total_bytes });
-            const raw_ptr = self.callRuntimeAllocPtr(blk, bytes_const, loc);
-            const data_ptr = blk.builder.tirValue(.CastBit, blk, ptr_elem_ty, loc, .{ .value = raw_ptr });
-
-            var idx: usize = 0;
-            while (idx < elems.len) : (idx += 1) {
-                const idx_u64 = std.math.cast(u64, idx) orelse unreachable;
-                const offset = blk.builder.gepConst(idx_u64);
-                const elem_ptr = blk.builder.gep(blk, ptr_elem_ty, data_ptr, &.{offset}, loc);
-                _ = blk.builder.tirValue(.Store, blk, elem_ty, loc, .{ .ptr = elem_ptr, .value = elems[idx], .@"align" = 0 });
-            }
-
-            const len_u64 = std.math.cast(u64, ids.len) orelse unreachable;
-            const len_const = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = len_u64 });
-            const fields = [_]tir.Rows.StructFieldInit{
-                .{ .index = 0, .name = .none(), .value = data_ptr },
-                .{ .index = 1, .name = .none(), .value = len_const },
-                .{ .index = 2, .name = .none(), .value = len_const },
-            };
-            const dyn_val = blk.builder.structMake(blk, ty0, &fields, loc);
-            if (expected_ty) |want| return self.emitCoerce(blk, dyn_val, ty0, want, loc);
-            return dyn_val;
-        },
-        .Tensor => {
-            const v = try self.lowerTensorArrayLiteral(ctx, a, env, f, blk, id, ty0, loc);
-            if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
-            return v;
-        },
+        .Tensor => try self.lowerTensorArrayLiteral(ctx, a, env, f, blk, id, ty0, loc),
         else => unreachable,
-    }
+    };
+
+    return if (expected_ty) |want| self.emitCoerce(blk, v, ty0, want, loc) else v;
 }
 
 /// Lower tensor-style array literals by flattening nested arrays into element sequences.
@@ -3479,8 +2983,7 @@ fn lowerTensorArrayLiteral(
     tensor_ty: types.TypeId,
     loc: tir.OptLocId,
 ) !tir.ValueId {
-    const tensor_row = self.context.type_store.get(.Tensor, tensor_ty);
-    if (tensor_row.rank == 0) unreachable;
+    if (self.context.type_store.get(.Tensor, tensor_ty).rank == 0) unreachable;
 
     var values: List(tir.ValueId) = .empty;
     defer values.deinit(self.gpa);
@@ -3505,15 +3008,15 @@ fn collectTensorLiteralValues(
     current_ty: types.TypeId,
     out: *List(tir.ValueId),
 ) !void {
-    const kind = self.context.type_store.getKind(current_ty);
-    if (kind == .Tensor) {
+    if (self.context.type_store.getKind(current_ty) == .Tensor) {
         if (a.kind(expr_id) != .ArrayLit) unreachable;
+
         const row = a.exprs.get(.ArrayLit, expr_id);
         const ids = a.exprs.expr_pool.slice(row.elems);
         const tensor_info = self.context.type_store.get(.Tensor, current_ty);
+
         std.debug.assert(tensor_info.rank > 0);
-        const expected_len: usize = @intCast(tensor_info.dims[0]);
-        std.debug.assert(ids.len == expected_len);
+        std.debug.assert(ids.len == @as(usize, @intCast(tensor_info.dims[0])));
 
         var next_ty: types.TypeId = undefined;
         if (tensor_info.rank == 1) {
@@ -3533,8 +3036,7 @@ fn collectTensorLiteralValues(
         return;
     }
 
-    const value = try self.lowerExpr(ctx, a, env, f, blk, expr_id, current_ty, .rvalue);
-    try out.append(self.gpa, value);
+    try out.append(self.gpa, try self.lowerExpr(ctx, a, env, f, blk, expr_id, current_ty, .rvalue));
 }
 
 /// Lower tuple literals by constructing a struct-like aggregate with ordered fields.
@@ -3552,45 +3054,40 @@ fn lowerTupleLit(
     var ty0 = self.getExprType(ctx, a, id);
     const loc = optLoc(a, id);
     const ids = a.exprs.expr_pool.slice(row.elems);
-    var vals = try self.gpa.alloc(tir.ValueId, ids.len);
-    defer self.gpa.free(vals);
 
-    // If the tuple type is Any (e.g. inferred from context), refine it to a concrete Tuple type
-    // based on the elements, or at least don't try to use Any as the result type of TupleMake.
+    var vals_buf: [32]tir.ValueId = undefined;
+    var vals: []tir.ValueId = if (ids.len <= 32) vals_buf[0..ids.len] else try self.gpa.alloc(tir.ValueId, ids.len);
+    defer if (ids.len > 32) self.gpa.free(vals);
+
     if (self.context.type_store.getKind(ty0) == .Any) {
         var elem_tys = try self.gpa.alloc(types.TypeId, ids.len);
         defer self.gpa.free(elem_tys);
-        var i: usize = 0;
-        while (i < ids.len) : (i += 1) {
-            // Lower without expectation to get natural types
-            vals[i] = try self.lowerExpr(ctx, a, env, f, blk, ids[i], null, .rvalue);
-            elem_tys[i] = self.getExprType(ctx, a, ids[i]); // Fallback to stamped type
+
+        for (ids, 0..) |eid, i| {
+            vals[i] = try self.lowerExpr(ctx, a, env, f, blk, eid, null, .rvalue);
+            elem_tys[i] = self.getExprType(ctx, a, eid);
         }
         ty0 = self.context.type_store.mkTuple(elem_tys);
     } else {
-        var i: usize = 0;
-        while (i < ids.len) : (i += 1) {
-            // coerce element to tuple element type if known
-            var expect_elem: ?types.TypeId = null;
-            if (self.context.type_store.getKind(ty0) == .Tuple) {
-                const trow = self.context.type_store.get(.Tuple, ty0);
-                const elems = self.context.type_store.type_pool.slice(trow.elems);
-                if (i < elems.len) expect_elem = elems[i];
-            }
-            vals[i] = try self.lowerExpr(ctx, a, env, f, blk, ids[i], expect_elem, .rvalue);
+        const is_tuple = self.context.type_store.getKind(ty0) == .Tuple;
+        const elems = if (is_tuple) self.context.type_store.type_pool.slice(self.context.type_store.get(.Tuple, ty0).elems) else &.{};
+
+        for (ids, 0..) |eid, i| {
+            const expect_elem = if (is_tuple and i < elems.len) elems[i] else null;
+            vals[i] = try self.lowerExpr(ctx, a, env, f, blk, eid, expect_elem, .rvalue);
         }
     }
 
-    // Lower tuple literals using struct construction with ordinal fields
-    var fields = try self.gpa.alloc(tir.Rows.StructFieldInit, vals.len);
-    defer self.gpa.free(fields);
-    var j: usize = 0;
-    while (j < vals.len) : (j += 1) {
-        fields[j] = .{ .index = @intCast(j), .name = .none(), .value = vals[j] };
+    var fields_buf: [32]tir.Rows.StructFieldInit = undefined;
+    var fields: []tir.Rows.StructFieldInit = if (vals.len <= 32) fields_buf[0..vals.len] else try self.gpa.alloc(tir.Rows.StructFieldInit, vals.len);
+    defer if (vals.len > 32) self.gpa.free(fields);
+
+    for (vals, 0..) |val, j| {
+        fields[j] = .{ .index = @intCast(j), .name = .none(), .value = val };
     }
+
     const v = blk.builder.structMake(blk, ty0, fields, loc);
-    if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
-    return v;
+    return if (expected_ty) |want| self.emitCoerce(blk, v, ty0, want, loc) else v;
 }
 
 /// Lower struct literals by computing each field init and applying defaults when needed.
@@ -3610,36 +3107,30 @@ fn lowerStructLit(
 
     if (self.context.type_store.getKind(ty0) == .Optional) {
         const opt = self.context.type_store.get(.Optional, ty0);
-        if (self.context.type_store.getKind(opt.elem) == .Struct) {
-            ty0 = opt.elem;
-        }
+        if (self.context.type_store.getKind(opt.elem) == .Struct) ty0 = opt.elem;
     }
 
     const fids = a.exprs.sfv_pool.slice(row.fields);
     var field_inits = List(tir.Rows.StructFieldInit){};
     defer field_inits.deinit(self.gpa);
+    try field_inits.ensureTotalCapacity(self.gpa, fids.len); // Optimization: Pre-allocate known minimum
 
     const ty0_kind = self.context.type_store.getKind(ty0);
-    var type_fields: []const types.FieldId = &.{};
-    if (ty0_kind == .Struct) {
-        type_fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Struct, ty0).fields);
-    } else if (ty0_kind == .Union) {
-        type_fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Union, ty0).fields);
-    }
+    const type_fields = switch (ty0_kind) {
+        .Struct => self.context.type_store.field_pool.slice(self.context.type_store.get(.Struct, ty0).fields),
+        .Union => self.context.type_store.field_pool.slice(self.context.type_store.get(.Union, ty0).fields),
+        else => &[_]types.FieldId{},
+    };
 
     var provided_mask: ?[]bool = null;
     if (ty0_kind == .Struct and !row.ty.isNone()) {
-        const count = type_fields.len;
-        const mask = try self.gpa.alloc(bool, count);
-        @memset(mask, false);
-        provided_mask = mask;
+        provided_mask = try self.gpa.alloc(bool, type_fields.len);
+        @memset(provided_mask.?, false);
     }
     defer if (provided_mask) |mask| self.gpa.free(mask);
 
-    var i: usize = 0;
-    while (i < fids.len) : (i += 1) {
-        const sfv = a.exprs.StructFieldValue.get(fids[i]);
-
+    for (fids, 0..) |fid_idx, i| {
+        const sfv = a.exprs.StructFieldValue.get(fid_idx);
         var field_idx: ?usize = null;
         var want: types.TypeId = self.context.type_store.tAny();
 
@@ -3654,7 +3145,6 @@ fn lowerStructLit(
                 }
             }
         } else if (i < type_fields.len) {
-            // Positional field
             field_idx = i;
             want = self.context.type_store.Field.get(type_fields[i]).ty;
         }
@@ -3664,7 +3154,7 @@ fn lowerStructLit(
         if (provided_mask) |mask| {
             if (field_idx) |idx| mask[idx] = true;
         }
-        try field_inits.append(self.gpa, .{ .index = @intCast(final_idx), .name = sfv.name, .value = v_val });
+        field_inits.appendAssumeCapacity(.{ .index = @intCast(final_idx), .name = sfv.name, .value = v_val });
     }
 
     if (provided_mask) |mask| {
@@ -3688,17 +3178,15 @@ fn lowerStructLit(
     const field_slice = try field_inits.toOwnedSlice(self.gpa);
     defer self.gpa.free(field_slice);
 
-    const v = if (ty0_kind == .Union) blk: {
+    const v = if (ty0_kind == .Union) blk_u: {
         std.debug.assert(field_slice.len == 1);
-        const field = field_slice[0];
-        break :blk blk.builder.tirValue(.UnionMake, blk, ty0, loc, .{
-            .field_index = field.index,
-            .value = field.value,
+        break :blk_u blk.builder.tirValue(.UnionMake, blk, ty0, loc, .{
+            .field_index = field_slice[0].index,
+            .value = field_slice[0].value,
         });
     } else blk.builder.structMake(blk, ty0, field_slice, loc);
 
-    if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
-    return v;
+    return if (expected_ty) |want| self.emitCoerce(blk, v, ty0, want, loc) else v;
 }
 
 /// Lower map literals by emitting a runtime call that constructs the map from key/value pairs.
@@ -3716,11 +3204,10 @@ fn lowerMapLit(
     var ty0 = expected_ty orelse self.getExprType(ctx, a, id);
     const loc = optLoc(a, id);
     const kv_ids = a.exprs.kv_pool.slice(row.entries);
-    // Build entry struct type { key, value }
-    const key_name = self.context.type_store.strs.intern("key");
-    const val_name = self.context.type_store.strs.intern("value");
+
     var key_ty = self.context.type_store.tAny();
     var val_ty = self.context.type_store.tAny();
+
     if (self.context.type_store.getKind(ty0) == .Map) {
         const mr = self.context.type_store.get(.Map, ty0);
         key_ty = mr.key;
@@ -3731,20 +3218,20 @@ fn lowerMapLit(
         val_ty = self.getExprType(ctx, a, first.value);
         ty0 = self.context.type_store.mkMap(key_ty, val_ty);
     }
+
     const entry_ty = self.context.type_store.mkStruct(&.{
-        .{ .name = key_name, .ty = key_ty },
-        .{ .name = val_name, .ty = val_ty },
+        .{ .name = self.context.type_store.strs.intern("key"), .ty = key_ty },
+        .{ .name = self.context.type_store.strs.intern("value"), .ty = val_ty },
     }, 0);
+
     const entry_size = check_types.typeSize(self.context, entry_ty);
     const key_size = check_types.typeSize(self.context, key_ty);
-    const val_align = check_types.typeAlign(self.context, val_ty);
-    const value_offset = std.mem.alignForward(usize, key_size, val_align);
+    const value_offset = std.mem.alignForward(usize, key_size, check_types.typeAlign(self.context, val_ty));
 
-    // Allocate a map slot and start from an empty runtime map.
     const map_ptr_ty = self.context.type_store.mkPtr(ty0, false);
     const map_slot = blk.builder.tirValue(.Alloca, blk, map_ptr_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
-    const empty_fn = blk.builder.intern("builtin_map_empty");
-    const empty_map = blk.builder.call(blk, ty0, empty_fn, &.{}, loc);
+
+    const empty_map = blk.builder.call(blk, ty0, blk.builder.intern("builtin_map_empty"), &.{}, loc);
     _ = blk.builder.tirValue(.Store, blk, ty0, loc, .{ .ptr = map_slot, .value = empty_map, .@"align" = 0 });
 
     const ptr_u8_ty = self.context.type_store.mkPtr(self.context.type_store.tU8(), false);
@@ -3754,26 +3241,23 @@ fn lowerMapLit(
     const val_ptr_ty = self.context.type_store.mkPtr(val_ty, false);
     const insert_fn = blk.builder.intern("builtin_map_get_or_insert");
 
-    // Insert each key/value pair
-    var idx: usize = 0;
-    while (idx < kv_ids.len) : (idx += 1) {
-        const kv = a.exprs.KeyValue.get(kv_ids[idx]);
+    const key_ptr_ty = self.context.type_store.mkPtr(key_ty, false);
+    const key_buf = blk.builder.tirValue(.Alloca, blk, key_ptr_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
+    const key_u8 = blk.builder.tirValue(.CastBit, blk, ptr_u8_ty, loc, .{ .value = key_buf });
+
+    for (kv_ids) |kv_id| {
+        const kv = a.exprs.KeyValue.get(kv_id);
         const key_v = try self.lowerExpr(ctx, a, env, f, blk, kv.key, key_ty, .rvalue);
         const val_v = try self.lowerExpr(ctx, a, env, f, blk, kv.value, val_ty, .rvalue);
 
-        const key_ptr_ty = self.context.type_store.mkPtr(key_ty, false);
-        const key_buf = blk.builder.tirValue(.Alloca, blk, key_ptr_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
         _ = blk.builder.tirValue(.Store, blk, key_ty, loc, .{ .ptr = key_buf, .value = key_v, .@"align" = 0 });
-        const key_u8 = blk.builder.tirValue(.CastBit, blk, ptr_u8_ty, loc, .{ .value = key_buf });
-
         const raw_ptr = blk.builder.call(blk, ptr_u8_ty, insert_fn, &.{ map_slot, key_u8, key_size_v, entry_size_v, value_off_v }, loc);
         const val_ptr = blk.builder.tirValue(.CastBit, blk, val_ptr_ty, loc, .{ .value = raw_ptr });
         _ = blk.builder.tirValue(.Store, blk, val_ty, loc, .{ .ptr = val_ptr, .value = val_v, .@"align" = 0 });
     }
 
     const final_map = blk.builder.tirValue(.Load, blk, ty0, loc, .{ .ptr = map_slot, .@"align" = 0 });
-    if (expected_ty) |want| return self.emitCoerce(blk, final_map, ty0, want, loc);
-    return final_map;
+    return if (expected_ty) |want| self.emitCoerce(blk, final_map, ty0, want, loc) else final_map;
 }
 
 /// Map index access (get or insert) lowered via runtime helper.
@@ -3791,22 +3275,17 @@ fn lowerMapIndex(
 ) anyerror!tir.ValueId {
     const loc = optLoc(a, id);
     const mr = self.context.type_store.get(.Map, map_ty);
-
-    // Address of the map itself (needed for insertion/growth)
-    const map_ptr_ty = self.context.type_store.mkPtr(map_ty, false);
     const row = a.exprs.get(.IndexAccess, id);
-    const map_ptr = try self.lowerExpr(ctx, a, env, f, blk, row.collection, map_ptr_ty, .lvalue_addr);
 
-    // Materialize the key into temporary storage so we can pass a raw pointer to runtime.
+    const map_ptr = try self.lowerExpr(ctx, a, env, f, blk, row.collection, self.context.type_store.mkPtr(map_ty, false), .lvalue_addr);
     const key_val = try self.lowerExpr(ctx, a, env, f, blk, row.index, mr.key, .rvalue);
+
     const key_ptr_ty = self.context.type_store.mkPtr(mr.key, false);
     const key_buf = blk.builder.tirValue(.Alloca, blk, key_ptr_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
     _ = blk.builder.tirValue(.Store, blk, mr.key, loc, .{ .ptr = key_buf, .value = key_val, .@"align" = 0 });
 
-    // Compute layout numbers for runtime.
     const key_size = check_types.typeSize(self.context, mr.key);
-    const val_align = check_types.typeAlign(self.context, mr.value);
-    const value_offset = std.mem.alignForward(usize, key_size, val_align);
+    const value_offset = std.mem.alignForward(usize, key_size, check_types.typeAlign(self.context, mr.value));
     const entry_ty = self.context.type_store.mkStruct(&.{
         .{ .name = self.context.type_store.strs.intern("key"), .ty = mr.key },
         .{ .name = self.context.type_store.strs.intern("value"), .ty = mr.value },
@@ -3814,20 +3293,20 @@ fn lowerMapIndex(
     const entry_size = check_types.typeSize(self.context, entry_ty);
 
     const ptr_u8_ty = self.context.type_store.mkPtr(self.context.type_store.tU8(), false);
-    const key_u8 = blk.builder.tirValue(.CastBit, blk, ptr_u8_ty, loc, .{ .value = key_buf });
-    const key_size_v = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = key_size });
-    const entry_size_v = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = entry_size });
-    const value_off_v = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = value_offset });
-
     const make = blk.builder.intern("builtin_map_get_or_insert");
-    const raw_ptr = blk.builder.call(blk, ptr_u8_ty, make, &.{ map_ptr, key_u8, key_size_v, entry_size_v, value_off_v }, loc);
-    const val_ptr_ty = self.context.type_store.mkPtr(mr.value, false);
-    const val_ptr = blk.builder.tirValue(.CastBit, blk, val_ptr_ty, loc, .{ .value = raw_ptr });
+    const raw_ptr = blk.builder.call(blk, ptr_u8_ty, make, &.{
+        map_ptr,
+        blk.builder.tirValue(.CastBit, blk, ptr_u8_ty, loc, .{ .value = key_buf }),
+        blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = key_size }),
+        blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = entry_size }),
+        blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = value_offset }),
+    }, loc);
+
+    const val_ptr = blk.builder.tirValue(.CastBit, blk, self.context.type_store.mkPtr(mr.value, false), loc, .{ .value = raw_ptr });
 
     if (mode == .lvalue_addr) return val_ptr;
     const loaded = blk.builder.tirValue(.Load, blk, mr.value, loc, .{ .ptr = val_ptr, .@"align" = 0 });
-    if (expected_ty) |want| return self.emitCoerce(blk, loaded, mr.value, want, loc);
-    return loaded;
+    return if (expected_ty) |want| self.emitCoerce(blk, loaded, mr.value, want, loc) else loaded;
 }
 
 /// Lower index access expressions to the appropriate GEP/load or optional indexing form.
@@ -3848,40 +3327,25 @@ fn lowerIndexAccess(
         return try self.lowerMapIndex(ctx, a, env, f, blk, id, base_ty, expected_ty, mode);
     }
     const loc = optLoc(a, id);
+
     if (mode == .lvalue_addr) {
-        // Prefer a usize constant for literal indices to avoid casts in TIR
-        const idx_v = blk: {
+        const idx_v = blk_idx: {
             if (a.kind(row.index) == .Literal) {
                 const lit = a.exprs.get(.Literal, row.index);
-                if (lit.kind == .int) {
-                    const info = switch (lit.data) {
-                        .int => |int_info| int_info,
-                        else => unreachable,
-                    };
-                    std.debug.assert(info.valid);
-                    const value = std.math.cast(u64, info.value) orelse unreachable;
-                    const uv = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{
-                        .value = value,
-                    });
-                    break :blk uv;
+                if (lit.kind == .int and lit.data == .int and lit.data.int.valid) {
+                    break :blk_idx blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = @as(u64, @intCast(lit.data.int.value)) });
                 }
             }
-            break :blk try self.lowerExpr(ctx, a, env, f, blk, row.index, self.context.type_store.tUsize(), .rvalue);
+            break :blk_idx try self.lowerExpr(ctx, a, env, f, blk, row.index, self.context.type_store.tUsize(), .rvalue);
         };
         const idx = blk.builder.gepValue(idx_v);
         const elem_ty = self.getExprType(ctx, a, id);
         const ptr_elem_ty = self.context.type_store.mkPtr(elem_ty, false);
         const base_kind = self.context.type_store.getKind(base_ty);
 
-        // Slices/dynarrays already carry a data pointer; derive the element address without
-        // forcing the base value into a stack slot.
         if (base_kind == .Slice or base_kind == .DynArray or base_kind == .String) {
             const base_val = try self.lowerExpr(ctx, a, env, f, blk, row.collection, null, .rvalue);
-            const data_ptr = blk.builder.tirValue(.ExtractField, blk, ptr_elem_ty, loc, .{
-                .agg = base_val,
-                .index = 0,
-                .name = OptStrId.none(),
-            });
+            const data_ptr = blk.builder.tirValue(.ExtractField, blk, ptr_elem_ty, loc, .{ .agg = base_val, .index = 0, .name = OptStrId.none() });
             return blk.builder.gep(blk, ptr_elem_ty, data_ptr, &.{idx}, loc);
         }
 
@@ -3889,58 +3353,40 @@ fn lowerIndexAccess(
             try self.lowerExpr(ctx, a, env, f, blk, row.collection, null, .rvalue)
         else
             try self.lowerExpr(ctx, a, env, f, blk, row.collection, null, .lvalue_addr);
-        const is_array = base_kind == .Array or
-            (base_kind == .Ptr and self.context.type_store.getKind(self.context.type_store.get(.Ptr, base_ty).elem) == .Array);
 
-        if (is_array) {
-            return blk.builder.gep(blk, ptr_elem_ty, base_ptr, &.{ blk.builder.gepConst(0), idx }, loc);
-        }
-        return blk.builder.gep(blk, ptr_elem_ty, base_ptr, &.{idx}, loc);
+        const is_array = base_kind == .Array or (base_kind == .Ptr and self.context.type_store.getKind(self.context.type_store.get(.Ptr, base_ty).elem) == .Array);
+        return if (is_array)
+            blk.builder.gep(blk, ptr_elem_ty, base_ptr, &.{ blk.builder.gepConst(0), idx }, loc)
+        else
+            blk.builder.gep(blk, ptr_elem_ty, base_ptr, &.{idx}, loc);
     } else {
         const ty0 = self.getExprType(ctx, a, id);
-        const col_kind = a.kind(row.collection);
-        const is_addressable = switch (col_kind) {
+        const is_addressable = switch (a.kind(row.collection)) {
             .Ident, .FieldAccess, .IndexAccess, .Deref => true,
             else => false,
         };
-        // Only prefer address for fixed-size arrays to avoid implicit copy.
         const prefer_addr = is_addressable and self.context.type_store.getKind(base_ty) == .Array;
+
         const base = if (prefer_addr)
             try self.lowerExpr(ctx, a, env, f, blk, row.collection, null, .lvalue_addr)
         else
             try self.lowerExpr(ctx, a, env, f, blk, row.collection, null, .rvalue);
 
-        // If result is a slice, the index expression should be a range ([]usize);
-        // otherwise, index is a single usize.
-        const idx = blk: {
-            const idx_ty = self.getExprType(ctx, a, row.index);
-            const idx_kind = self.context.type_store.getKind(idx_ty);
-            if (idx_kind == .Slice) {
-                const want = self.context.type_store.mkSlice(self.context.type_store.tUsize(), false);
-                break :blk try self.lowerExpr(ctx, a, env, f, blk, row.index, want, .rvalue);
-            } else {
-                // Prefer a usize constant for literal indices to avoid casts in TIR
-                if (a.kind(row.index) == .Literal) {
-                    const lit = a.exprs.get(.Literal, row.index);
-                    if (lit.kind == .int) {
-                        const info = switch (lit.data) {
-                            .int => |int_info| int_info,
-                            else => unreachable,
-                        };
-                        std.debug.assert(info.valid);
-                        const value = std.math.cast(u64, info.value) orelse unreachable;
-                        const uv = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{
-                            .value = value,
-                        });
-                        break :blk uv;
-                    }
-                }
-                break :blk try self.lowerExpr(ctx, a, env, f, blk, row.index, self.context.type_store.tUsize(), .rvalue);
+        const idx = blk_idx: {
+            if (self.context.type_store.getKind(self.getExprType(ctx, a, row.index)) == .Slice) {
+                break :blk_idx try self.lowerExpr(ctx, a, env, f, blk, row.index, self.context.type_store.mkSlice(self.context.type_store.tUsize(), false), .rvalue);
             }
+            if (a.kind(row.index) == .Literal) {
+                const lit = a.exprs.get(.Literal, row.index);
+                if (lit.kind == .int and lit.data == .int and lit.data.int.valid) {
+                    break :blk_idx blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = @as(u64, @intCast(lit.data.int.value)) });
+                }
+            }
+            break :blk_idx try self.lowerExpr(ctx, a, env, f, blk, row.index, self.context.type_store.tUsize(), .rvalue);
         };
+
         const v = blk.builder.indexOp(blk, ty0, base, idx, loc);
-        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
-        return v;
+        return if (expected_ty) |want| self.emitCoerce(blk, v, ty0, want, loc) else v;
     }
 }
 
@@ -3955,25 +3401,22 @@ fn lowerEnumMember(
     expected_ty: ?types.TypeId,
 ) !?tir.ValueId {
     const parent_ty = self.getExprType(ctx, a, parent_expr);
-    const parent_kind = self.context.type_store.getKind(parent_ty);
-    var enum_ty: types.TypeId = undefined;
-    switch (parent_kind) {
-        .Enum => enum_ty = parent_ty,
-        .TypeType => {
-            const tr = self.context.type_store.get(.TypeType, parent_ty);
-            const of_kind = self.context.type_store.getKind(tr.of);
-            if (of_kind != .Enum) return null;
-            enum_ty = tr.of;
+    const enum_ty: types.TypeId = switch (self.context.type_store.getKind(parent_ty)) {
+        .Enum => parent_ty,
+        .TypeType => blk: {
+            const of = self.context.type_store.get(.TypeType, parent_ty).of;
+            if (self.context.type_store.getKind(of) != .Enum) return null;
+            break :blk of;
         },
         else => return null,
-    }
+    };
+
     const ty0 = self.getExprType(ctx, a, id);
     const loc = optLoc(a, id);
-    const row = a.exprs.get(.FieldAccess, id);
-    const value = self.enumMemberValue(enum_ty, row.field) orelse return null;
-    var ev = blk.builder.tirValue(.ConstInt, blk, ty0, loc, .{ .value = value });
-    if (expected_ty) |want| ev = self.emitCoerce(blk, ev, ty0, want, loc);
-    return ev;
+    const value = self.enumMemberValue(enum_ty, a.exprs.get(.FieldAccess, id).field) orelse return null;
+
+    const ev = blk.builder.tirValue(.ConstInt, blk, ty0, loc, .{ .value = value });
+    return if (expected_ty) |want| self.emitCoerce(blk, ev, ty0, want, loc) else ev;
 }
 
 /// Lower a literal variant tag (`T::Case`) when its payload is void.
@@ -3987,68 +3430,59 @@ fn lowerVariantTagLiteral(
     expected_ty: ?types.TypeId,
 ) !?tir.ValueId {
     const ty = self.getExprType(parent_expr) orelse return null;
-    const parent_kind = self.context.type_store.getKind(ty);
-    if (parent_kind != .TypeType) return null;
+    if (self.context.type_store.getKind(ty) != .TypeType) return null;
 
-    const tr = self.context.type_store.get(.TypeType, ty);
-    const of_kind = self.context.type_store.getKind(tr.of);
+    const of = self.context.type_store.get(.TypeType, ty).of;
+    const of_kind = self.context.type_store.getKind(of);
     if (of_kind != .Variant and of_kind != .Error) return null;
 
-    const is_variant = of_kind == .Variant;
-    const fields = if (is_variant)
-        self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, tr.of).variants)
+    const fields = if (of_kind == .Variant)
+        self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, of).variants)
     else
-        self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, tr.of).variants);
-    const tag_idx = self.type_info.getFieldIndex(id);
-    const payload_ty = if (tag_idx) |ti|
-        self.context.type_store.Field.get(fields[ti]).ty
-    else
-        return null;
-    const payload_kind = self.context.type_store.getKind(payload_ty);
-    if (payload_kind != .Void) return null; // only literal tags for no-payload cases
+        self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, of).variants);
+
+    const tag_idx = self.type_info.getFieldIndex(id) orelse return null;
+    const payload_ty = self.context.type_store.Field.get(fields[tag_idx]).ty;
+
+    if (self.context.type_store.getKind(payload_ty) != .Void) return null;
+
     const ty0 = self.getExprType(ctx, a, id) orelse (expected_ty orelse self.context.type_store.tAny());
     const loc = optLoc(a, id);
-    if (self.context.type_store.getKind(payload_ty) != .Void) return null;
     const tag_val = blk.builder.extractField(blk, self.context.type_store.tI32(), self.safeUndef(blk, ty, loc), 0, loc);
-    if (expected_ty) |want| return self.emitCoerce(blk, tag_val, ty0, want, loc);
-    return tag_val;
+
+    return if (expected_ty) |want| self.emitCoerce(blk, tag_val, ty0, want, loc) else tag_val;
 }
 
 /// Lookup the position of `field_name` inside `parent_ty`, recursing through pointers.
-fn getFieldIndex(
-    self: *LowerTir,
-    parent_ty: types.TypeId,
-    field_name: ast.StrId,
-) ?u32 {
+fn getFieldIndex(self: *LowerTir, parent_ty: types.TypeId, field_name: ast.StrId) ?u32 {
     const ty_kind = self.context.type_store.getKind(parent_ty);
     switch (ty_kind) {
-        inline .Struct, .Union => |x| {
-            const tr = self.context.type_store.get(x, parent_ty);
-            const fields = self.context.type_store.field_pool.slice(tr.fields);
-            var i: usize = 0;
-            while (i < fields.len) : (i += 1) {
-                const f = self.context.type_store.Field.get(fields[i]);
-                if (f.name.eq(field_name)) return @intCast(i);
+        .Struct => {
+            const fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Struct, parent_ty).fields);
+            for (fields, 0..) |fid, i| {
+                if (self.context.type_store.Field.get(fid).name.eq(field_name)) return @intCast(i);
             }
         },
-        inline .Error, .Variant => |x| {
-            const tr = self.context.type_store.get(x, parent_ty);
-            const fields = self.context.type_store.field_pool.slice(tr.variants);
-            var i: usize = 0;
-            while (i < fields.len) : (i += 1) {
-                const f = self.context.type_store.Field.get(fields[i]);
-                if (f.name.eq(field_name)) return @intCast(i);
+        .Union => {
+            const fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Union, parent_ty).fields);
+            for (fields, 0..) |fid, i| {
+                if (self.context.type_store.Field.get(fid).name.eq(field_name)) return @intCast(i);
             }
         },
-        .TypeType => {
-            const tr = self.context.type_store.get(.TypeType, parent_ty);
-            return self.getFieldIndex(tr.of, field_name);
+        .Error => {
+            const fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, parent_ty).variants);
+            for (fields, 0..) |fid, i| {
+                if (self.context.type_store.Field.get(fid).name.eq(field_name)) return @intCast(i);
+            }
         },
-        .Ptr => {
-            const tr = self.context.type_store.get(.Ptr, parent_ty);
-            const elem_ty = tr.elem;
-            return self.getFieldIndex(elem_ty, field_name) orelse return null;
+        .Variant => {
+            const fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, parent_ty).variants);
+            for (fields, 0..) |fid, i| {
+                if (self.context.type_store.Field.get(fid).name.eq(field_name)) return @intCast(i);
+            }
         },
+        .TypeType => return self.getFieldIndex(self.context.type_store.get(.TypeType, parent_ty).of, field_name),
+        .Ptr => return self.getFieldIndex(self.context.type_store.get(.Ptr, parent_ty).elem, field_name),
         else => {},
     }
     return null;
@@ -4068,27 +3502,23 @@ fn lowerFieldAccess(
 ) anyerror!tir.ValueId {
     const row = a.exprs.get(.FieldAccess, id);
     const loc = optLoc(a, id);
-
     const parent_ty = self.getExprType(ctx, a, row.parent);
     const parent_kind = self.context.type_store.getKind(parent_ty);
     const field_name = a.exprs.strs.get(row.field);
+
+    // Special fields: len, ptr, capacity
     if (std.mem.eql(u8, field_name, "len")) {
         if (parent_kind == .Array) {
-            const arr = self.context.type_store.get(.Array, parent_ty);
+            const len = self.context.type_store.get(.Array, parent_ty).len;
             const ty0 = self.context.type_store.tUsize();
-            const v = blk.builder.tirValue(.ConstInt, blk, ty0, loc, .{ .value = @as(u64, @intCast(arr.len)) });
-            if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
-            return v;
+            const v = blk.builder.tirValue(.ConstInt, blk, ty0, loc, .{ .value = @as(u64, @intCast(len)) });
+            return if (expected_ty) |want| self.emitCoerce(blk, v, ty0, want, loc) else v;
         }
-        switch (parent_kind) {
-            .Slice, .DynArray, .String => {
-                const base = try self.lowerExpr(ctx, a, env, f, blk, row.parent, null, .rvalue);
-                const ty0 = self.context.type_store.tUsize();
-                const v = blk.builder.extractFieldNamed(blk, ty0, base, row.field, loc);
-                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
-                return v;
-            },
-            else => {},
+        if (parent_kind == .Slice or parent_kind == .DynArray or parent_kind == .String) {
+            const base = try self.lowerExpr(ctx, a, env, f, blk, row.parent, null, .rvalue);
+            const ty0 = self.context.type_store.tUsize();
+            const v = blk.builder.extractFieldNamed(blk, ty0, base, row.field, loc);
+            return if (expected_ty) |want| self.emitCoerce(blk, v, ty0, want, loc) else v;
         }
     } else if (std.mem.eql(u8, field_name, "ptr")) {
         const ptr_ty: ?types.TypeId = switch (parent_kind) {
@@ -4100,98 +3530,75 @@ fn lowerFieldAccess(
         if (ptr_ty) |ty0| {
             const base = try self.lowerExpr(ctx, a, env, f, blk, row.parent, null, .rvalue);
             const v = blk.builder.extractFieldNamed(blk, ty0, base, row.field, loc);
-            if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
-            return v;
+            return if (expected_ty) |want| self.emitCoerce(blk, v, ty0, want, loc) else v;
         }
-    } else if (std.mem.eql(u8, field_name, "capacity")) {
-        switch (parent_kind) {
-            .DynArray => {
-                const base = try self.lowerExpr(ctx, a, env, f, blk, row.parent, null, .rvalue);
-                const ty0 = self.context.type_store.tUsize();
-                const v = blk.builder.extractFieldNamed(blk, ty0, base, row.field, loc);
-                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
-                return v;
-            },
-            else => {},
-        }
+    } else if (std.mem.eql(u8, field_name, "capacity") and parent_kind == .DynArray) {
+        const base = try self.lowerExpr(ctx, a, env, f, blk, row.parent, null, .rvalue);
+        const ty0 = self.context.type_store.tUsize();
+        const v = blk.builder.extractFieldNamed(blk, ty0, base, row.field, loc);
+        return if (expected_ty) |want| self.emitCoerce(blk, v, ty0, want, loc) else v;
     }
 
-    // 1) imported module member (rvalue only): resolve `mod.name` to the imported
-    //    unit’s export and materialize it directly instead of treating the module as
-    //    a runtime struct value.
+    // Imported module member
     if (mode == .rvalue) {
         const pk = a.kind(row.parent);
         if (pk == .Ident or pk == .Import) {
-            if (try self.tryLowerImportedModuleMember(ctx, a, env, f, blk, row.parent, row.field, expected_ty, loc)) |v| {
-                return v;
-            }
+            if (try self.tryLowerImportedModuleMember(a, blk, row.parent, row.field, expected_ty, loc)) |v| return v;
         }
     }
 
-    const idx_maybe = a.type_info.getFieldIndex(id) orelse
-        self.getFieldIndex(parent_ty, row.field);
+    const idx_maybe = a.type_info.getFieldIndex(id) orelse self.getFieldIndex(parent_ty, row.field);
 
-    // 2) EnumName.Member => constant (rvalue)
+    // Enum constant
     if (mode == .rvalue) {
-        if (try self.lowerEnumMember(ctx, a, blk, id, row.parent, expected_ty)) |v| {
-            return v;
-        }
+        if (try self.lowerEnumMember(ctx, a, blk, id, row.parent, expected_ty)) |v| return v;
     }
 
-    // 3) address path (needs concrete field index)
+    // Address path (LValue)
     if (mode == .lvalue_addr) {
-        const parent_lower_mode: LowerMode = blk: {
-            if (parent_kind == .Ptr) break :blk .rvalue;
-            break :blk .lvalue_addr;
-        };
+        const parent_lower_mode: LowerMode = if (parent_kind == .Ptr) .rvalue else .lvalue_addr;
         const parent_ptr = try self.lowerExpr(ctx, a, env, f, blk, row.parent, null, parent_lower_mode);
-        const elem_ty = self.getExprType(ctx, a, id);
         const idx = idx_maybe orelse return self.throwErr(a.exprs.locs.get(row.loc));
-        const rptr_ty = self.context.type_store.mkPtr(elem_ty, false);
+        const rptr_ty = self.context.type_store.mkPtr(self.getExprType(ctx, a, id), false);
+
         if (parent_kind == .Union) {
-            return blk.builder.tirValue(.UnionFieldPtr, blk, rptr_ty, loc, .{
-                .base = parent_ptr,
-                .field_index = idx,
-            });
+            return blk.builder.tirValue(.UnionFieldPtr, blk, rptr_ty, loc, .{ .base = parent_ptr, .field_index = idx });
         }
-        if (parent_kind == .Ptr)
-            return blk.builder.gep(blk, rptr_ty, parent_ptr, &.{ blk.builder.gepConst(0), blk.builder.gepConst(@intCast(idx)) }, loc);
         return blk.builder.gep(blk, rptr_ty, parent_ptr, &.{ blk.builder.gepConst(0), blk.builder.gepConst(@intCast(idx)) }, loc);
     }
 
-    // 4) rvalue extraction
+    // RValue extraction
     const ty0 = self.getExprType(ctx, a, id);
-    var base = try self.lowerExpr(ctx, a, env, f, blk, row.parent, null, .rvalue);
+    const base = try self.lowerExpr(ctx, a, env, f, blk, row.parent, null, .rvalue);
 
-    const is_tuple = self.context.type_store.getKind(parent_ty) == .Tuple;
-
-    var v: tir.ValueId = undefined;
     if (idx_maybe) |resolved_idx| {
-        v = if (parent_kind == .Variant) blk: {
-            if (row.is_tuple) {
-                // Runtime variant struct exposes tag (field 0) and payload union (field 1).
-                break :blk blk.builder.extractField(blk, ty0, base, resolved_idx, loc);
-            }
-            // accessing the payload field out of a runtime variant value via case name
+        if (parent_kind == .Variant) {
+            if (row.is_tuple) return blk.builder.extractField(blk, ty0, base, resolved_idx, loc);
+
             const variants = self.context.type_store.get(.Variant, parent_ty).variants;
             const fields = self.context.type_store.field_pool.slice(variants);
-            var union_fields_args = try self.gpa.alloc(types.TypeStore.StructFieldArg, variants.len);
-            defer self.gpa.free(union_fields_args);
+
+            // Stack allocate small variants
+            var stack_args: [16]types.TypeStore.StructFieldArg = undefined;
+            var heap_args: []types.TypeStore.StructFieldArg = &.{};
+            defer if (heap_args.len > 0) self.gpa.free(heap_args);
+
+            const union_fields_args = if (fields.len <= 16) stack_args[0..fields.len] else blk_alloc: {
+                heap_args = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
+                break :blk_alloc heap_args;
+            };
+
             for (fields, 0..) |fld_id, i| {
                 const fld = self.context.type_store.Field.get(fld_id);
                 union_fields_args[i] = .{ .name = fld.name, .ty = fld.ty };
             }
             const union_ty = self.context.type_store.mkUnion(union_fields_args);
-            base = blk.builder.extractField(blk, union_ty, base, 1, loc);
-            break :blk blk.builder.tirValue(.UnionField, blk, ty0, loc, .{ .base = base, .field_index = resolved_idx });
-        } else if (parent_kind == .Ptr) blk: {
+            const union_val = blk.builder.extractField(blk, union_ty, base, 1, loc);
+            return blk.builder.tirValue(.UnionField, blk, ty0, loc, .{ .base = union_val, .field_index = resolved_idx });
+        } else if (parent_kind == .Ptr) {
             const field_ptr = try self.lowerExpr(ctx, a, env, f, blk, id, null, .lvalue_addr);
-            break :blk blk.builder.tirValue(.Load, blk, ty0, loc, .{
-                .ptr = field_ptr,
-                .@"align" = 0,
-            });
-        } else if (parent_kind == .TypeType) blk: {
-            // VariantType.C  => construct the value (void payload must NOT use UnionMake)
+            return blk.builder.tirValue(.Load, blk, ty0, loc, .{ .ptr = field_ptr, .@"align" = 0 });
+        } else if (parent_kind == .TypeType) {
             const of_ty = self.context.type_store.get(.TypeType, parent_ty).of;
             const of_kind = self.context.type_store.getKind(of_ty);
             std.debug.assert(of_kind == .Variant or of_kind == .Error);
@@ -4201,80 +3608,75 @@ fn lowerFieldAccess(
             else
                 self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, of_ty).variants);
 
-            const field_id = fields[resolved_idx];
-            const field = self.context.type_store.Field.get(field_id);
-            const payload_ty = field.ty;
-
+            const payload_ty = self.context.type_store.Field.get(fields[resolved_idx]).ty;
             const tag_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), loc, .{ .value = resolved_idx });
 
-            var union_fields_args = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
-            defer self.gpa.free(union_fields_args);
-            for (fields, 0..) |fld_id2, j2| {
-                const fld2 = self.context.type_store.Field.get(fld_id2);
-                union_fields_args[j2] = .{ .name = fld2.name, .ty = fld2.ty };
+            // Re-use allocation logic or use stack for construction
+            var stack_args: [16]types.TypeStore.StructFieldArg = undefined;
+            var heap_args: []types.TypeStore.StructFieldArg = &.{};
+            defer if (heap_args.len > 0) self.gpa.free(heap_args);
+
+            const union_fields_args = if (fields.len <= 16) stack_args[0..fields.len] else blk_alloc: {
+                heap_args = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
+                break :blk_alloc heap_args;
+            };
+
+            for (fields, 0..) |fld_id, i| {
+                const fld = self.context.type_store.Field.get(fld_id);
+                union_fields_args[i] = .{ .name = fld.name, .ty = fld.ty };
             }
             const union_ty = self.context.type_store.mkUnion(union_fields_args);
-
-            const union_val =
-                if (self.context.type_store.getKind(payload_ty) == .Void)
-                    // ← fix: void payload => just undef union, no UnionMake
-                    blk.builder.tirValue(.ConstUndef, blk, union_ty, loc, .{})
-                else
-                    blk.builder.tirValue(.UnionMake, blk, union_ty, loc, .{
-                        .field_index = resolved_idx,
-                        .value = self.safeUndef(blk, payload_ty, loc),
-                    });
+            const union_val = if (self.context.type_store.getKind(payload_ty) == .Void)
+                blk.builder.tirValue(.ConstUndef, blk, union_ty, loc, .{})
+            else
+                blk.builder.tirValue(.UnionMake, blk, union_ty, loc, .{ .field_index = resolved_idx, .value = self.safeUndef(blk, payload_ty, loc) });
 
             const v_res = blk.builder.structMake(blk, of_ty, &[_]tir.Rows.StructFieldInit{
                 .{ .index = 0, .name = .none(), .value = tag_val },
                 .{ .index = 1, .name = .none(), .value = union_val },
             }, loc);
 
-            if (expected_ty) |want| break :blk self.emitCoerce(blk, v_res, of_ty, want, loc);
-            break :blk v_res;
-        } else if (is_tuple)
-            blk.builder.extractElem(blk, ty0, base, resolved_idx, loc)
-        else if (parent_kind == .Union)
-            blk.builder.tirValue(.UnionField, blk, ty0, loc, .{ .base = base, .field_index = resolved_idx })
-        else blk: {
-            const res_ty = if (self.context.type_store.getKind(ty0) == .Any)
-                self.context.type_store.tUsize()
-            else
-                ty0;
-            break :blk blk.builder.extractField(blk, res_ty, base, resolved_idx, loc);
-        };
-    } else {
-        std.debug.assert(!is_tuple);
-        v = blk.builder.extractFieldNamed(blk, ty0, base, row.field, loc);
+            return if (expected_ty) |want| self.emitCoerce(blk, v_res, of_ty, want, loc) else v_res;
+        } else if (self.context.type_store.getKind(parent_ty) == .Tuple) {
+            return blk.builder.extractElem(blk, ty0, base, resolved_idx, loc);
+        } else if (parent_kind == .Union) {
+            return blk.builder.tirValue(.UnionField, blk, ty0, loc, .{ .base = base, .field_index = resolved_idx });
+        } else {
+            const res_ty = if (self.context.type_store.getKind(ty0) == .Any) self.context.type_store.tUsize() else ty0;
+            return blk.builder.extractField(blk, res_ty, base, resolved_idx, loc);
+        }
     }
 
-    if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
-    return v;
+    const v = blk.builder.extractFieldNamed(blk, ty0, base, row.field, loc);
+    return if (expected_ty) |want| self.emitCoerce(blk, v, ty0, want, loc) else v;
 }
 
-// Try to lower `parent.field` where parent is an imported module to the exported
-// declaration from the imported AST. Only used for rvalues.
+/// Try to lower `parent.field` where parent is an imported module.
 fn tryLowerImportedModuleMember(
     self: *LowerTir,
-    ctx: *LowerContext,
     caller_ast: *ast.Ast,
-    env: *cf.Env,
-    f: *Builder.FunctionFrame,
     blk: *Builder.BlockFrame,
     parent_expr: ast.ExprId,
     field_name: ast.StrId,
     expected_ty: ?types.TypeId,
     loc: ast.OptLocId,
 ) !?tir.ValueId {
-    _ = ctx; // unused for now
-    _ = env;
-    _ = f;
-
     const parent_kind = caller_ast.kind(parent_expr);
     var target_ast: ?*ast.Ast = null;
-    if (parent_kind == .Import) {
-        const ir = caller_ast.exprs.get(.Import, parent_expr);
-        const path = caller_ast.exprs.strs.get(ir.path);
+
+    // Resolve module AST
+    const path_sid: ?ast.StrId = if (parent_kind == .Import)
+        caller_ast.exprs.get(.Import, parent_expr).path
+    else if (parent_kind == .Ident) blk: {
+        const name = caller_ast.exprs.get(.Ident, parent_expr).name;
+        const did = call_resolution.findDeclId(caller_ast, name) orelse break :blk null;
+        const decl = caller_ast.exprs.Decl.get(did);
+        if (caller_ast.kind(decl.value) != .Import) break :blk null;
+        break :blk caller_ast.exprs.get(.Import, decl.value).path;
+    } else null;
+
+    if (path_sid) |pid| {
+        const path = caller_ast.exprs.strs.get(pid);
         var it = self.context.compilation_unit.packages.iterator();
         while (it.next()) |pkg| {
             if (pkg.value_ptr.sources.get(path)) |unit_ref| {
@@ -4282,44 +3684,22 @@ fn tryLowerImportedModuleMember(
                 break;
             }
         }
-    } else if (parent_kind == .Ident) {
-        const parent_ident = caller_ast.exprs.get(.Ident, parent_expr);
-        if (call_resolution.findTopLevelImportByName(caller_ast, parent_ident.name)) |import_decl_id| {
-            const import_decl = caller_ast.exprs.Decl.get(import_decl_id);
-            const ir = caller_ast.exprs.get(.Import, import_decl.value);
-            const path = caller_ast.exprs.strs.get(ir.path);
-            var it2 = self.context.compilation_unit.packages.iterator();
-            while (it2.next()) |pkg| {
-                if (pkg.value_ptr.sources.get(path)) |unit_ref| {
-                    target_ast = unit_ref.ast;
-                    break;
-                }
-            }
-        }
-    } else {
-        return null;
     }
 
     const ta = target_ast orelse return null;
-    // Ask the imported AST for an exported decl with this field name
-    if (ta.type_info.getExport(field_name)) |ex| {
-        // If the export is a function, let normal call resolution handle it.
-        const ex_ty = ex.ty;
-        if (self.context.type_store.getKind(ex_ty) == .Function) return null;
+    const ex = ta.type_info.getExport(field_name) orelse return null;
 
-        // Materialize as a global load: &name then load, then coerce if needed.
-        // Use the fully qualified symbol name so it matches the emitted global.
-        const name = try self.qualifySymbolName(ta, field_name);
-        const ptr_ty = self.context.type_store.mkPtr(ex_ty, false);
-        const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = name });
-        var val = blk.builder.tirValue(.Load, blk, ex_ty, loc, .{ .ptr = addr, .@"align" = 0 });
-        if (expected_ty) |want| val = self.emitCoerce(blk, val, ex_ty, want, loc);
-        return val;
-    }
-    return null;
+    if (self.context.type_store.getKind(ex.ty) == .Function) return null;
+
+    const name = try self.qualifySymbolName(ta, field_name);
+    const ptr_ty = self.context.type_store.mkPtr(ex.ty, false);
+    const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = name });
+    const val = blk.builder.tirValue(.Load, blk, ex.ty, loc, .{ .ptr = addr, .@"align" = 0 });
+
+    return if (expected_ty) |want| self.emitCoerce(blk, val, ex.ty, want, loc) else val;
 }
 
-/// Lower identifier expressions, resolving globals/locals/types/slots and emitting loads or errors.
+/// Lower identifier expressions, resolving globals/locals/types/slots and emitting loads.
 fn lowerIdent(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -4334,74 +3714,50 @@ fn lowerIdent(
     const row = a.exprs.get(.Ident, id);
     const name = row.name;
     const loc = optLoc(a, id);
-
-    // Pre-lift a couple things we end up consulting a few times.
     var expr_ty = self.getExprType(ctx, a, id);
-    const did_opt = call_resolution.findTopLevelDeclByName(a, name);
+    const did_opt = call_resolution.findDeclId(a, name);
 
     if (self.lookupComptimeAliasType(a, name)) |bound_ty| {
         expr_ty = self.context.type_store.mkTypeType(bound_ty);
     }
 
-    // Helper: when an expected type is a pointer, use its element;
-    // otherwise fall back to the expression type (or Any).
-    const want_elem = blk: {
-        if (expected_ty) |want| {
-            if (self.context.type_store.getKind(want) == .Ptr)
-                break :blk self.context.type_store.get(.Ptr, want).elem;
-        }
-        break :blk expr_ty;
-    };
+    const want_elem = if (expected_ty) |want|
+        if (self.context.type_store.getKind(want) == .Ptr) self.context.type_store.get(.Ptr, want).elem else expr_ty
+    else
+        expr_ty;
 
     if (mode == .lvalue_addr) {
-        // 1) If it's already a slot, we're done.
         if (env.lookup(name)) |bnd| {
             if (bnd.is_slot) return bnd.value;
-
-            // For pointer-typed bindings we can reuse the SSA value directly as the
-            // address; no temporary slot required.
-            if (self.context.type_store.getKind(bnd.ty) == .Ptr) {
-                return bnd.value;
-            }
+            if (self.context.type_store.getKind(bnd.ty) == .Ptr) return bnd.value;
         }
 
-        // 2) If it's a top-level decl that names a value, bind its address as a slot and return.
-        //    Do NOT take an address of a type declaration (TypeType) — types are not lvalues.
         if (did_opt) |did| {
             const d = a.exprs.Decl.get(did);
             const gty = getDeclType(a, did) orelse unreachable;
             if (self.context.type_store.getKind(gty) != .TypeType) {
                 const ptr_ty = self.context.type_store.mkPtr(gty, !d.flags.is_const);
                 const sym = (try self.symbolNameForDecl(a, did)) orelse name;
-                const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = sym });
-                return addr;
+                return blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = sym });
             }
-            // Fall through for TypeType: no addressable storage for types.
         }
 
-        // 3) Otherwise it must be a local value binding that needs a slot.
         if (env.lookup(name)) |bnd| {
             const slot_ty = self.context.type_store.mkPtr(want_elem, false);
             const slot = f.builder.tirValue(.Alloca, blk, slot_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
-
             const src_ty = if (!self.isType(expr_ty, .Any)) expr_ty else bnd.ty;
             const to_store = self.emitCoerce(blk, bnd.value, src_ty, want_elem, loc);
             _ = f.builder.tirValue(.Store, blk, want_elem, loc, .{ .ptr = slot, .value = to_store, .@"align" = 0 });
-
             try env.bind(self.gpa, name, .{ .value = slot, .ty = want_elem, .is_slot = true }, f.builder, blk, loc);
             return slot;
         }
 
-        // 4) Nowhere to get it from.
-        const l = optLoc(a, id);
-        try self.context.diags.addError(a.exprs.locs.get(l.unwrap()), .undefined_identifier, .{});
+        try self.context.diags.addError(a.exprs.locs.get(loc.unwrap()), .undefined_identifier, .{});
         return error.LoweringBug;
     }
 
-    // ---- rvalue path -----------------------------------------------------
-
-    // Acquire or synthesize a binding once, then decide how to produce a value.
-    const bnd = env.lookup(name) orelse blk: {
+    // RValue Path
+    const bnd = env.lookup(name) orelse blk_b: {
         if (did_opt) |did| {
             const d = a.exprs.Decl.get(did);
             const gty = getDeclType(a, did) orelse unreachable;
@@ -4409,40 +3765,31 @@ fn lowerIdent(
                 const ptr_ty = self.context.type_store.mkPtr(gty, !d.flags.is_const);
                 const sym = (try self.symbolNameForDecl(a, did)) orelse name;
                 const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = sym });
-                // For function declarations, the global address is already the rvalue we want;
-                // do not treat it as an addressable slot to avoid emitting a spurious load.
                 const is_fn = self.context.type_store.getKind(gty) == .Function;
-                break :blk ValueBinding{ .value = addr, .ty = gty, .is_slot = !is_fn };
+                break :blk_b ValueBinding{ .value = addr, .ty = gty, .is_slot = !is_fn };
             }
-            // For type declarations, synthesize a non-addressable placeholder value.
         }
-
-        // Not a value binding or a value-like top-level decl (likely a type name etc.).
-        // Bind a safe placeholder so downstream code can keep going.
-        const ty0 = expr_ty;
-        const placeholder = self.safeUndef(blk, ty0, loc);
-        try env.bind(self.gpa, name, .{ .value = placeholder, .ty = ty0, .is_slot = false }, f.builder, blk, loc);
-        break :blk env.lookup(name).?;
+        const placeholder = self.safeUndef(blk, expr_ty, loc);
+        try env.bind(self.gpa, name, .{ .value = placeholder, .ty = expr_ty, .is_slot = false }, f.builder, blk, loc);
+        break :blk_b env.lookup(name).?;
     };
 
     if (bnd.is_slot) {
         const load_ty = if (!self.isType(expr_ty, .Any)) expr_ty else bnd.ty;
-        // else if (expected_ty) |want|
-        //     want
-        // else
-        //     bnd.ty;
         var loaded = blk.builder.tirValue(.Load, blk, load_ty, loc, .{ .ptr = bnd.value, .@"align" = 0 });
         if (expected_ty) |want| loaded = self.emitCoerce(blk, loaded, load_ty, want, loc);
         return loaded;
     }
 
-    // Non-slot: coerce if a target type was requested.
     const got_ty = if (!self.isType(expr_ty, .Any)) expr_ty else bnd.ty;
-    // else if (expected_ty) |want|
-    //     want
-    // else
-    //     bnd.ty;
     return if (expected_ty) |want| self.emitCoerce(blk, bnd.value, got_ty, want, loc) else bnd.value;
+}
+
+fn isScalarNumeric(kind: types.TypeKind) bool {
+    return switch (kind) {
+        .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Usize, .F32, .F64 => true,
+        else => false,
+    };
 }
 
 /// Lower binary expressions, including comparisons, arithmetic, and short-circuit helpers.
@@ -4459,347 +3806,214 @@ fn lowerBinary(
     const row = a.exprs.get(.Binary, id);
     const loc = optLoc(a, id);
 
-    // --- fast-path: variant/error equality against a tag literal (e.g. err == MyErr.NotFound) ---
+    // Variant/Error equality fast-path
     if (row.op == .eq or row.op == .neq) {
         const l_ty = self.getExprType(ctx, a, row.left);
         const r_ty = self.getExprType(ctx, a, row.right);
 
-        // left is value, right is tag literal
-        if (self.isVariantLike(l_ty)) {
-            if (self.tagConstFromTypePath(ctx, a, row.right)) |info| {
-                if (info.of_ty.eq(l_ty)) {
-                    const lhs_val = try self.lowerExpr(ctx, a, env, f, blk, row.left, l_ty, .rvalue);
-                    const lhs_tag = blk.builder.extractField(blk, self.context.type_store.tI32(), lhs_val, 0, loc);
-                    const want_tag = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), loc, .{ .value = info.tag_idx });
-                    const cmp = if (row.op == .eq)
-                        blk.builder.binBool(blk, .CmpEq, lhs_tag, want_tag, loc)
-                    else
-                        blk.builder.binBool(blk, .CmpNe, lhs_tag, want_tag, loc);
-                    return cmp;
-                }
+        const check_tag = struct {
+            fn run(s: *LowerTir, c: *LowerContext, ast_: *ast.Ast, e: *cf.Env, fr: *Builder.FunctionFrame, b: *Builder.BlockFrame, val_expr: ast.ExprId, val_ty: types.TypeId, tag_path: ast.ExprId, op: ast.BinaryOp, l: tir.OptLocId) !?tir.ValueId {
+                if (!s.isVariantLike(val_ty)) return null;
+                const info = s.tagConstFromTypePath(c, ast_, tag_path) orelse return null;
+                if (!info.of_ty.eq(val_ty)) return null;
+
+                const val = try s.lowerExpr(c, ast_, e, fr, b, val_expr, val_ty, .rvalue);
+                const tag = b.builder.extractField(b, s.context.type_store.tI32(), val, 0, l);
+                const want = b.builder.tirValue(.ConstInt, b, s.context.type_store.tI32(), l, .{ .value = info.tag_idx });
+                return if (op == .eq) b.builder.binBool(b, .CmpEq, tag, want, l) else b.builder.binBool(b, .CmpNe, tag, want, l);
             }
-        }
-        // right is value, left is tag literal
-        if (self.isVariantLike(r_ty)) {
-            if (self.tagConstFromTypePath(ctx, a, row.left)) |info| {
-                if (info.of_ty.eq(r_ty)) {
-                    const rhs_val = try self.lowerExpr(ctx, a, env, f, blk, row.right, r_ty, .rvalue);
-                    const rhs_tag = blk.builder.extractField(blk, self.context.type_store.tI32(), rhs_val, 0, loc);
-                    const want_tag = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), loc, .{ .value = info.tag_idx });
-                    const cmp = if (row.op == .eq)
-                        blk.builder.binBool(blk, .CmpEq, rhs_tag, want_tag, loc)
-                    else
-                        blk.builder.binBool(blk, .CmpNe, rhs_tag, want_tag, loc);
-                    return cmp;
-                }
-            }
-        }
+        };
+
+        if (try check_tag.run(self, ctx, a, env, f, blk, row.left, l_ty, row.right, row.op, loc)) |res| return res;
+        if (try check_tag.run(self, ctx, a, env, f, blk, row.right, r_ty, row.left, row.op, loc)) |res| return res;
     }
-    // --- end fast-path ---
 
     const lhs_stamped = self.getExprType(ctx, a, row.left);
     const rhs_stamped = self.getExprType(ctx, a, row.right);
     const lhs_hint = try self.refineExprType(ctx, a, env, row.left, lhs_stamped);
     const rhs_hint = try self.refineExprType(ctx, a, env, row.right, rhs_stamped);
 
-    const stamped_result = self.getExprType(ctx, a, id);
     var lhs_expect: ?types.TypeId = null;
     var rhs_expect: ?types.TypeId = null;
-    var op_ty: ?types.TypeId = stamped_result;
+    var op_ty: ?types.TypeId = self.getExprType(ctx, a, id);
 
+    // Type Election Logic
     switch (row.op) {
-        else => unreachable,
         .add, .sub, .mul, .div, .mod, .shl, .shr, .bit_and, .bit_or, .bit_xor => {
-            // Decide the operation type first: prefer the stamped/checker type when meaningful,
-            // otherwise fall back to a common numeric type (or expected type / i64).
-            const chosen: types.TypeId = blk: {
-                // Pointer arithmetic with tensor offsets (Triton-style addptr).
-                const lh_kind = self.context.type_store.getKind(lhs_hint orelse lhs_stamped);
-                const rh_kind = self.context.type_store.getKind(rhs_hint orelse rhs_stamped);
-                const lhs_ptr_like = lh_kind == .Ptr or lh_kind == .MlirType;
-                const rhs_ptr_like = rh_kind == .Ptr or rh_kind == .MlirType;
-                if ((row.op == .add or row.op == .sub) and ((lhs_ptr_like and rh_kind == .Tensor) or (rhs_ptr_like and lh_kind == .Tensor))) {
-                    if (op_ty) |t| break :blk t;
-                    break :blk if (lhs_ptr_like) lhs_hint orelse lhs_stamped else rhs_hint orelse rhs_stamped;
+            const chosen = blk_ty: {
+                const lk = self.context.type_store.getKind(lhs_hint orelse lhs_stamped);
+                const rk = self.context.type_store.getKind(rhs_hint orelse rhs_stamped);
+                const l_ptr = lk == .Ptr or lk == .MlirType;
+                const r_ptr = rk == .Ptr or rk == .MlirType;
+
+                // Tensor arithmetic
+                if ((row.op == .add or row.op == .sub) and ((l_ptr and rk == .Tensor) or (r_ptr and lk == .Tensor))) {
+                    if (op_ty) |t| if (!self.isVoid(t) and !self.isType(t, .Any)) break :blk_ty t;
+                    break :blk_ty if (l_ptr) lhs_hint orelse lhs_stamped else rhs_hint orelse rhs_stamped;
                 }
-                if (op_ty) |t| {
-                    if (!self.isVoid(t) and !self.isType(t, .Any)) break :blk t;
-                }
-                break :blk (self.commonNumeric(lhs_hint, rhs_hint) orelse (expected_ty orelse self.context.type_store.tI64()));
+                if (op_ty) |t| if (!self.isVoid(t) and !self.isType(t, .Any)) break :blk_ty t;
+                break :blk_ty (self.commonNumeric(lhs_hint, rhs_hint) orelse (expected_ty orelse self.context.type_store.tI64()));
             };
 
-            const chosen_kind = self.context.type_store.getKind(chosen);
-            const is_ptr_tensor = (row.op == .add or row.op == .sub) and chosen_kind == .Tensor and blk: {
-                const tinfo = self.context.type_store.get(.Tensor, chosen);
-                const ek = self.context.type_store.getKind(tinfo.elem);
-                break :blk ek == .Ptr or ek == .MlirType;
+            const ck = self.context.type_store.getKind(chosen);
+            const is_ptr_tensor = (row.op == .add or row.op == .sub) and ck == .Tensor and blk_pt: {
+                const ek = self.context.type_store.getKind(self.context.type_store.get(.Tensor, chosen).elem);
+                break :blk_pt ek == .Ptr or ek == .MlirType;
             };
+
+            op_ty = chosen;
             if (is_ptr_tensor) {
-                op_ty = chosen;
-                const lhs_kind = self.context.type_store.getKind(lhs_hint orelse lhs_stamped);
-                const rhs_kind = self.context.type_store.getKind(rhs_hint orelse rhs_stamped);
-                const lhs_ptr_like = lhs_kind == .Ptr or lhs_kind == .MlirType;
-                const rhs_ptr_like = rhs_kind == .Ptr or rhs_kind == .MlirType;
-                lhs_expect = if (lhs_ptr_like) lhs_hint orelse lhs_stamped else null;
-                rhs_expect = if (rhs_ptr_like) rhs_hint orelse rhs_stamped else null;
-                if (rhs_expect == null and !rhs_ptr_like) rhs_expect = rhs_hint orelse rhs_stamped;
-                if (lhs_expect == null and !lhs_ptr_like) lhs_expect = lhs_hint orelse lhs_stamped;
-            } else if (chosen_kind == .Tensor) {
-                op_ty = chosen;
-                const lhs_kind = self.context.type_store.getKind(lhs_hint orelse lhs_stamped);
-                const rhs_kind = self.context.type_store.getKind(rhs_hint orelse rhs_stamped);
-                lhs_expect = if (lhs_kind == .Tensor) chosen else null;
-                rhs_expect = if (rhs_kind == .Tensor) chosen else null;
-            } else if (chosen_kind == .Ptr or chosen_kind == .MlirType) {
-                op_ty = chosen;
-                const lhs_kind = self.context.type_store.getKind(lhs_hint orelse lhs_stamped);
-                const rhs_kind = self.context.type_store.getKind(rhs_hint orelse rhs_stamped);
-                lhs_expect = if (lhs_kind == .Ptr or lhs_kind == .MlirType) chosen else null;
-                rhs_expect = if (rhs_kind == .Ptr or rhs_kind == .MlirType) chosen else null;
-            } else if (chosen_kind == .Complex) {
+                const lh = lhs_hint orelse lhs_stamped;
+                const rh = rhs_hint orelse rhs_stamped;
+                const l_ptr = self.context.type_store.getKind(lh) == .Ptr or self.context.type_store.getKind(lh) == .MlirType;
+                lhs_expect = if (l_ptr) lh else null;
+                rhs_expect = if (self.context.type_store.getKind(rh) == .Ptr or self.context.type_store.getKind(rh) == .MlirType) rh else if (!l_ptr) rh else null;
+            } else if (ck == .Tensor or ck == .Ptr or ck == .MlirType) {
+                lhs_expect = if (self.context.type_store.getKind(lhs_hint orelse lhs_stamped) == ck) chosen else null;
+                rhs_expect = if (self.context.type_store.getKind(rhs_hint orelse rhs_stamped) == ck) chosen else null;
+            } else if (ck == .Complex) {
                 lhs_expect = chosen;
                 rhs_expect = chosen;
             } else {
-                // Otherwise coerce both operands to the chosen numeric type.
                 lhs_expect = chosen;
                 rhs_expect = chosen;
-
-                // SIMD scalar promotion hints: if one side is SIMD, let the other be scalar element.
-                const r_ty_promo = rhs_hint orelse rhs_stamped;
-                const rk = self.context.type_store.getKind(r_ty_promo);
-                const r_is_scalar_numeric = switch (rk) {
-                    .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Usize, .F32, .F64 => true,
-                    else => false,
-                };
-                if (self.context.type_store.getKind(chosen) == .Simd and r_is_scalar_numeric) {
-                    rhs_expect = null;
-                }
-
-                const l_ty_promo = lhs_hint orelse lhs_stamped;
-                const lk = self.context.type_store.getKind(l_ty_promo);
-                const l_is_scalar_numeric = switch (lk) {
-                    .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Usize, .F32, .F64 => true,
-                    else => false,
-                };
-                if (self.context.type_store.getKind(chosen) == .Simd and l_is_scalar_numeric) {
-                    lhs_expect = null;
+                // SIMD Scalar broadcast hints
+                if (ck == .Simd) {
+                    if (isScalarNumeric(self.context.type_store.getKind(rhs_hint orelse rhs_stamped))) rhs_expect = null;
+                    if (isScalarNumeric(self.context.type_store.getKind(lhs_hint orelse lhs_stamped))) lhs_expect = null;
                 }
             }
-            // Ensure the operation result type matches the chosen type.
-            op_ty = chosen;
         },
         .eq, .neq, .lt, .lte, .gt, .gte => {
-            var handled_tensor_cmp = false;
-            if (op_ty) |t| {
-                if (self.context.type_store.getKind(t) == .Tensor) {
-                    const lh = lhs_hint orelse lhs_stamped;
-                    const rh = rhs_hint orelse rhs_stamped;
-                    const lk = self.context.type_store.getKind(lh);
-                    const rk = self.context.type_store.getKind(rh);
-                    lhs_expect = if (lk == .Tensor) lh else null;
-                    rhs_expect = if (rk == .Tensor) rh else null;
-                    op_ty = t;
-                    handled_tensor_cmp = true;
-                }
-            }
-            if (!handled_tensor_cmp) {
+            var tensor_cmp = false;
+            if (op_ty) |t| if (self.context.type_store.getKind(t) == .Tensor) {
+                lhs_expect = if (self.context.type_store.getKind(lhs_hint orelse lhs_stamped) == .Tensor) lhs_hint orelse lhs_stamped else null;
+                rhs_expect = if (self.context.type_store.getKind(rhs_hint orelse rhs_stamped) == .Tensor) rhs_hint orelse rhs_stamped else null;
+                tensor_cmp = true;
+            };
+            if (!tensor_cmp) {
                 const want = self.commonNumeric(lhs_hint, rhs_hint) orelse lhs_hint orelse rhs_hint;
                 lhs_expect = want;
                 rhs_expect = want;
                 op_ty = self.context.type_store.tBool();
-            }
-            if (row.op == .eq or row.op == .neq) {
-                const ts = self.context.type_store;
-                const lh = lhs_hint orelse lhs_stamped;
-                const rh = rhs_hint orelse rhs_stamped;
-                const lhs_kind = ts.getKind(lh);
-                if (lhs_kind == .Optional) {
-                    const rhs_kind = ts.getKind(rh);
-                    if (rhs_kind != .Optional) {
-                        lhs_expect = lh;
-                        rhs_expect = ts.get(.Optional, lh).elem;
+
+                // Handle Optional comparisons
+                if (row.op == .eq or row.op == .neq) {
+                    const l_opt = self.context.type_store.getKind(lhs_hint orelse lhs_stamped) == .Optional;
+                    const r_opt = self.context.type_store.getKind(rhs_hint orelse rhs_stamped) == .Optional;
+                    if (l_opt and !r_opt) {
+                        lhs_expect = lhs_hint orelse lhs_stamped;
+                        rhs_expect = self.context.type_store.get(.Optional, lhs_hint orelse lhs_stamped).elem;
                     }
-                }
-                const rhs_kind = ts.getKind(rh);
-                if (rhs_kind == .Optional) {
-                    if (lhs_kind != .Optional) {
-                        rhs_expect = rh;
-                        lhs_expect = ts.get(.Optional, rh).elem;
+                    if (r_opt and !l_opt) {
+                        rhs_expect = rhs_hint orelse rhs_stamped;
+                        lhs_expect = self.context.type_store.get(.Optional, rhs_hint orelse rhs_stamped).elem;
                     }
                 }
             }
         },
         .logical_and, .logical_or => {
-            const bty = self.context.type_store.tBool();
-            lhs_expect = bty;
-            rhs_expect = bty;
-            op_ty = self.context.type_store.tBool();
+            lhs_expect = self.context.type_store.tBool();
+            rhs_expect = lhs_expect;
+            op_ty = lhs_expect;
         },
-        .@"orelse" => {
-            // Short-circuited optional handling; lowered separately.
-            return self.lowerOrelse(ctx, a, env, f, blk, id, expected_ty);
+        .@"orelse" => return self.lowerOrelse(ctx, a, env, f, blk, id, expected_ty),
+        .contains => {
+            try self.context.diags.addError(a.exprs.locs.get(row.loc), .in_operator_not_supported, .{});
+            return error.LoweringBug;
         },
     }
 
     var l = try self.lowerExpr(ctx, a, env, f, blk, row.left, lhs_expect, .rvalue);
     var r = try self.lowerExpr(ctx, a, env, f, blk, row.right, rhs_expect, .rvalue);
 
-    if (lhs_expect) |l_want| {
-        const l_got = self.getExprType(ctx, a, row.left);
-        if (!l_got.eq(l_want)) {
-            l = self.emitCoerce(blk, l, l_got, l_want, optLoc(a, row.left));
-        }
+    // Explicit Coercions
+    if (lhs_expect) |want| {
+        const got = self.getExprType(ctx, a, row.left);
+        if (!got.eq(want)) l = self.emitCoerce(blk, l, got, want, optLoc(a, row.left));
     }
-    if (rhs_expect) |r_want| {
-        const r_got = self.getExprType(ctx, a, row.right);
-        if (!r_got.eq(r_want)) {
-            r = self.emitCoerce(blk, r, r_got, r_want, optLoc(a, row.right));
-        }
+    if (rhs_expect) |want| {
+        const got = self.getExprType(ctx, a, row.right);
+        if (!got.eq(want)) r = self.emitCoerce(blk, r, got, want, optLoc(a, row.right));
     }
 
-    // --- Handle SIMD-scalar promotion ---
+    // SIMD/Tensor Scalar Broadcasts
     const l_ty_promo = self.getExprType(ctx, a, row.left);
     const r_ty_promo = self.getExprType(ctx, a, row.right);
-    const lk_promo = self.context.type_store.getKind(l_ty_promo);
-    const rk_promo = self.context.type_store.getKind(r_ty_promo);
 
-    const r_is_scalar_numeric = switch (rk_promo) {
-        .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Usize, .F32, .F64 => true,
-        else => false,
-    };
-    const l_is_scalar_numeric = switch (lk_promo) {
-        .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Usize, .F32, .F64 => true,
-        else => false,
-    };
-
-    if (lk_promo == .Simd and r_is_scalar_numeric) {
-        const simd_info = self.context.type_store.get(.Simd, l_ty_promo);
-        const coerced_r = self.emitCoerce(blk, r, r_ty_promo, simd_info.elem, loc);
-        r = blk.builder.tirValue(.Broadcast, blk, l_ty_promo, loc, .{ .value = coerced_r });
-    } else if (rk_promo == .Simd and l_is_scalar_numeric) {
-        const simd_info = self.context.type_store.get(.Simd, r_ty_promo);
-        const coerced_l = self.emitCoerce(blk, l, l_ty_promo, simd_info.elem, loc);
-        l = blk.builder.tirValue(.Broadcast, blk, r_ty_promo, loc, .{ .value = coerced_l });
+    if (self.context.type_store.getKind(l_ty_promo) == .Simd and isScalarNumeric(self.context.type_store.getKind(r_ty_promo))) {
+        const elem = self.context.type_store.get(.Simd, l_ty_promo).elem;
+        r = blk.builder.tirValue(.Broadcast, blk, l_ty_promo, loc, .{ .value = self.emitCoerce(blk, r, r_ty_promo, elem, loc) });
+    } else if (self.context.type_store.getKind(r_ty_promo) == .Simd and isScalarNumeric(self.context.type_store.getKind(l_ty_promo))) {
+        const elem = self.context.type_store.get(.Simd, r_ty_promo).elem;
+        l = blk.builder.tirValue(.Broadcast, blk, r_ty_promo, loc, .{ .value = self.emitCoerce(blk, l, l_ty_promo, elem, loc) });
     }
 
-    // --- Handle tensor-scalar promotion ---
-    const tensor_broadcast = struct {
-        fn isScalarNumeric(kind: types.TypeKind) bool {
-            return switch (kind) {
-                .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Usize, .F32, .F64 => true,
-                else => false,
-            };
-        }
-    };
-    if (self.context.type_store.getKind(l_ty_promo) == .Tensor and tensor_broadcast.isScalarNumeric(rk_promo)) {
-        const tinfo = self.context.type_store.get(.Tensor, l_ty_promo);
-        const coerced_r = self.emitCoerce(blk, r, r_ty_promo, tinfo.elem, loc);
-        r = blk.builder.tirValue(.Broadcast, blk, l_ty_promo, loc, .{ .value = coerced_r });
-    } else if (self.context.type_store.getKind(r_ty_promo) == .Tensor and tensor_broadcast.isScalarNumeric(lk_promo)) {
-        const tinfo = self.context.type_store.get(.Tensor, r_ty_promo);
-        const coerced_l = self.emitCoerce(blk, l, l_ty_promo, tinfo.elem, loc);
-        l = blk.builder.tirValue(.Broadcast, blk, r_ty_promo, loc, .{ .value = coerced_l });
-    }
+    // Optional Equality
+    const l_opt = self.context.type_store.getKind(l_ty_promo) == .Optional;
+    const r_opt = self.context.type_store.getKind(r_ty_promo) == .Optional;
 
-    // --- Handle Optional(T) equality/inequality cases ---
-    const l_ty = self.getExprType(ctx, a, row.left);
-    const r_ty = self.getExprType(ctx, a, row.right);
-    if (op_ty == null) {
-        const lk_kind = self.context.type_store.getKind(l_ty);
-        const rk_kind = self.context.type_store.getKind(r_ty);
-        if (lk_kind == .Tensor or rk_kind == .Tensor) {
-            op_ty = if (lk_kind == .Tensor) l_ty else r_ty;
-        }
-    }
-
-    const l_is_optional = self.context.type_store.getKind(l_ty) == .Optional;
-    const r_is_optional = self.context.type_store.getKind(r_ty) == .Optional;
-
-    const bool_ty = self.context.type_store.tBool();
-
-    if (row.op == .eq or row.op == .neq) {
-        if (l_is_optional and r_is_optional) {
-            const elem_ty = self.context.type_store.get(.Optional, l_ty).elem;
-            const ek = self.context.type_store.getKind(elem_ty);
-            // Scalar types can be compared directly via CmpEq on their payload
-            const is_scalar = switch (ek) {
-                .Bool, .I8, .U8, .I16, .U16, .I32, .U32, .I64, .U64, .Usize, .F32, .F64, .Enum, .Error, .Ptr, .MlirType, .TypeType => true,
-                else => false,
-            };
-
-            const flag_l = self.optionalFlag(blk, l_ty, l, loc);
-            const flag_r = self.optionalFlag(blk, r_ty, r, loc);
+    if ((row.op == .eq or row.op == .neq) and (l_opt or r_opt)) {
+        if (l_opt and r_opt) {
+            // Compare flags, then payload if present
+            const flag_l = self.optionalFlag(blk, l_ty_promo, l, loc);
+            const flag_r = self.optionalFlag(blk, r_ty_promo, r, loc);
             const flags_eq = blk.builder.binBool(blk, .CmpEq, flag_l, flag_r, loc);
 
-            var result = flags_eq;
+            // Check if payload comparison needed (non-scalar) or simple scalar
+            const elem_ty = self.context.type_store.get(.Optional, l_ty_promo).elem;
+            const elem_kind = self.context.type_store.getKind(elem_ty);
+            const is_scalar = isScalarNumeric(elem_kind) or elem_kind == .Bool or elem_kind == .Ptr or elem_kind == .MlirType or elem_kind == .Enum or elem_kind == .Error;
 
             if (is_scalar) {
                 var then_blk = try f.builder.beginBlock(f);
                 var join_blk = try f.builder.beginBlock(f);
-                const res_param = try f.builder.addBlockParam(&join_blk, null, bool_ty);
+                const res_param = try f.builder.addBlockParam(&join_blk, null, self.context.type_store.tBool());
 
-                const both_present = blk.builder.binBool(blk, .LogicalAnd, flag_l, flag_r, loc);
+                try f.builder.condBr(blk, blk.builder.binBool(blk, .LogicalAnd, flag_l, flag_r, loc), then_blk.id, &.{}, join_blk.id, &.{flags_eq}, loc);
+                try f.builder.endBlock(f, blk.*);
 
-                // If both_present -> check payloads.
-                // Else -> result is flags_eq.
-                try f.builder.condBr(blk, both_present, then_blk.id, &.{}, join_blk.id, &.{flags_eq}, loc);
-                const orig_blk = blk.*;
-                try f.builder.endBlock(f, orig_blk);
-
-                // then_blk: both are present, compare payloads
-                const pay_l = self.optionalPayload(&then_blk, l_ty, l, loc);
-                const pay_r = self.optionalPayload(&then_blk, r_ty, r, loc);
-                const pay_eq = then_blk.builder.binBool(&then_blk, .CmpEq, pay_l, pay_r, loc);
-                try f.builder.br(&then_blk, join_blk.id, &.{pay_eq}, loc);
+                const pl = self.optionalPayload(&then_blk, l_ty_promo, l, loc);
+                const pr = self.optionalPayload(&then_blk, r_ty_promo, r, loc);
+                const peq = then_blk.builder.binBool(&then_blk, .CmpEq, pl, pr, loc);
+                try f.builder.br(&then_blk, join_blk.id, &.{peq}, loc);
                 try f.builder.endBlock(f, then_blk);
 
                 blk.* = join_blk;
-                result = res_param;
+                return if (row.op == .neq)
+                    blk.builder.binBool(blk, .CmpEq, res_param, blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false }), loc)
+                else
+                    res_param;
             }
-
-            if (row.op == .neq) {
-                result = blk.builder.binBool(blk, .CmpEq, result, blk.builder.tirValue(.ConstBool, blk, bool_ty, loc, .{ .value = false }), loc);
-            }
-            return result;
-        } else if (l_is_optional != r_is_optional) {
-            const opt_val = if (l_is_optional) l else r;
-            const opt_ty = if (l_is_optional) l_ty else r_ty;
-            const opt_info = self.context.type_store.get(.Optional, opt_ty);
-            const other_val = if (l_is_optional) r else l;
-            const other_ty_raw = if (l_is_optional)
-                self.getExprType(ctx, a, row.right)
+            return if (row.op == .neq)
+                blk.builder.binBool(blk, .CmpEq, flags_eq, blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false }), loc)
             else
-                self.getExprType(ctx, a, row.left);
+                flags_eq;
+        } else {
+            // Mixed Optional/Value equality
+            const opt_val = if (l_opt) l else r;
+            const opt_ty = if (l_opt) l_ty_promo else r_ty_promo;
+            const raw_val = if (l_opt) r else l;
+            const raw_ty = if (l_opt) r_ty_promo else l_ty_promo;
+            const elem_ty = self.context.type_store.get(.Optional, opt_ty).elem;
 
-            var coerced_other = other_val;
-            if (!other_ty_raw.eq(opt_info.elem)) {
-                coerced_other = self.emitCoerce(blk, other_val, other_ty_raw, opt_info.elem, loc);
-            }
-
+            const coerced_raw = if (raw_ty.eq(elem_ty)) raw_val else self.emitCoerce(blk, raw_val, raw_ty, elem_ty, loc);
             const flag = self.optionalFlag(blk, opt_ty, opt_val, loc);
             const payload = self.optionalPayload(blk, opt_ty, opt_val, loc);
 
             var then_blk = try f.builder.beginBlock(f);
             var else_blk = try f.builder.beginBlock(f);
             var join_blk = try f.builder.beginBlock(f);
+            const res_param = try f.builder.addBlockParam(&join_blk, null, self.context.type_store.tBool());
 
-            const payload_param = try f.builder.addBlockParam(&then_blk, null, opt_info.elem);
-            const other_param = try f.builder.addBlockParam(&then_blk, null, opt_info.elem);
-            const res_param = try f.builder.addBlockParam(&join_blk, null, bool_ty);
+            try f.builder.condBr(blk, flag, then_blk.id, &.{}, else_blk.id, &.{}, loc);
+            try f.builder.endBlock(f, blk.*);
 
-            try f.builder.condBr(blk, flag, then_blk.id, &.{ payload, coerced_other }, else_blk.id, &.{}, loc);
-            const orig_blk = blk.*;
-            try f.builder.endBlock(f, orig_blk);
-
-            const cmp = if (row.op == .eq)
-                then_blk.builder.binBool(&then_blk, .CmpEq, payload_param, other_param, loc)
-            else
-                then_blk.builder.binBool(&then_blk, .CmpNe, payload_param, other_param, loc);
-
+            const cmp = if (row.op == .eq) then_blk.builder.binBool(&then_blk, .CmpEq, payload, coerced_raw, loc) else then_blk.builder.binBool(&then_blk, .CmpNe, payload, coerced_raw, loc);
             try f.builder.br(&then_blk, join_blk.id, &.{cmp}, loc);
             try f.builder.endBlock(f, then_blk);
 
-            const else_val = else_blk.builder.tirValue(.ConstBool, &else_blk, bool_ty, loc, .{ .value = (row.op == .neq) });
+            const else_val = else_blk.builder.tirValue(.ConstBool, &else_blk, self.context.type_store.tBool(), loc, .{ .value = (row.op == .neq) });
             try f.builder.br(&else_blk, join_blk.id, &.{else_val}, loc);
             try f.builder.endBlock(f, else_blk);
 
@@ -4807,155 +4021,38 @@ fn lowerBinary(
             return res_param;
         }
     }
-    // --- End Optional(T) equality/inequality handling ---
 
-    const ty0 = blk: {
-        if (op_ty) |t| break :blk t;
-        const want = self.commonNumeric(self.getExprType(ctx, a, row.left), self.getExprType(ctx, a, row.right)) orelse self.context.type_store.tI64();
-        break :blk want;
-    };
-    try self.noteExprType(ctx, id, ty0);
+    // Final binary emission
+    const t = op_ty orelse self.commonNumeric(l_ty_promo, r_ty_promo) orelse self.context.type_store.tI64();
+    try self.noteExprType(ctx, id, t);
+    const is_tensor = self.context.type_store.getKind(t) == .Tensor;
 
     const v = switch (row.op) {
-        else => unreachable,
-        .add => if (row.saturate)
-            blk.builder.bin(blk, .BinSatAdd, ty0, l, r, loc)
-        else if (row.wrap)
-            blk.builder.bin(blk, .BinWrapAdd, ty0, l, r, loc)
-        else
-            blk.builder.bin(blk, .Add, ty0, l, r, loc),
-        .sub => if (row.saturate)
-            blk.builder.bin(blk, .BinSatSub, ty0, l, r, loc)
-        else if (row.wrap)
-            blk.builder.bin(blk, .BinWrapSub, ty0, l, r, loc)
-        else
-            blk.builder.bin(blk, .Sub, ty0, l, r, loc),
-        .mul => if (row.saturate)
-            blk.builder.bin(blk, .BinSatMul, ty0, l, r, loc)
-        else if (row.wrap)
-            blk.builder.bin(blk, .BinWrapMul, ty0, l, r, loc)
-        else
-            blk.builder.bin(blk, .Mul, ty0, l, r, loc),
-        .div => blk.builder.bin(blk, .Div, ty0, l, r, loc),
-        .mod => blk.builder.bin(blk, .Mod, ty0, l, r, loc),
-        .shl => if (row.saturate)
-            blk.builder.bin(blk, .BinSatShl, ty0, l, r, loc)
-        else
-            blk.builder.bin(blk, .Shl, ty0, l, r, loc),
-        .shr => blk.builder.bin(blk, .Shr, ty0, l, r, loc),
-        .bit_and => blk.builder.bin(blk, .BitAnd, ty0, l, r, loc),
-        .bit_or => blk.builder.bin(blk, .BitOr, ty0, l, r, loc),
-        .bit_xor => blk.builder.bin(blk, .BitXor, ty0, l, r, loc),
-        .eq => if (self.context.type_store.getKind(ty0) == .Tensor)
-            blk.builder.bin(blk, .CmpEq, ty0, l, r, loc)
-        else
-            blk.builder.binBool(blk, .CmpEq, l, r, loc),
-        .neq => if (self.context.type_store.getKind(ty0) == .Tensor)
-            blk.builder.bin(blk, .CmpNe, ty0, l, r, loc)
-        else
-            blk.builder.binBool(blk, .CmpNe, l, r, loc),
-        .lt => if (self.context.type_store.getKind(ty0) == .Tensor)
-            blk.builder.bin(blk, .CmpLt, ty0, l, r, loc)
-        else
-            blk.builder.binBool(blk, .CmpLt, l, r, loc),
-        .lte => if (self.context.type_store.getKind(ty0) == .Tensor)
-            blk.builder.bin(blk, .CmpLe, ty0, l, r, loc)
-        else
-            blk.builder.binBool(blk, .CmpLe, l, r, loc),
-        .gt => if (self.context.type_store.getKind(ty0) == .Tensor)
-            blk.builder.bin(blk, .CmpGt, ty0, l, r, loc)
-        else
-            blk.builder.binBool(blk, .CmpGt, l, r, loc),
-        .gte => if (self.context.type_store.getKind(ty0) == .Tensor)
-            blk.builder.bin(blk, .CmpGe, ty0, l, r, loc)
-        else
-            blk.builder.binBool(blk, .CmpGe, l, r, loc),
+        .add => if (row.saturate) blk.builder.bin(blk, .BinSatAdd, t, l, r, loc) else if (row.wrap) blk.builder.bin(blk, .BinWrapAdd, t, l, r, loc) else blk.builder.bin(blk, .Add, t, l, r, loc),
+        .sub => if (row.saturate) blk.builder.bin(blk, .BinSatSub, t, l, r, loc) else if (row.wrap) blk.builder.bin(blk, .BinWrapSub, t, l, r, loc) else blk.builder.bin(blk, .Sub, t, l, r, loc),
+        .mul => if (row.saturate) blk.builder.bin(blk, .BinSatMul, t, l, r, loc) else if (row.wrap) blk.builder.bin(blk, .BinWrapMul, t, l, r, loc) else blk.builder.bin(blk, .Mul, t, l, r, loc),
+        .div => blk.builder.bin(blk, .Div, t, l, r, loc),
+        .mod => blk.builder.bin(blk, .Mod, t, l, r, loc),
+        .shl => if (row.saturate) blk.builder.bin(blk, .BinSatShl, t, l, r, loc) else blk.builder.bin(blk, .Shl, t, l, r, loc),
+        .shr => blk.builder.bin(blk, .Shr, t, l, r, loc),
+        .bit_and => blk.builder.bin(blk, .BitAnd, t, l, r, loc),
+        .bit_or => blk.builder.bin(blk, .BitOr, t, l, r, loc),
+        .bit_xor => blk.builder.bin(blk, .BitXor, t, l, r, loc),
+        .eq => if (is_tensor) blk.builder.bin(blk, .CmpEq, t, l, r, loc) else blk.builder.binBool(blk, .CmpEq, l, r, loc),
+        .neq => if (is_tensor) blk.builder.bin(blk, .CmpNe, t, l, r, loc) else blk.builder.binBool(blk, .CmpNe, l, r, loc),
+        .lt => if (is_tensor) blk.builder.bin(blk, .CmpLt, t, l, r, loc) else blk.builder.binBool(blk, .CmpLt, l, r, loc),
+        .lte => if (is_tensor) blk.builder.bin(blk, .CmpLe, t, l, r, loc) else blk.builder.binBool(blk, .CmpLe, l, r, loc),
+        .gt => if (is_tensor) blk.builder.bin(blk, .CmpGt, t, l, r, loc) else blk.builder.binBool(blk, .CmpGt, l, r, loc),
+        .gte => if (is_tensor) blk.builder.bin(blk, .CmpGe, t, l, r, loc) else blk.builder.binBool(blk, .CmpGe, l, r, loc),
         .logical_and => blk.builder.binBool(blk, .LogicalAnd, l, r, loc),
         .logical_or => blk.builder.binBool(blk, .LogicalOr, l, r, loc),
-        .@"orelse" => blk: {
-            var then_blk = try f.builder.beginBlock(f);
-            var else_blk = try f.builder.beginBlock(f);
-            var join_blk = try f.builder.beginBlock(f);
-            const lhs_ty = self.getExprType(ctx, a, row.left);
-            if (self.context.type_store.getKind(lhs_ty) != .Optional) return error.LoweringBug;
-            const opt_info = self.context.type_store.get(.Optional, lhs_ty);
-            const flag = self.optionalFlag(blk, lhs_ty, l, loc);
-            const payload = self.optionalPayload(blk, lhs_ty, l, loc);
-
-            const elem_kind = self.context.type_store.getKind(opt_info.elem);
-
-            if (elem_kind != .ErrorSet) {
-                // Optional(T) orelse R -> T
-                const then_param = try f.builder.addBlockParam(&then_blk, null, opt_info.elem);
-                const res_ty = expected_ty orelse opt_info.elem;
-                const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
-                try f.builder.condBr(blk, flag, then_blk.id, &.{payload}, else_blk.id, &.{}, loc);
-                const orig_blk = blk.*;
-                try f.builder.endBlock(f, orig_blk);
-
-                var unwrapped = then_param;
-                if (expected_ty) |want| unwrapped = self.emitCoerce(&then_blk, unwrapped, opt_info.elem, want, loc);
-                try f.builder.br(&then_blk, join_blk.id, &.{unwrapped}, loc);
-
-                var rhs_v = r;
-                const rhs_ty = self.getExprType(ctx, a, row.right);
-                const rhs_kind = self.context.type_store.getKind(rhs_ty);
-                if (rhs_kind == .Void) {
-                    try f.builder.setReturnVoid(&else_blk, loc);
-                } else if (rhs_kind == .Noreturn) {
-                    // RHS already terminated the block (e.g., return/panic); nothing to branch.
-                } else {
-                    rhs_v = self.emitCoerce(&else_blk, rhs_v, rhs_ty, res_ty, loc);
-                    try f.builder.br(&else_blk, join_blk.id, &.{rhs_v}, loc);
-                }
-                try f.builder.endBlock(f, then_blk);
-                try f.builder.endBlock(f, else_blk);
-                blk.* = join_blk;
-                break :blk res_param;
-            } else {
-                // Optional(ErrorSet(V,E)) orelse R -> ErrorSet(V,E)
-                const es = self.context.type_store.get(.ErrorSet, opt_info.elem);
-                const res_es_ty = self.context.type_store.mkErrorSet(es.value_ty, es.error_ty);
-                const res_param = try f.builder.addBlockParam(&join_blk, null, res_es_ty);
-                // Prepare then param to receive the ErrorSet payload
-                const then_param = try f.builder.addBlockParam(&then_blk, null, res_es_ty);
-                // Branch on optional flag; forward payload on then
-                try f.builder.condBr(blk, flag, then_blk.id, &.{payload}, else_blk.id, &.{}, loc);
-                const orig_blk = blk.*;
-                try f.builder.endBlock(f, orig_blk);
-
-                // then: pass through the ErrorSet value received as param
-                try f.builder.br(&then_blk, join_blk.id, &.{then_param}, loc);
-                try f.builder.endBlock(f, then_blk);
-
-                // else: wrap default RHS as Ok in ErrorSet
-                var rhs_v = r;
-                const rhs_ty = self.getExprType(ctx, a, row.right);
-                if (!rhs_ty.eq(es.value_ty)) rhs_v = self.emitCoerce(&else_blk, rhs_v, rhs_ty, es.value_ty, loc);
-                // Build union payload {Ok: V, Err: E}
-                const ok_name = f.builder.intern("Ok");
-                const err_name = f.builder.intern("Err");
-                const union_ty = self.context.type_store.mkUnion(&.{ .{ .name = ok_name, .ty = es.value_ty }, .{ .name = err_name, .ty = es.error_ty } });
-                const union_val = else_blk.builder.tirValue(.UnionMake, &else_blk, union_ty, loc, .{ .field_index = 0, .value = rhs_v });
-                const tag0 = else_blk.builder.tirValue(.ConstInt, &else_blk, self.context.type_store.tI32(), loc, .{ .value = 0 });
-                const fields = [_]tir.Rows.StructFieldInit{
-                    .{ .index = 0, .name = .none(), .value = tag0 },
-                    .{ .index = 1, .name = .none(), .value = union_val },
-                };
-                const es_val = else_blk.builder.structMake(&else_blk, res_es_ty, &fields, loc);
-                try f.builder.br(&else_blk, join_blk.id, &.{es_val}, loc);
-                try f.builder.endBlock(f, else_blk);
-
-                blk.* = join_blk;
-                break :blk res_param;
-            }
+        .contains => {
+            try self.context.diags.addError(a.exprs.locs.get(row.loc), .in_operator_not_supported, .{});
+            return error.LoweringBug;
         },
+        else => unreachable,
     };
-    if (expected_ty) |want| {
-        if (!self.isVoid(ty0))
-            return self.emitCoerce(blk, v, ty0, want, loc);
-    }
-    return v;
+    return if (expected_ty) |want| if (!self.isVoid(t)) self.emitCoerce(blk, v, t, want, loc) else v else v;
 }
 
 /// Lower the `catch` expression by wiring error/result handlers and running defers.
@@ -4978,19 +4075,17 @@ fn lowerCatch(
     const lhs_val = try self.lowerExpr(ctx, a, env, f, blk, row.expr, null, .rvalue);
     const lhs_ty0 = self.getExprType(ctx, a, row.expr);
     const lhs_kind = self.context.type_store.getKind(lhs_ty0);
+
     var es_ty = lhs_ty0;
     var is_optional_es = false;
     if (lhs_kind == .Optional) {
-        const opt = self.context.type_store.get(.Optional, lhs_ty0);
-        es_ty = opt.elem;
+        es_ty = self.context.type_store.get(.Optional, lhs_ty0).elem;
         is_optional_es = true;
     }
     const es = self.context.type_store.get(.ErrorSet, es_ty);
     const expr_loc = optLoc(a, row.expr);
 
     if (is_optional_es) {
-        // Optional(ErrorSet(V,E)) catch handler -> Optional(V)
-        // optional info not required explicitly here
         const some_flag = self.optionalFlag(blk, lhs_ty0, lhs_val, expr_loc);
         const es_payload = self.optionalPayload(blk, lhs_ty0, lhs_val, expr_loc);
 
@@ -5002,14 +4097,9 @@ fn lowerCatch(
         try self.noteExprType(ctx, id, res_opt_ty);
         const res_param = try f.builder.addBlockParam(&join_blk, null, res_opt_ty);
 
-        const brc = self.forceLocalCond(blk, some_flag, expr_loc);
-        try f.builder.condBr(blk, brc, some_blk.id, &.{}, none_blk.id, &.{}, loc);
-        {
-            const old = blk.*;
-            try f.builder.endBlock(f, old);
-        }
+        try f.builder.condBr(blk, self.forceLocalCond(blk, some_flag, expr_loc), some_blk.id, &.{}, none_blk.id, &.{}, loc);
+        try f.builder.endBlock(f, blk.*);
 
-        // In some-block: apply catch to inner error-set and produce Optional(V) directly
         const tag = some_blk.builder.extractField(&some_blk, self.context.type_store.tI32(), es_payload, 0, expr_loc);
         const zero = some_blk.builder.tirValue(.ConstInt, &some_blk, self.context.type_store.tI32(), expr_loc, .{ .value = 0 });
         const is_ok_inner = some_blk.builder.binBool(&some_blk, .CmpEq, tag, zero, expr_loc);
@@ -5020,84 +4110,48 @@ fn lowerCatch(
         try f.builder.endBlock(f, some_blk);
 
         const one = self.context.type_store.tBool();
-        // ok: unwrap value from union and wrap as Some(value)
-        const payload_union_ok = ok_blk.builder.extractField(
-            &ok_blk,
-            self.context.type_store.mkUnion(&.{
-                .{ .name = f.builder.intern("Ok"), .ty = es.value_ty },
-                .{ .name = f.builder.intern("Err"), .ty = es.error_ty },
-            }),
-            es_payload,
-            1,
-            expr_loc,
-        );
+        const true_v = ok_blk.builder.tirValue(.ConstBool, &ok_blk, one, loc, .{ .value = true });
+
+        const ok_union = self.context.type_store.mkUnion(&.{ .{ .name = f.builder.intern("Ok"), .ty = es.value_ty }, .{ .name = f.builder.intern("Err"), .ty = es.error_ty } });
+        const payload_union_ok = ok_blk.builder.extractField(&ok_blk, ok_union, es_payload, 1, expr_loc);
         const ok_v = ok_blk.builder.tirValue(.UnionField, &ok_blk, es.value_ty, loc, .{ .base = payload_union_ok, .field_index = 0 });
-        const true_v_ok = ok_blk.builder.tirValue(.ConstBool, &ok_blk, one, loc, .{ .value = true });
-        const ok_fields = [_]tir.Rows.StructFieldInit{
-            .{ .index = 0, .name = .none(), .value = true_v_ok },
-            .{ .index = 1, .name = .none(), .value = ok_v },
-        };
-        const some_opt_ok = ok_blk.builder.structMake(&ok_blk, res_opt_ty, &ok_fields, loc);
-        try f.builder.br(&ok_blk, join_blk.id, &.{some_opt_ok}, loc);
+
+        const ok_fields = [_]tir.Rows.StructFieldInit{ .{ .index = 0, .name = .none(), .value = true_v }, .{ .index = 1, .name = .none(), .value = ok_v } };
+        try f.builder.br(&ok_blk, join_blk.id, &.{ok_blk.builder.structMake(&ok_blk, res_opt_ty, &ok_fields, loc)}, loc);
         try f.builder.endBlock(f, ok_blk);
 
-        // err: bind error and run handler producing V (unless noreturn); wrap as Some(value)
-        const payload_union_err = err_blk.builder.extractField(&err_blk, self.context.type_store.mkUnion(&.{ .{ .name = f.builder.intern("Ok"), .ty = es.value_ty }, .{ .name = f.builder.intern("Err"), .ty = es.error_ty } }), es_payload, 1, expr_loc);
+        const payload_union_err = err_blk.builder.extractField(&err_blk, ok_union, es_payload, 1, expr_loc);
         const err_val = err_blk.builder.tirValue(.UnionField, &err_blk, es.error_ty, loc, .{ .base = payload_union_err, .field_index = 1 });
         if (!row.binding_name.isNone()) {
-            const nm = row.binding_name.unwrap();
-            try env.bind(self.gpa, nm, .{ .value = err_val, .ty = es.error_ty, .is_slot = false }, f.builder, &err_blk, loc);
+            try env.bind(self.gpa, row.binding_name.unwrap(), .{ .value = err_val, .ty = es.error_ty, .is_slot = false }, f.builder, &err_blk, loc);
         }
-        // Evaluate handler exactly once as a block expression to both run side-effects
-        // and produce the resulting value. Only branch to the join if the handler
-        // did not already terminate (e.g., via `return`).
+
         if (err_blk.term.isNone()) {
             const hv = try self.lowerBlockExprValue(ctx, a, env, f, &err_blk, row.handler, es.value_ty);
             if (err_blk.term.isNone()) {
                 const true_v_err = err_blk.builder.tirValue(.ConstBool, &err_blk, one, loc, .{ .value = true });
-                const err_fields = [_]tir.Rows.StructFieldInit{
-                    .{ .index = 0, .name = .none(), .value = true_v_err },
-                    .{ .index = 1, .name = .none(), .value = hv },
-                };
-                const some_opt_err = err_blk.builder.structMake(&err_blk, res_opt_ty, &err_fields, loc);
-                try f.builder.br(&err_blk, join_blk.id, &.{some_opt_err}, loc);
+                const err_fields = [_]tir.Rows.StructFieldInit{ .{ .index = 0, .name = .none(), .value = true_v_err }, .{ .index = 1, .name = .none(), .value = hv } };
+                try f.builder.br(&err_blk, join_blk.id, &.{err_blk.builder.structMake(&err_blk, res_opt_ty, &err_fields, loc)}, loc);
             }
         }
         try f.builder.endBlock(f, err_blk);
 
-        // none branch: wrap as None Optional(V)
         const false_v = none_blk.builder.tirValue(.ConstBool, &none_blk, one, loc, .{ .value = false });
-        const undef_payload = self.safeUndef(&none_blk, es.value_ty, loc);
-        const nfields = [_]tir.Rows.StructFieldInit{
-            .{ .index = 0, .name = .none(), .value = false_v },
-            .{ .index = 1, .name = .none(), .value = undef_payload },
-        };
-        const none_opt = none_blk.builder.structMake(&none_blk, res_opt_ty, &nfields, loc);
-        try f.builder.br(&none_blk, join_blk.id, &.{none_opt}, loc);
+        const nfields = [_]tir.Rows.StructFieldInit{ .{ .index = 0, .name = .none(), .value = false_v }, .{ .index = 1, .name = .none(), .value = self.safeUndef(&none_blk, es.value_ty, loc) } };
+        try f.builder.br(&none_blk, join_blk.id, &.{none_blk.builder.structMake(&none_blk, res_opt_ty, &nfields, loc)}, loc);
         try f.builder.endBlock(f, none_blk);
 
         blk.* = join_blk;
-        if (expected_ty) |want| {
-            if (!self.isVoid(res_opt_ty)) {
-                return self.emitCoerce(blk, res_param, res_opt_ty, want, loc);
-            }
-        }
-        return res_param;
+        return if (expected_ty) |want| if (!self.isVoid(res_opt_ty)) self.emitCoerce(blk, res_param, res_opt_ty, want, loc) else res_param else res_param;
     }
 
     const lhs = lhs_val;
-    // An ErrorSet is a tagged union { tag, payload }, where tag=0 is OK, non-zero is Err.
     const tag = blk.builder.extractField(blk, self.context.type_store.tI32(), lhs, 0, expr_loc);
-    const zero = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), expr_loc, .{ .value = 0 });
-    const is_ok = blk.builder.binBool(blk, .CmpEq, tag, zero, expr_loc);
+    const is_ok = blk.builder.binBool(blk, .CmpEq, tag, blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), expr_loc, .{ .value = 0 }), expr_loc);
 
-    var then_blk = try f.builder.beginBlock(f); // ok path
-    var else_blk = try f.builder.beginBlock(f); // err path
-
-    const payload_union_ty = self.context.type_store.mkUnion(&.{
-        .{ .name = f.builder.intern("Ok"), .ty = es.value_ty },
-        .{ .name = f.builder.intern("Err"), .ty = es.error_ty },
-    });
+    var then_blk = try f.builder.beginBlock(f);
+    var else_blk = try f.builder.beginBlock(f);
+    const payload_union_ty = self.context.type_store.mkUnion(&.{ .{ .name = f.builder.intern("Ok"), .ty = es.value_ty }, .{ .name = f.builder.intern("Err"), .ty = es.error_ty } });
 
     if (produce_value) {
         var join_blk = try f.builder.beginBlock(f);
@@ -5105,80 +4159,47 @@ fn lowerCatch(
         try self.noteExprType(ctx, id, res_ty);
         const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
 
-        const br_cond = self.forceLocalCond(blk, is_ok, expr_loc);
-        try f.builder.condBr(blk, br_cond, then_blk.id, &.{}, else_blk.id, &.{}, loc);
-        {
-            // Close the current block after emitting the branch (mirrors lowerIf).
-            const old = blk.*;
-            try f.builder.endBlock(f, old);
-        }
+        try f.builder.condBr(blk, self.forceLocalCond(blk, is_ok, expr_loc), then_blk.id, &.{}, else_blk.id, &.{}, loc);
+        try f.builder.endBlock(f, blk.*);
 
-        // then (ok) branch: unwrap value
         const payload_union_ok = then_blk.builder.extractField(&then_blk, payload_union_ty, lhs, 1, expr_loc);
-        const ok_val = then_blk.builder.tirValue(.UnionField, &then_blk, es.value_ty, loc, .{
-            .base = payload_union_ok,
-            .field_index = 0,
-        });
-        try f.builder.br(&then_blk, join_blk.id, &.{ok_val}, loc);
+        try f.builder.br(&then_blk, join_blk.id, &.{then_blk.builder.tirValue(.UnionField, &then_blk, es.value_ty, loc, .{ .base = payload_union_ok, .field_index = 0 })}, loc);
 
-        // else (err) branch: unwrap error and run handler
-        try env.pushScope(self.gpa); // Push scope for handler
+        try env.pushScope(self.gpa);
         const payload_union_err = else_blk.builder.extractField(&else_blk, payload_union_ty, lhs, 1, expr_loc);
-        const err_val = else_blk.builder.tirValue(.UnionField, &else_blk, es.error_ty, loc, .{
-            .base = payload_union_err,
-            .field_index = 1,
-        });
+        const err_val = else_blk.builder.tirValue(.UnionField, &else_blk, es.error_ty, loc, .{ .base = payload_union_err, .field_index = 1 });
         if (!row.binding_name.isNone()) {
-            const name = row.binding_name.unwrap();
-            try env.bind(self.gpa, name, .{ .value = err_val, .ty = es.error_ty, .is_slot = false }, f.builder, &else_blk, loc);
+            try env.bind(self.gpa, row.binding_name.unwrap(), .{ .value = err_val, .ty = es.error_ty, .is_slot = false }, f.builder, &else_blk, loc);
         }
-        // Evaluate handler exactly once and branch with the produced value.
+
         if (else_blk.term.isNone()) {
             const hv = try self.lowerBlockExprValue(ctx, a, env, f, &else_blk, row.handler, res_ty);
-            if (else_blk.term.isNone()) {
-                try f.builder.br(&else_blk, join_blk.id, &.{hv}, loc);
-            }
+            if (else_blk.term.isNone()) try f.builder.br(&else_blk, join_blk.id, &.{hv}, loc);
         }
-        _ = env.popScope(self.gpa); // Pop scope after handler
+        _ = env.popScope(self.gpa);
 
         try f.builder.endBlock(f, then_blk);
         try f.builder.endBlock(f, else_blk);
         blk.* = join_blk;
-        if (expected_ty) |want| {
-            if (!self.isVoid(res_ty)) {
-                return self.emitCoerce(blk, res_param, res_ty, want, loc);
-            }
-        }
-        return res_param;
+
+        return if (expected_ty) |want| if (!self.isVoid(res_ty)) self.emitCoerce(blk, res_param, res_ty, want, loc) else res_param else res_param;
     } else {
-        // No value: conditionally run handler, then continue
         const exit_blk = try f.builder.beginBlock(f);
+        try f.builder.condBr(blk, self.forceLocalCond(blk, is_ok, expr_loc), then_blk.id, &.{}, else_blk.id, &.{}, loc);
+        try f.builder.endBlock(f, blk.*);
 
-        const br_cond = self.forceLocalCond(blk, is_ok, expr_loc);
-        try f.builder.condBr(blk, br_cond, then_blk.id, &.{}, else_blk.id, &.{}, loc);
-        {
-            // Close the current block after emitting the branch.
-            const old = blk.*;
-            try f.builder.endBlock(f, old);
-        }
-
-        // then: nothing to do, jump to exit
         if (then_blk.term.isNone()) try f.builder.br(&then_blk, exit_blk.id, &.{}, loc);
         try f.builder.endBlock(f, then_blk);
 
-        // else: execute handler as stmt
-        try env.pushScope(self.gpa); // Push scope for handler
+        try env.pushScope(self.gpa);
         const payload_union_err = else_blk.builder.extractField(&else_blk, payload_union_ty, lhs, 1, expr_loc);
-        const err_val = else_blk.builder.tirValue(.UnionField, &else_blk, es.error_ty, loc, .{
-            .base = payload_union_err,
-            .field_index = 1,
-        });
+        const err_val = else_blk.builder.tirValue(.UnionField, &else_blk, es.error_ty, loc, .{ .base = payload_union_err, .field_index = 1 });
         if (!row.binding_name.isNone()) {
-            const name = row.binding_name.unwrap();
-            try env.bind(self.gpa, name, .{ .value = err_val, .ty = es.error_ty, .is_slot = false }, f.builder, &else_blk, loc);
+            try env.bind(self.gpa, row.binding_name.unwrap(), .{ .value = err_val, .ty = es.error_ty, .is_slot = false }, f.builder, &else_blk, loc);
         }
         try self.lowerExprAsStmtList(ctx, a, env, f, &else_blk, row.handler);
-        _ = env.popScope(self.gpa); // Pop scope after handler
+        _ = env.popScope(self.gpa);
+
         if (else_blk.term.isNone()) try f.builder.br(&else_blk, exit_blk.id, &.{}, loc);
         try f.builder.endBlock(f, else_blk);
 
@@ -5200,11 +4221,9 @@ fn lowerOrelse(
 ) anyerror!tir.ValueId {
     const row = a.exprs.get(.Binary, id);
     const loc = optLoc(a, id);
-
     const lhs_ty = self.getExprType(ctx, a, row.left);
     if (self.context.type_store.getKind(lhs_ty) != .Optional) return error.LoweringBug;
 
-    // Only compute the LHS eagerly; RHS is lowered lazily in the else branch to preserve short-circuiting.
     const lhs_val = try self.lowerExpr(ctx, a, env, f, blk, row.left, lhs_ty, .rvalue);
     const opt_info = self.context.type_store.get(.Optional, lhs_ty);
     const flag = self.optionalFlag(blk, lhs_ty, lhs_val, loc);
@@ -5219,28 +4238,21 @@ fn lowerOrelse(
     if (elem_kind != .ErrorSet) {
         const res_ty = expected_ty orelse opt_info.elem;
         const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
-        const then_param = try f.builder.addBlockParam(&then_blk, null, opt_info.elem);
 
         try f.builder.condBr(blk, flag, then_blk.id, &.{payload}, else_blk.id, &.{}, loc);
-        const orig_blk = blk.*;
-        try f.builder.endBlock(f, orig_blk);
+        try f.builder.endBlock(f, blk.*);
 
-        var unwrapped = then_param;
-        if (expected_ty) |want| unwrapped = self.emitCoerce(&then_blk, unwrapped, opt_info.elem, want, loc);
+        const then_param = try f.builder.addBlockParam(&then_blk, null, opt_info.elem);
+        const unwrapped = if (expected_ty) |want| self.emitCoerce(&then_blk, then_param, opt_info.elem, want, loc) else then_param;
         try f.builder.br(&then_blk, join_blk.id, &.{unwrapped}, loc);
         try f.builder.endBlock(f, then_blk);
 
         if (else_blk.term.isNone()) {
             const rhs_val = try self.lowerExpr(ctx, a, env, f, &else_blk, row.right, res_ty, .rvalue);
-            const rhs_ty = self.getExprType(ctx, a, row.right);
-            const rhs_kind = self.context.type_store.getKind(rhs_ty);
+            const rk = self.context.type_store.getKind(self.getExprType(ctx, a, row.right));
+
             if (else_blk.term.isNone()) {
-                if (rhs_kind == .Void) {
-                    try f.builder.setReturnVoid(&else_blk, loc);
-                } else if (rhs_kind != .Noreturn) {
-                    const coerced = self.emitCoerce(&else_blk, rhs_val, rhs_ty, res_ty, loc);
-                    try f.builder.br(&else_blk, join_blk.id, &.{coerced}, loc);
-                }
+                if (rk == .Void) try f.builder.setReturnVoid(&else_blk, loc) else if (rk != .Noreturn) try f.builder.br(&else_blk, join_blk.id, &.{self.emitCoerce(&else_blk, rhs_val, self.getExprType(ctx, a, row.right), res_ty, loc)}, loc);
             }
             try f.builder.endBlock(f, else_blk);
         }
@@ -5249,37 +4261,28 @@ fn lowerOrelse(
         try self.noteExprType(ctx, id, res_ty);
         return res_param;
     } else {
-        // Optional(ErrorSet(V,E)) orelse R -> ErrorSet(V,E)
         const es = self.context.type_store.get(.ErrorSet, opt_info.elem);
         const res_es_ty = self.context.type_store.mkErrorSet(es.value_ty, es.error_ty);
         const res_param = try f.builder.addBlockParam(&join_blk, null, res_es_ty);
-        const then_param = try f.builder.addBlockParam(&then_blk, null, res_es_ty);
 
         try f.builder.condBr(blk, flag, then_blk.id, &.{payload}, else_blk.id, &.{}, loc);
-        const orig_blk = blk.*;
-        try f.builder.endBlock(f, orig_blk);
+        try f.builder.endBlock(f, blk.*);
 
+        const then_param = try f.builder.addBlockParam(&then_blk, null, res_es_ty);
         try f.builder.br(&then_blk, join_blk.id, &.{then_param}, loc);
         try f.builder.endBlock(f, then_blk);
 
         if (else_blk.term.isNone()) {
             var rhs_val = try self.lowerExpr(ctx, a, env, f, &else_blk, row.right, es.value_ty, .rvalue);
             const rhs_ty = self.getExprType(ctx, a, row.right);
-            if (!rhs_ty.eq(es.value_ty)) {
-                rhs_val = self.emitCoerce(&else_blk, rhs_val, rhs_ty, es.value_ty, loc);
-            }
+            if (!rhs_ty.eq(es.value_ty)) rhs_val = self.emitCoerce(&else_blk, rhs_val, rhs_ty, es.value_ty, loc);
 
-            const ok_name = f.builder.intern("Ok");
-            const err_name = f.builder.intern("Err");
-            const union_ty = self.context.type_store.mkUnion(&.{ .{ .name = ok_name, .ty = es.value_ty }, .{ .name = err_name, .ty = es.error_ty } });
+            const union_ty = self.context.type_store.mkUnion(&.{ .{ .name = f.builder.intern("Ok"), .ty = es.value_ty }, .{ .name = f.builder.intern("Err"), .ty = es.error_ty } });
             const union_val = else_blk.builder.tirValue(.UnionMake, &else_blk, union_ty, loc, .{ .field_index = 0, .value = rhs_val });
             const tag0 = else_blk.builder.tirValue(.ConstInt, &else_blk, self.context.type_store.tI32(), loc, .{ .value = 0 });
-            const fields = [_]tir.Rows.StructFieldInit{
-                .{ .index = 0, .name = .none(), .value = tag0 },
-                .{ .index = 1, .name = .none(), .value = union_val },
-            };
-            const es_val = else_blk.builder.structMake(&else_blk, res_es_ty, &fields, loc);
-            try f.builder.br(&else_blk, join_blk.id, &.{es_val}, loc);
+
+            const fields = [_]tir.Rows.StructFieldInit{ .{ .index = 0, .name = .none(), .value = tag0 }, .{ .index = 1, .name = .none(), .value = union_val } };
+            try f.builder.br(&else_blk, join_blk.id, &.{else_blk.builder.structMake(&else_blk, res_es_ty, &fields, loc)}, loc);
             try f.builder.endBlock(f, else_blk);
         }
 
@@ -5311,8 +4314,7 @@ fn lowerCast(
         .wrap => blk.builder.tirValue(.CastWrap, blk, ty0, loc, .{ .value = v }),
         .checked => blk.builder.tirValue(.CastChecked, blk, ty0, loc, .{ .value = v }),
     };
-    if (expected_ty) |want| return self.emitCoerce(blk, out, ty0, want, loc);
-    return out;
+    return if (expected_ty) |want| self.emitCoerce(blk, out, ty0, want, loc) else out;
 }
 
 /// Lower expression `id` into TIR, targeting `expected_ty`/`mode` and respecting the current env.
@@ -5333,27 +4335,16 @@ pub fn lowerExpr(
 
     return switch (a.kind(id)) {
         .Literal => self.lowerLiteral(ctx, a, blk, id, expected_ty),
-        .NullLit => {
+        .NullLit => blk_null: {
             const loc = optLoc(a, id);
-            if (expected_ty) |want| {
-                if (self.context.type_store.getKind(want) == .Optional) {
-                    return blk.builder.constNull(blk, want, loc);
-                }
-            }
+            if (expected_ty) |want| if (self.context.type_store.getKind(want) == .Optional) break :blk_null blk.builder.constNull(blk, want, loc);
             const ty0 = self.getExprType(ctx, a, id);
             const v = blk.builder.constNull(blk, ty0, loc);
-            if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
-            return v;
+            break :blk_null if (expected_ty) |want| self.emitCoerce(blk, v, ty0, want, loc) else v;
         },
-        .UndefLit => {
+        .UndefLit => blk_undef: {
             const loc = optLoc(a, id);
-            if (expected_ty) |want_raw| {
-                const v = blk.builder.constNull(blk, want_raw, loc);
-                return v;
-            } else {
-                const any_ty = self.context.type_store.tAny();
-                return self.safeUndef(blk, any_ty, loc);
-            }
+            break :blk_undef if (expected_ty) |want_raw| blk.builder.constNull(blk, want_raw, loc) else self.safeUndef(blk, self.context.type_store.tAny(), loc);
         },
         .Unary => self.lowerUnary(ctx, a, env, f, blk, id, expected_ty, mode),
         .Range => self.lowerRange(ctx, a, env, f, blk, id, expected_ty),
@@ -5364,59 +4355,41 @@ pub fn lowerExpr(
         .MapLit => self.lowerMapLit(ctx, a, env, f, blk, id, expected_ty),
         .IndexAccess => self.lowerIndexAccess(ctx, a, env, f, blk, id, expected_ty, mode),
         .FieldAccess => self.lowerFieldAccess(ctx, a, env, f, blk, id, expected_ty, mode),
-        .Block => {
-            const res_ty = expected_ty orelse self.getExprType(ctx, a, id);
-            return try self.lowerBlockExprValue(ctx, a, env, f, blk, id, res_ty);
-        },
+        .Block => try self.lowerBlockExprValue(ctx, a, env, f, blk, id, expected_ty orelse self.getExprType(ctx, a, id)),
         .Ident => self.lowerIdent(ctx, a, env, f, blk, id, expected_ty, mode),
         .Binary => self.lowerBinary(ctx, a, env, f, blk, id, expected_ty),
         .Catch => self.lowerCatch(ctx, a, env, f, blk, id, expected_ty),
-        .Return => blk: {
+        .Return => blk_ret: {
             const row = a.exprs.get(.Return, id);
             const loc = optLoc(a, id);
-            const ty0 = self.getExprType(ctx, a, id);
-            const poison = self.safeUndef(blk, ty0, loc);
+            const poison = self.safeUndef(blk, self.getExprType(ctx, a, id), loc);
             try self.lowerReturnCommon(ctx, a, env, f, blk, row.value, loc);
-            break :blk poison;
+            break :blk_ret poison;
         },
-        .Break => blk: {
+        .Break => blk_br: {
             const row = a.exprs.get(.Break, id);
             const loc = optLoc(a, id);
-            const ty0 = expected_ty orelse self.getExprType(ctx, a, id);
-            const poison = self.safeUndef(blk, ty0, loc);
+            const poison = self.safeUndef(blk, expected_ty orelse self.getExprType(ctx, a, id), loc);
             try cf.lowerBreakCommon(self, ctx, a, env, f, blk, row.label, row.value, loc);
-            break :blk poison;
+            break :blk_br poison;
         },
-        .Continue => blk: {
+        .Continue => blk_cont: {
             const row = a.exprs.get(.Continue, id);
             const loc = optLoc(a, id);
-            const ty0 = expected_ty orelse self.getExprType(ctx, a, id);
-            const poison = self.safeUndef(blk, ty0, loc);
+            const poison = self.safeUndef(blk, expected_ty orelse self.getExprType(ctx, a, id), loc);
             try cf.lowerContinueCommon(self, ctx, a, env, f, blk, row.label, loc);
-            break :blk poison;
+            break :blk_cont poison;
         },
         .If => cf.lowerIf(self, ctx, a, env, f, blk, id, expected_ty),
         .Call => self.lowerCall(ctx, a, env, f, blk, id, expected_ty, mode),
         .Cast => self.lowerCast(ctx, a, env, f, blk, id, expected_ty),
         .OptionalUnwrap => cf.lowerOptionalUnwrap(self, ctx, a, env, f, blk, id, expected_ty),
-        .Await => blk: {
+        .Await => blk_await: {
             const aw = a.exprs.get(.Await, id);
             const loc = optLoc(a, id);
-            const op_val = try self.lowerExpr(ctx, a, env, f, blk, aw.expr, null, .rvalue);
             const res_ty = self.getExprType(ctx, a, id);
-            const val = blk.builder.tirValue(
-                .Await,
-                blk,
-                res_ty,
-                loc,
-                .{ .operand = op_val },
-            );
-            if (expected_ty) |want| {
-                if (!res_ty.eq(want)) {
-                    break :blk self.emitCoerce(blk, val, res_ty, want, loc);
-                }
-            }
-            break :blk val;
+            const val = blk.builder.tirValue(.Await, blk, res_ty, loc, .{ .operand = try self.lowerExpr(ctx, a, env, f, blk, aw.expr, null, .rvalue) });
+            break :blk_await if (expected_ty) |want| if (!res_ty.eq(want)) self.emitCoerce(blk, val, res_ty, want, loc) else val else val;
         },
         .ErrUnwrap => cf.lowerErrUnwrap(self, ctx, a, env, f, blk, id, expected_ty),
         .UnionType => self.lowerTypeExprOpaque(ctx, a, blk, id, expected_ty),
@@ -5424,35 +4397,16 @@ pub fn lowerExpr(
         .Match => cf.lowerMatch(self, ctx, a, env, f, blk, id, expected_ty),
         .While => cf.lowerWhile(self, ctx, a, env, f, blk, id, expected_ty),
         .For => cf.lowerFor(self, ctx, a, env, f, blk, id, expected_ty),
-        .MlirBlock => blk: {
-            if (mode == .lvalue_addr) return error.LoweringBug;
-            const loc = optLoc(a, id);
-            break :blk try self.lowerMlirBlock(ctx, a, env, f, blk, id, expected_ty, loc);
-        },
-        .Import => blk: {
-            const loc = optLoc(a, id);
-            break :blk blk.builder.tirValue(
-                .ConstUndef,
-                blk,
-                self.getExprType(ctx, a, id),
-                loc,
-                .{},
-            );
-        },
+        .MlirBlock => if (mode == .lvalue_addr) error.LoweringBug else try self.lowerMlirBlock(ctx, a, env, f, blk, id, expected_ty, optLoc(a, id)),
+        .Import => blk.builder.tirValue(.ConstUndef, blk, self.getExprType(ctx, a, id), optLoc(a, id), .{}),
         .VariantType, .EnumType, .StructType, .SimdType => self.lowerTypeExprOpaque(ctx, a, blk, id, expected_ty),
-        .CodeBlock => blk: {
-            // For now, treat as opaque and produce undef
-            const ty0 = self.getExprType(ctx, a, id);
-            const loc = optLoc(a, id);
-            break :blk self.safeUndef(blk, ty0, loc);
-        },
-        .ComptimeBlock => {
+        .CodeBlock => self.safeUndef(blk, self.getExprType(ctx, a, id), optLoc(a, id)),
+        .ComptimeBlock => blk_comp: {
             const cb = a.exprs.get(.ComptimeBlock, id);
-            const result_ty = self.getExprType(ctx, a, cb.block);
             var cval = try self.getCachedComptimeValue(a, cb.block);
             if (cval) |*comptime_val| {
                 defer comptime_val.destroy(self.gpa);
-                return try comp.constValueFromComptime(self, blk, result_ty, comptime_val.*);
+                break :blk_comp try comp.constValueFromComptime(self, blk, self.getExprType(ctx, a, cb.block), comptime_val.*);
             }
             return error.LoweringBug;
         },
@@ -5474,12 +4428,12 @@ pub fn lowerBlockExprValue(
     block_expr: ast.ExprId,
     expected_ty: types.TypeId,
 ) anyerror!tir.ValueId {
-    if (a.kind(block_expr) != .Block) {
-        return self.lowerExpr(ctx, a, env, f, blk, block_expr, expected_ty, .rvalue);
-    }
+    if (a.kind(block_expr) != .Block) return self.lowerExpr(ctx, a, env, f, blk, block_expr, expected_ty, .rvalue);
+
     const b = a.exprs.get(.Block, block_expr);
     const stmts = a.stmts.stmt_pool.slice(b.items);
     const loc = optLoc(a, block_expr);
+
     if (stmts.len == 0) {
         try self.noteExprType(ctx, block_expr, expected_ty);
         return self.safeUndef(blk, expected_ty, loc);
@@ -5488,32 +4442,26 @@ pub fn lowerBlockExprValue(
     try env.pushScope(self.gpa);
     defer _ = env.popScope(self.gpa);
 
-    // Remember where this block's scope begins on the defer stack.
     const mark: u32 = @intCast(env.defers.items.len);
     var i: usize = 0;
     while (i + 1 < stmts.len) : (i += 1) {
         try self.lowerStmt(ctx, a, env, f, blk, stmts[i]);
     }
+
     const last = stmts[stmts.len - 1];
     if (a.kind(last) == .Expr) {
-        const le = a.stmts.get(.Expr, last).expr;
-        // Evaluate the last expression value-first, then run defers belonging to this block,
-        // then return the computed value. This preserves the "defer runs at scope exit" rule.
-        const v = try self.lowerExpr(ctx, a, env, f, blk, le, expected_ty, .rvalue);
+        const v = try self.lowerExpr(ctx, a, env, f, blk, a.stmts.get(.Expr, last).expr, expected_ty, .rvalue);
         try self.noteExprType(ctx, block_expr, expected_ty);
-        // If the checker stamped a different type than expected, keep your existing
-        // higher-level coercion behavior by not touching `v` here beyond scope-finalization.
         try cf.runNormalDefersFrom(self, ctx, a, env, f, blk, mark);
         return v;
     } else {
         try self.lowerStmt(ctx, a, env, f, blk, last);
-        // Natural fallthrough out of the block scope: run normal defers for this block.
-        // Early exits (return/break/continue) won’t reach here and already run defers.
         try cf.runNormalDefersFrom(self, ctx, a, env, f, blk, mark);
         try self.noteExprType(ctx, block_expr, expected_ty);
         return self.safeUndef(blk, expected_ty, loc);
     }
 }
+
 /// Compute the symbol name representing `did` if it introduces a runtime value.
 fn symbolNameForDecl(self: *LowerTir, decl_ast: *ast.Ast, did: ast.DeclId) !?StrId {
     const decl = decl_ast.exprs.Decl.get(did);
@@ -5522,11 +4470,8 @@ fn symbolNameForDecl(self: *LowerTir, decl_ast: *ast.Ast, did: ast.DeclId) !?Str
         else => false,
     };
     if (!decl.pattern.isNone()) {
-        const pat = decl.pattern.unwrap();
-        if (bindingNameOfPattern(decl_ast, pat)) |name| {
-            return if (is_extern_fn) name else try self.qualifySymbolName(decl_ast, name);
-        }
-        return null;
+        const name = bindingNameOfPattern(decl_ast, decl.pattern.unwrap()) orelse return null;
+        return if (is_extern_fn) name else try self.qualifySymbolName(decl_ast, name);
     }
     if (!decl.method_path.isNone()) {
         const base = try methodSymbolShortName(self, decl_ast, did);
@@ -5546,14 +4491,9 @@ fn structTypeExprFromTypeRef(_: *LowerTir, a: *ast.Ast, type_expr: ast.ExprId) ?
     return switch (a.kind(type_expr)) {
         .StructType => type_expr,
         .Ident => blk: {
-            const ident = a.exprs.get(.Ident, type_expr);
-            if (call_resolution.findTopLevelDeclByName(a, ident.name)) |decl_id| {
-                const decl = a.exprs.Decl.get(decl_id);
-                if (a.kind(decl.value) == .StructType) {
-                    break :blk decl.value;
-                }
-            }
-            break :blk null;
+            const decl_id = call_resolution.findDeclId(a, a.exprs.get(.Ident, type_expr).name) orelse break :blk null;
+            const decl = a.exprs.Decl.get(decl_id);
+            break :blk if (a.kind(decl.value) == .StructType) decl.value else null;
         },
         else => null,
     };
@@ -5561,13 +4501,10 @@ fn structTypeExprFromTypeRef(_: *LowerTir, a: *ast.Ast, type_expr: ast.ExprId) ?
 
 /// Look for a default initializer for `field_name` inside `struct_expr`.
 fn structFieldDefaultInStructExpr(a: *ast.Ast, struct_expr: ast.ExprId, field_name: ast.StrId) ?ast.ExprId {
-    const row = a.exprs.get(.StructType, struct_expr);
-    const sfields = a.exprs.sfield_pool.slice(row.fields);
+    const sfields = a.exprs.sfield_pool.slice(a.exprs.get(.StructType, struct_expr).fields);
     for (sfields) |fid| {
         const sf = a.exprs.StructField.get(fid);
-        if (sf.name.eq(field_name) and !sf.value.isNone()) {
-            return sf.value.unwrap();
-        }
+        if (sf.name.eq(field_name) and !sf.value.isNone()) return sf.value.unwrap();
     }
     return null;
 }
@@ -5583,7 +4520,8 @@ fn isNumeric(self: *const LowerTir, ty: types.TypeId) bool {
 
 /// Return true when `ty` is either `f32` or `f64`.
 fn isFloat(self: *const LowerTir, ty: types.TypeId) bool {
-    return self.isType(ty, .F32) or self.isType(ty, .F64);
+    const k = self.context.type_store.getKind(ty);
+    return k == .F32 or k == .F64;
 }
 
 /// Test whether `ty` currently maps to `kind` in the type store index.
@@ -5592,39 +4530,27 @@ pub fn isType(self: *const LowerTir, ty: types.TypeId, kind: types.TypeKind) boo
 }
 
 /// Choose a common numeric type for binary ops when the checker didn't provide one.
-fn commonNumeric(
-    self: *const LowerTir,
-    l: ?types.TypeId,
-    r: ?types.TypeId,
-) ?types.TypeId {
+fn commonNumeric(self: *const LowerTir, l: ?types.TypeId, r: ?types.TypeId) ?types.TypeId {
     const ts = self.context.type_store;
     if (l) |lt| if (self.isNumeric(lt)) {
         if (r) |rt| {
             if (self.isNumeric(rt)) {
-                // naive widening preference: floats > signed > unsigned; 64 > 32 > 16 > 8
                 const kL = ts.getKind(lt);
                 const kR = ts.getKind(rt);
-                if (kL == .Simd) return lt;
-                if (kR == .Simd) return rt;
-                if (kL == .Tensor) return lt;
-                if (kR == .Tensor) return rt;
+                if (kL == .Simd or kL == .Tensor) return lt;
+                if (kR == .Simd or kR == .Tensor) return rt;
+                if (kL == .F64 or kR == .F64) return ts.tF64();
+                if (kL == .F32 or kR == .F32) return ts.tF32();
 
-                // if either side is float, pick the wider float
-                if ((kL == .F64) or (kR == .F64)) return ts.tF64();
-                if ((kL == .F32) or (kR == .F32)) return ts.tF32();
-                // prefer signed width of the wider side
                 const signedPref = [_]types.TypeId{ ts.tI64(), ts.tI32(), ts.tI16(), ts.tI8() };
-                for (signedPref) |cand| {
-                    if (lt.eq(cand) or rt.eq(cand)) return cand;
-                }
-                // otherwise fall back to the wider unsigned
-                if (lt.eq(ts.tU64()) or rt.eq(ts.tU64())) return ts.tU64();
-                if (lt.eq(ts.tU32()) or rt.eq(ts.tU32())) return ts.tU32();
-                if (lt.eq(ts.tU16()) or rt.eq(ts.tU16())) return ts.tU16();
-                if (lt.eq(ts.tU8()) or rt.eq(ts.tU8())) return ts.tU8();
+                for (signedPref) |cand| if (lt.eq(cand) or rt.eq(cand)) return cand;
+
+                const unsignedPref = [_]types.TypeId{ ts.tU64(), ts.tU32(), ts.tU16(), ts.tU8() };
+                for (unsignedPref) |cand| if (lt.eq(cand) or rt.eq(cand)) return cand;
+
                 return lt;
             }
-            return lt; // one numeric, one non-numeric → pick numeric side
+            return lt;
         }
         return lt;
     } else if (r) |rt| if (self.isNumeric(rt)) return rt;
@@ -5633,9 +4559,7 @@ fn commonNumeric(
 
 fn lookupComptimeAliasType(self: *LowerTir, a: *ast.Ast, name: ast.StrId) ?types.TypeId {
     const ty = a.type_info.lookupComptimeBindingType(name) orelse return null;
-    // Treat only type aliases (TypeType) as comptime type bindings.
-    if (self.context.type_store.getKind(ty) != .TypeType) return null;
-    return ty;
+    return if (self.context.type_store.getKind(ty) == .TypeType) ty else null;
 }
 
 fn cloneComptimeAliasValue(self: *LowerTir, a: *ast.Ast, name: ast.StrId) !?comp.ComptimeValue {
@@ -5658,7 +4582,6 @@ fn refineExprType(
                 try self.noteExprType(ctx, expr, bnd.ty);
                 return bnd.ty;
             }
-
             if (self.lookupComptimeAliasType(a, name)) |ty| {
                 const type_ty = self.context.type_store.mkTypeType(ty);
                 try self.noteExprType(ctx, expr, type_ty);
@@ -5682,7 +4605,6 @@ fn refineExprType(
         },
         else => {},
     }
-
     return stamped;
 }
 
@@ -5695,8 +4617,7 @@ fn exprTypeWithEnv(
     expr: ast.ExprId,
 ) types.TypeId {
     const stamped = self.getExprType(ctx, a, expr);
-    const refined = self.refineExprType(ctx, a, env, expr, stamped) catch return stamped;
-    return refined orelse stamped;
+    return (self.refineExprType(ctx, a, env, expr, stamped) catch null) orelse stamped;
 }
 
 // ============================
@@ -5710,11 +4631,11 @@ pub fn getExprType(self: *const LowerTir, ctx: *LowerContext, a: *ast.Ast, id: a
     std.debug.assert(i < a.type_info.expr_types.items.len);
     return a.type_info.expr_types.items[i] orelse unreachable;
 }
+
 /// Return the recorded type for declaration `did`, if the checker produced one.
 fn getDeclType(a: *ast.Ast, did: ast.DeclId) ?types.TypeId {
     const i = did.toRaw();
     std.debug.assert(i < a.type_info.decl_types.items.len);
-
     return a.type_info.decl_types.items[i];
 }
 
@@ -5724,13 +4645,16 @@ pub fn getUnionTypeFromVariant(self: *const LowerTir, vty: types.TypeId) ?types.
     const k = ts.getKind(vty);
 
     if (k == .Variant or k == .Error) {
-        const fields = if (k == .Variant)
-            ts.field_pool.slice(ts.get(.Variant, vty).variants)
-        else
-            ts.field_pool.slice(ts.get(.Error, vty).variants);
+        const fields = if (k == .Variant) ts.field_pool.slice(ts.get(.Variant, vty).variants) else ts.field_pool.slice(ts.get(.Error, vty).variants);
 
-        var args = self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len) catch return null;
-        defer self.gpa.free(args);
+        var stack_args: [16]types.TypeStore.StructFieldArg = undefined;
+        var heap_args: []types.TypeStore.StructFieldArg = &.{};
+        defer if (heap_args.len > 0) self.gpa.free(heap_args);
+
+        const args = if (fields.len <= 16) stack_args[0..fields.len] else blk: {
+            heap_args = self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len) catch return null;
+            break :blk heap_args;
+        };
 
         for (fields, 0..) |fid, i| {
             const f = ts.Field.get(fid);
@@ -5739,7 +4663,6 @@ pub fn getUnionTypeFromVariant(self: *const LowerTir, vty: types.TypeId) ?types.
         return ts.mkUnion(args);
     }
 
-    // Fallback if a legacy representation is ever seen.
     if (k == .Struct) {
         const sfields = ts.field_pool.slice(ts.get(.Struct, vty).fields);
         if (sfields.len != 2) return null;
@@ -5749,20 +4672,15 @@ pub fn getUnionTypeFromVariant(self: *const LowerTir, vty: types.TypeId) ?types.
     return null;
 }
 
-// Destructure a declaration pattern and bind its sub-bindings either as values (const) or slots (mutable).
 /// Walk `pid` and bind every leaf to `value`, optionally storing into slots for mut bindings.
 fn destructureDeclPattern(self: *LowerTir, a: *ast.Ast, env: *cf.Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, value: tir.ValueId, vty: types.TypeId, to_slots: bool) !void {
     const loc = optLoc(a, pid);
     switch (a.kind(pid)) {
         .Binding => {
             const nm = a.pats.get(.Binding, pid).name;
-            if (self.isVoid(vty)) {
-                // Nothing to bind: expression already evaluated for side effects.
-                return;
-            }
+            if (self.isVoid(vty)) return;
             if (to_slots) {
-                const slot_ty = self.context.type_store.mkPtr(vty, false);
-                const slot = f.builder.tirValue(.Alloca, blk, slot_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
+                const slot = f.builder.tirValue(.Alloca, blk, self.context.type_store.mkPtr(vty, false), loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
                 _ = f.builder.tirValue(.Store, blk, vty, loc, .{ .ptr = slot, .value = value, .@"align" = 0 });
                 try env.bind(self.gpa, nm, .{ .value = slot, .ty = vty, .is_slot = true }, f.builder, blk, loc);
             } else {
@@ -5770,40 +4688,26 @@ fn destructureDeclPattern(self: *LowerTir, a: *ast.Ast, env: *cf.Env, f: *Builde
             }
         },
         .Tuple => {
-            const row = a.pats.get(.Tuple, pid);
-            const elems = a.pats.pat_pool.slice(row.elems);
-            var etys: []const types.TypeId = &[_]types.TypeId{};
-            if (self.context.type_store.getKind(vty) == .Tuple) {
-                const vrow = self.context.type_store.get(.Tuple, vty);
-                etys = self.context.type_store.type_pool.slice(vrow.elems);
-            }
-            var i: usize = 0;
-            while (i < elems.len) : (i += 1) {
+            const elems = a.pats.pat_pool.slice(a.pats.get(.Tuple, pid).elems);
+            const etys = if (self.context.type_store.getKind(vty) == .Tuple) self.context.type_store.type_pool.slice(self.context.type_store.get(.Tuple, vty).elems) else &[_]types.TypeId{};
+            for (elems, 0..) |elem, i| {
                 const ety = if (i < etys.len) etys[i] else self.context.type_store.tAny();
-                const ev = blk.builder.extractElem(blk, ety, value, @intCast(i), loc);
-                try self.destructureDeclPattern(a, env, f, blk, elems[i], ev, ety, to_slots);
+                try self.destructureDeclPattern(a, env, f, blk, elem, blk.builder.extractElem(blk, ety, value, @intCast(i), loc), ety, to_slots);
             }
         },
         .Struct => {
-            const row = a.pats.get(.Struct, pid);
-            const fields = a.pats.field_pool.slice(row.fields);
-            // If we know the struct type, build a name->(index, ty) map.
-            var idx_by_name: ?[]const types.FieldId = null;
-            if (self.context.type_store.getKind(vty) == .Struct) {
-                const srow = self.context.type_store.get(.Struct, vty);
-                idx_by_name = self.context.type_store.field_pool.slice(srow.fields);
-            }
+            const fields = a.pats.field_pool.slice(a.pats.get(.Struct, pid).fields);
+            const idx_by_name = if (self.context.type_store.getKind(vty) == .Struct) self.context.type_store.field_pool.slice(self.context.type_store.get(.Struct, vty).fields) else null;
+
             for (fields) |fid| {
                 const pf = a.pats.StructField.get(fid);
-                // Determine field type and extraction method
                 var fty = self.context.type_store.tAny();
                 var extracted: tir.ValueId = undefined;
+
                 if (idx_by_name) |field_ids| {
-                    // scan for matching name
                     var found = false;
-                    var j: usize = 0;
-                    while (j < field_ids.len) : (j += 1) {
-                        const stf = self.context.type_store.Field.get(field_ids[j]);
+                    for (field_ids, 0..) |f_id, j| {
+                        const stf = self.context.type_store.Field.get(f_id);
                         if (stf.name.eq(pf.name)) {
                             fty = stf.ty;
                             extracted = blk.builder.extractField(blk, fty, value, @intCast(j), loc);
@@ -5811,24 +4715,17 @@ fn destructureDeclPattern(self: *LowerTir, a: *ast.Ast, env: *cf.Env, f: *Builde
                             break;
                         }
                     }
-                    if (!found) {
-                        // name not present on this struct type; bind undef of Any
-                        extracted = self.safeUndef(blk, fty, loc);
-                    }
+                    if (!found) extracted = self.safeUndef(blk, fty, loc);
                 } else {
-                    // Unknown layout; fall back to by-name extraction in IR
                     extracted = blk.builder.extractFieldNamed(blk, fty, value, pf.name, loc);
                 }
                 try self.destructureDeclPattern(a, env, f, blk, pf.pattern, extracted, fty, to_slots);
             }
         },
-        else => {
-            // Patterns not yet supported for declarations are ignored for now.
-        },
+        else => {},
     }
 }
 
-// Prefer destructuring directly from the source expression when available (avoids building temp tuples).
 /// When the RHS is a tuple literal, destructure its elements directly into the pattern.
 fn destructureDeclFromTupleLit(
     self: *LowerTir,
@@ -5842,27 +4739,19 @@ fn destructureDeclFromTupleLit(
     vty: types.TypeId,
     to_slots: bool,
 ) anyerror!void {
-    const row = a.pats.get(.Tuple, pid);
-    const elems_pat = a.pats.pat_pool.slice(row.elems);
-    const elr = a.exprs.get(.TupleLit, src_expr);
-    const elems_expr = a.exprs.expr_pool.slice(elr.elems);
-    var etys: []const types.TypeId = &[_]types.TypeId{};
-    if (self.context.type_store.getKind(vty) == .Tuple) {
-        const vrow = self.context.type_store.get(.Tuple, vty);
-        etys = self.context.type_store.type_pool.slice(vrow.elems);
-    }
-    const n = @min(elems_pat.len, elems_expr.len);
+    const elems_pat = a.pats.pat_pool.slice(a.pats.get(.Tuple, pid).elems);
+    const elems_expr = a.exprs.expr_pool.slice(a.exprs.get(.TupleLit, src_expr).elems);
+    const etys = if (self.context.type_store.getKind(vty) == .Tuple) self.context.type_store.type_pool.slice(self.context.type_store.get(.Tuple, vty).elems) else &[_]types.TypeId{};
+
     var i: usize = 0;
+    const n = @min(elems_pat.len, elems_expr.len);
     while (i < n) : (i += 1) {
         const ety = if (i < etys.len) etys[i] else self.context.type_store.tAny();
         try self.destructureDeclFromExpr(ctx, a, env, f, blk, elems_pat[i], elems_expr[i], ety, to_slots);
     }
-    // If pattern has more elements than expr, fill remaining with undef of element type.
     while (i < elems_pat.len) : (i += 1) {
         const ety = if (i < etys.len) etys[i] else self.context.type_store.tAny();
-        const elem_loc = optLoc(a, elems_pat[i]);
-        const uv = self.safeUndef(blk, ety, elem_loc);
-        try self.destructureDeclPattern(a, env, f, blk, elems_pat[i], uv, ety, to_slots);
+        try self.destructureDeclPattern(a, env, f, blk, elems_pat[i], self.safeUndef(blk, ety, optLoc(a, elems_pat[i])), ety, to_slots);
     }
 }
 
@@ -5879,20 +4768,12 @@ fn destructureDeclFromStructLit(
     vty: types.TypeId,
     to_slots: bool,
 ) !void {
-    const pr = a.pats.get(.Struct, pid);
-    const pfields = a.pats.field_pool.slice(pr.fields);
-    const sr = a.exprs.get(.StructLit, src_expr);
-    const sfields = a.exprs.sfv_pool.slice(sr.fields);
-    // compute field types if known
-    var type_fields: []const types.FieldId = &[_]types.FieldId{};
-    if (self.context.type_store.getKind(vty) == .Struct) {
-        const srow = self.context.type_store.get(.Struct, vty);
-        type_fields = self.context.type_store.field_pool.slice(srow.fields);
-    }
-    // For each pattern field, find matching expr field by name and destructure from its value expr.
+    const pfields = a.pats.field_pool.slice(a.pats.get(.Struct, pid).fields);
+    const sfields = a.exprs.sfv_pool.slice(a.exprs.get(.StructLit, src_expr).fields);
+    const type_fields = if (self.context.type_store.getKind(vty) == .Struct) self.context.type_store.field_pool.slice(self.context.type_store.get(.Struct, vty).fields) else &[_]types.FieldId{};
+
     for (pfields) |pfid| {
         const pf = a.pats.StructField.get(pfid);
-        // find expr field by name
         var val_expr: ?ast.ExprId = null;
         for (sfields) |sfid| {
             const sf = a.exprs.StructFieldValue.get(sfid);
@@ -5901,8 +4782,8 @@ fn destructureDeclFromStructLit(
                 break;
             }
         }
+
         var fty = self.context.type_store.tAny();
-        // find field type by name if known
         for (type_fields) |tfid| {
             const tf = self.context.type_store.Field.get(tfid);
             if (tf.name.eq(pf.name)) {
@@ -5910,14 +4791,8 @@ fn destructureDeclFromStructLit(
                 break;
             }
         }
-        if (val_expr) |ve| {
-            try self.destructureDeclFromExpr(ctx, a, env, f, blk, pf.pattern, ve, fty, to_slots);
-        } else {
-            // missing -> bind undef
-            const field_loc = optLoc(a, pf.pattern);
-            const uv = self.safeUndef(blk, fty, field_loc);
-            try self.destructureDeclPattern(a, env, f, blk, pf.pattern, uv, fty, to_slots);
-        }
+
+        if (val_expr) |ve| try self.destructureDeclFromExpr(ctx, a, env, f, blk, pf.pattern, ve, fty, to_slots) else try self.destructureDeclPattern(a, env, f, blk, pf.pattern, self.safeUndef(blk, fty, optLoc(a, pf.pattern)), fty, to_slots);
     }
 }
 
@@ -5940,153 +4815,115 @@ fn destructureDeclFromExpr(
     const expr_loc = optLoc(a, src_expr);
 
     if (target_kind == .TypeType) {
-        const result_ty = src_ty;
-        const resolved_ty = blk: {
-            if (self.context.type_store.getKind(result_ty) == .TypeType) {
-                const tt = self.context.type_store.get(.TypeType, result_ty);
-                if (!self.isType(tt.of, .Any)) break :blk tt.of;
+        const resolved_ty = blk_res: {
+            if (self.context.type_store.getKind(src_ty) == .TypeType) {
+                const tt = self.context.type_store.get(.TypeType, src_ty);
+                if (!self.isType(tt.of, .Any)) break :blk_res tt.of;
             }
             var cval = try self.getCachedComptimeValue(a, src_expr);
             if (cval) |*computed| {
                 defer computed.destroy(self.gpa);
-                break :blk switch (computed.*) {
-                    .Type => |ty| ty,
-                    else => return error.UnsupportedComptimeType,
-                };
+                if (computed.* == .Type) break :blk_res computed.Type;
             }
             return error.UnsupportedComptimeType;
         };
         const type_ty = self.context.type_store.mkTypeType(resolved_ty);
         try self.noteExprType(ctx, src_expr, type_ty);
-        const placeholder = self.safeUndef(blk, type_ty, expr_loc);
-        try self.destructureDeclPattern(a, env, f, blk, pid, placeholder, type_ty, to_slots);
-        return;
+        return try self.destructureDeclPattern(a, env, f, blk, pid, self.safeUndef(blk, type_ty, expr_loc), type_ty, to_slots);
     }
 
     switch (a.kind(pid)) {
         .Binding => {
-            const guess_ty = src_ty;
-            const expect_ty = if (target_kind == .Any) guess_ty else target_ty;
-            // Ensure type info for source expr before lowering.
             try self.ensureExprTypeStamped(ctx, a, src_expr);
-            var raw = try self.lowerExpr(ctx, a, env, f, blk, src_expr, expect_ty, .rvalue);
-
-            const refined = try self.refineExprType(ctx, a, env, src_expr, self.getExprType(ctx, a, src_expr)) orelse unreachable;
+            var raw = try self.lowerExpr(ctx, a, env, f, blk, src_expr, if (target_kind == .Any) src_ty else target_ty, .rvalue);
+            const refined = (try self.refineExprType(ctx, a, env, src_expr, self.getExprType(ctx, a, src_expr))) orelse unreachable;
             const eff_ty = if (target_kind == .Any and !self.isType(refined, .Any)) refined else target_ty;
-
-            if (!refined.eq(eff_ty)) {
-                raw = self.emitCoerce(blk, raw, refined, eff_ty, expr_loc);
-            }
-
+            if (!refined.eq(eff_ty)) raw = self.emitCoerce(blk, raw, refined, eff_ty, expr_loc);
             return try self.destructureDeclPattern(a, env, f, blk, pid, raw, eff_ty, to_slots);
         },
         .Tuple => {
-            // If RHS is a tuple-literal, lower elements individually to avoid creating a temporary aggregate.
-            if (a.kind(src_expr) == .TupleLit) {
-                const eff_ty = if (target_kind == .Any) src_ty else target_ty;
-                try self.destructureDeclFromTupleLit(ctx, a, env, f, blk, pid, src_expr, eff_ty, to_slots);
-                return;
-            }
-            // Fallback: lower full expr once, then destructure via extracts.
+            if (a.kind(src_expr) == .TupleLit) return try self.destructureDeclFromTupleLit(ctx, a, env, f, blk, pid, src_expr, if (target_kind == .Any) src_ty else target_ty, to_slots);
             const eff_ty = if (target_kind == .Any) src_ty else target_ty;
             const raw = try self.lowerExpr(ctx, a, env, f, blk, src_expr, eff_ty, .rvalue);
             const val = if (!src_ty.eq(eff_ty)) self.emitCoerce(blk, raw, src_ty, eff_ty, expr_loc) else raw;
             return try self.destructureDeclPattern(a, env, f, blk, pid, val, eff_ty, to_slots);
         },
         .Struct => {
-            if (a.kind(src_expr) == .StructLit) {
-                const eff_ty = if (target_kind == .Any) src_ty else target_ty;
-                try self.destructureDeclFromStructLit(ctx, a, env, f, blk, pid, src_expr, eff_ty, to_slots);
-                return;
-            }
-            // fallback: lower whole expr and destructure by field extraction
+            if (a.kind(src_expr) == .StructLit) return try self.destructureDeclFromStructLit(ctx, a, env, f, blk, pid, src_expr, if (target_kind == .Any) src_ty else target_ty, to_slots);
             const eff_ty = if (target_kind == .Any) src_ty else target_ty;
             const raw = try self.lowerExpr(ctx, a, env, f, blk, src_expr, eff_ty, .rvalue);
             const val = if (!src_ty.eq(eff_ty)) self.emitCoerce(blk, raw, src_ty, eff_ty, expr_loc) else raw;
             return try self.destructureDeclPattern(a, env, f, blk, pid, val, eff_ty, to_slots);
         },
         .VariantTuple => {
-            // Handle call-form variant literal: V.C(arg1, arg2, ...)
             const pr = a.pats.get(.VariantTuple, pid);
             const p_segs = a.pats.seg_pool.slice(pr.path);
             const case_name = a.pats.PathSeg.get(p_segs[p_segs.len - 1]).name;
+
             if (a.kind(src_expr) == .Call) {
                 const call = a.exprs.get(.Call, src_expr);
-                // Extract last path segment from callee
-                var callee_last: ?ast.StrId = null;
                 var cur = call.callee;
+                var callee_last: ?ast.StrId = null;
                 while (a.kind(cur) == .FieldAccess) {
                     const fr = a.exprs.get(.FieldAccess, cur);
                     callee_last = fr.field;
                     cur = fr.parent;
                 }
+
                 if (callee_last != null and callee_last.?.eq(case_name)) {
-                    // Use args directly
                     const args = a.exprs.expr_pool.slice(call.args);
                     var elem_tys: []const types.TypeId = &[_]types.TypeId{};
+
                     if (self.context.type_store.getKind(vty) == .Variant) {
-                        const V = self.context.type_store.get(.Variant, vty);
-                        const fields = self.context.type_store.field_pool.slice(V.variants);
-                        var j: usize = 0;
-                        while (j < fields.len) : (j += 1) {
-                            const fld = self.context.type_store.Field.get(fields[j]);
+                        const fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, vty).variants);
+                        for (fields) |fid| {
+                            const fld = self.context.type_store.Field.get(fid);
                             if (fld.name.eq(case_name) and self.context.type_store.getKind(fld.ty) == .Tuple) {
-                                const tr = self.context.type_store.get(.Tuple, fld.ty);
-                                elem_tys = self.context.type_store.type_pool.slice(tr.elems);
+                                elem_tys = self.context.type_store.type_pool.slice(self.context.type_store.get(.Tuple, fld.ty).elems);
                                 break;
                             }
                         }
                     }
+
                     const pelems = a.pats.pat_pool.slice(pr.elems);
                     var i: usize = 0;
                     const n = @min(pelems.len, args.len);
                     while (i < n) : (i += 1) {
-                        const ety = if (i < elem_tys.len) elem_tys[i] else self.context.type_store.tAny();
-                        try self.destructureDeclFromExpr(ctx, a, env, f, blk, pelems[i], args[i], ety, to_slots);
+                        try self.destructureDeclFromExpr(ctx, a, env, f, blk, pelems[i], args[i], if (i < elem_tys.len) elem_tys[i] else self.context.type_store.tAny(), to_slots);
                     }
                     while (i < pelems.len) : (i += 1) {
                         const ety = if (i < elem_tys.len) elem_tys[i] else self.context.type_store.tAny();
-                        const elem_loc = optLoc(a, pelems[i]);
-                        const uv = self.safeUndef(blk, ety, elem_loc);
-                        try self.destructureDeclPattern(a, env, f, blk, pelems[i], uv, ety, to_slots);
+                        try self.destructureDeclPattern(a, env, f, blk, pelems[i], self.safeUndef(blk, ety, optLoc(a, pelems[i])), ety, to_slots);
                     }
                     return;
                 }
             }
-            // Fallback: cannot extract from a non-literal variant without dedicated ops; bind undefs to subpatterns.
+
             const pelems = a.pats.pat_pool.slice(pr.elems);
             var elem_tys: []const types.TypeId = &[_]types.TypeId{};
-            // Try fetch payload tuple element types by case name.
             if (self.context.type_store.getKind(vty) == .Variant) {
-                const V = self.context.type_store.get(.Variant, vty);
-                const fields = self.context.type_store.field_pool.slice(V.variants);
-                var j: usize = 0;
-                while (j < fields.len) : (j += 1) {
-                    const fld = self.context.type_store.Field.get(fields[j]);
+                const fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, vty).variants);
+                for (fields) |fid| {
+                    const fld = self.context.type_store.Field.get(fid);
                     if (fld.name.eq(case_name) and self.context.type_store.getKind(fld.ty) == .Tuple) {
-                        const tr = self.context.type_store.get(.Tuple, fld.ty);
-                        elem_tys = self.context.type_store.type_pool.slice(tr.elems);
+                        elem_tys = self.context.type_store.type_pool.slice(self.context.type_store.get(.Tuple, fld.ty).elems);
                         break;
                     }
                 }
             }
-            var i: usize = 0;
-            while (i < pelems.len) : (i += 1) {
+            for (pelems, 0..) |pelem, i| {
                 const ety = if (i < elem_tys.len) elem_tys[i] else self.context.type_store.tAny();
-                const elem_loc = optLoc(a, pelems[i]);
-                const uv = self.safeUndef(blk, ety, elem_loc);
-                try self.destructureDeclPattern(a, env, f, blk, pelems[i], uv, ety, to_slots);
+                try self.destructureDeclPattern(a, env, f, blk, pelem, self.safeUndef(blk, ety, optLoc(a, pelem)), ety, to_slots);
             }
         },
         .VariantStruct => {
             const pr = a.pats.get(.VariantStruct, pid);
             const segs = a.pats.seg_pool.slice(pr.path);
             const case_name = a.pats.PathSeg.get(segs[segs.len - 1]).name;
-            // Handle struct-literal with typed path: V.C{ ... }
+
             if (a.kind(src_expr) == .StructLit) {
                 const sl = a.exprs.get(.StructLit, src_expr);
                 if (!sl.ty.isNone()) {
-                    // Extract last segment from type path
                     var cur = sl.ty.unwrap();
                     var last_seg: ?ast.StrId = null;
                     while (a.kind(cur) == .FieldAccess) {
@@ -6095,26 +4932,22 @@ fn destructureDeclFromExpr(
                         cur = fr.parent;
                     }
                     if (last_seg != null and last_seg.?.eq(case_name)) {
-                        // Compute field tys for this case if known
                         var field_tys: []const types.FieldId = &[_]types.FieldId{};
                         if (self.context.type_store.getKind(vty) == .Variant) {
-                            const V = self.context.type_store.get(.Variant, vty);
-                            const variants = self.context.type_store.field_pool.slice(V.variants);
-                            var j: usize = 0;
-                            while (j < variants.len) : (j += 1) {
-                                const vf = self.context.type_store.Field.get(variants[j]);
+                            const variants = self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, vty).variants);
+                            for (variants) |fid| {
+                                const vf = self.context.type_store.Field.get(fid);
                                 if (vf.name.eq(case_name) and self.context.type_store.getKind(vf.ty) == .Struct) {
-                                    const sr = self.context.type_store.get(.Struct, vf.ty);
-                                    field_tys = self.context.type_store.field_pool.slice(sr.fields);
+                                    field_tys = self.context.type_store.field_pool.slice(self.context.type_store.get(.Struct, vf.ty).fields);
                                     break;
                                 }
                             }
                         }
+
                         const pfields = a.pats.field_pool.slice(pr.fields);
                         const sfields = a.exprs.sfv_pool.slice(sl.fields);
                         for (pfields) |pfid| {
                             const pf = a.pats.StructField.get(pfid);
-                            // find matching expr field by name
                             var val_expr: ?ast.ExprId = null;
                             for (sfields) |sfid| {
                                 const sf = a.exprs.StructFieldValue.get(sfid);
@@ -6124,7 +4957,6 @@ fn destructureDeclFromExpr(
                                 }
                             }
                             var fty = self.context.type_store.tAny();
-                            // lookup field type by name
                             for (field_tys) |tfid| {
                                 const tf = self.context.type_store.Field.get(tfid);
                                 if (tf.name.eq(pf.name)) {
@@ -6132,29 +4964,19 @@ fn destructureDeclFromExpr(
                                     break;
                                 }
                             }
-                            if (val_expr) |ve2| {
-                                try self.destructureDeclFromExpr(ctx, a, env, f, blk, pf.pattern, ve2, fty, to_slots);
-                            } else {
-                                const field_loc = optLoc(a, pf.pattern);
-                                const uv = self.safeUndef(blk, fty, field_loc);
-                                try self.destructureDeclPattern(a, env, f, blk, pf.pattern, uv, fty, to_slots);
-                            }
+                            if (val_expr) |ve| try self.destructureDeclFromExpr(ctx, a, env, f, blk, pf.pattern, ve, fty, to_slots) else try self.destructureDeclPattern(a, env, f, blk, pf.pattern, self.safeUndef(blk, fty, optLoc(a, pf.pattern)), fty, to_slots);
                         }
                         return;
                     }
                 }
             }
-            // Fallback: cannot extract; bind undefs to subpatterns.
             const pfields = a.pats.field_pool.slice(pr.fields);
             for (pfields) |pfid| {
                 const pf = a.pats.StructField.get(pfid);
-                const field_loc = optLoc(a, pf.pattern);
-                const uv = self.safeUndef(blk, self.context.type_store.tAny(), field_loc);
-                try self.destructureDeclPattern(a, env, f, blk, pf.pattern, uv, self.context.type_store.tAny(), to_slots);
+                try self.destructureDeclPattern(a, env, f, blk, pf.pattern, self.safeUndef(blk, self.context.type_store.tAny(), optLoc(a, pf.pattern)), self.context.type_store.tAny(), to_slots);
             }
         },
         else => {
-            // Default: lower entire expr and bind.
             const val = try self.lowerExpr(ctx, a, env, f, blk, src_expr, vty, .rvalue);
             return try self.destructureDeclPattern(a, env, f, blk, pid, val, vty, to_slots);
         },
@@ -6165,23 +4987,17 @@ fn destructureDeclFromExpr(
 pub fn tagIndexForCase(self: *const LowerTir, case_ty: types.TypeId, name: StrId) ?u32 {
     const k = self.context.type_store.getKind(case_ty);
     if (k != .Variant and k != .Error) return null;
-    const fields = if (k == .Variant)
-        self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, case_ty).variants)
-    else
-        self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, case_ty).variants);
+    const fields = if (k == .Variant) self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, case_ty).variants) else self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, case_ty).variants);
     for (fields, 0..) |fid, i| {
-        const frow = self.context.type_store.Field.get(fid);
-        if (frow.name.eq(name)) return @intCast(i);
+        if (self.context.type_store.Field.get(fid).name.eq(name)) return @intCast(i);
     }
     return null;
 }
 
 /// Return the numeric value assigned to enum member `name`, or null if missing.
 pub fn enumMemberValue(self: *const LowerTir, enum_ty: types.TypeId, name: StrId) ?i64 {
-    const k = self.context.type_store.getKind(enum_ty);
-    if (k != .Enum) return null;
-    const er = self.context.type_store.get(.Enum, enum_ty);
-    const members = self.context.type_store.enum_member_pool.slice(er.members);
+    if (self.context.type_store.getKind(enum_ty) != .Enum) return null;
+    const members = self.context.type_store.enum_member_pool.slice(self.context.type_store.get(.Enum, enum_ty).members);
     for (members) |mid| {
         const m = self.context.type_store.EnumMember.get(mid);
         if (m.name.eq(name)) return @intCast(m.value);
@@ -6190,16 +5006,8 @@ pub fn enumMemberValue(self: *const LowerTir, enum_ty: types.TypeId, name: StrId
 }
 
 /// Ensure `cond` is defined in `blk` and is i1.
-/// This always emits a local SSA (CastNormal) in `blk`, even if the source is already a bool.
-pub fn forceLocalCond(
-    self: *LowerTir,
-    blk: *Builder.BlockFrame,
-    cond: tir.ValueId,
-    loc: tir.OptLocId,
-) tir.ValueId {
-    const tBool = self.context.type_store.tBool();
-    // Emit a bitcast to anchor `cond` in this block without changing its representation.
-    return blk.builder.tirValue(.CastBit, blk, tBool, loc, .{ .value = cond });
+pub fn forceLocalCond(self: *LowerTir, blk: *Builder.BlockFrame, cond: tir.ValueId, loc: tir.OptLocId) tir.ValueId {
+    return blk.builder.tirValue(.CastBit, blk, self.context.type_store.tBool(), loc, .{ .value = cond });
 }
 
 /// Return true when `ty` represents either a variant or error type.
@@ -6208,9 +5016,7 @@ fn isVariantLike(self: *const LowerTir, ty: types.TypeId) bool {
     return k == .Variant or k == .Error;
 }
 
-/// If `expr` is a tag literal like `MyErr.NotFound` (i.e. a field access on a
-/// TypeType whose `.of` is Variant or Error) return the variant/error type and
-/// the resolved tag index. Only returns for void-payload cases (constructorless).
+/// If `expr` is a tag literal like `MyErr.NotFound` return the variant/error type and resolved tag index.
 fn tagConstFromTypePath(
     self: *const LowerTir,
     ctx: *LowerContext,
@@ -6226,17 +5032,11 @@ fn tagConstFromTypePath(
     const of_kind = self.context.type_store.getKind(of_ty);
     if (of_kind != .Variant and of_kind != .Error) return null;
 
-    // We rely on the checker to have resolved the field index.
     const idx = a.type_info.getFieldIndex(expr) orelse return null;
+    const fields = if (of_kind == .Variant) self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, of_ty).variants) else self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, of_ty).variants);
 
-    // Only treat it as a pure tag literal if that case has void payload.
-    const fields = if (of_kind == .Variant)
-        self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, of_ty).variants)
-    else
-        self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, of_ty).variants);
     if (idx >= fields.len) return null;
-    const payload_ty = self.context.type_store.Field.get(fields[idx]).ty;
-    if (self.context.type_store.getKind(payload_ty) != .Void) return null;
+    if (self.context.type_store.getKind(self.context.type_store.Field.get(fields[idx]).ty) != .Void) return null;
 
     return .{ .of_ty = of_ty, .tag_idx = @intCast(idx) };
 }
@@ -6244,14 +5044,10 @@ fn tagConstFromTypePath(
 /// Reapply a snapshot of symbol bindings (e.g., after destructuring) in reverse order.
 pub fn restoreBindings(self: *LowerTir, env: *cf.Env, saved: []const EnvBindingSnapshot) !void {
     var i: usize = saved.len;
-    while (i > 0) : (i -= 1) {
-        const entry = saved[i - 1];
-        try env.restoreBinding(self.gpa, entry.name, entry.prev);
-    }
+    while (i > 0) : (i -= 1) try env.restoreBinding(self.gpa, saved[i - 1].name, saved[i - 1].prev);
 }
 
-/// Restore the binding environment to the snapshot in `saved`, dropping names that
-/// were introduced after the snapshot was taken.
+/// Restore the binding environment to the snapshot in `saved`, dropping new names.
 pub fn restoreEnvSnapshot(
     self: *LowerTir,
     env: *cf.Env,
@@ -6259,24 +5055,15 @@ pub fn restoreEnvSnapshot(
     scratch_names: *std.ArrayList(ast.StrId),
 ) !void {
     scratch_names.clearRetainingCapacity();
-
-    // Collect bindings that were not present in the saved snapshot.
     var it = env.map.iterator();
     while (it.next()) |entry| {
-        const name = entry.key_ptr.*;
         var found = false;
-        for (saved) |snap| {
-            if (snap.name.toRaw() == name.toRaw()) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) try scratch_names.append(self.gpa, name);
+        for (saved) |snap| if (snap.name.toRaw() == entry.key_ptr.toRaw()) {
+            found = true;
+            break;
+        };
+        if (!found) try scratch_names.append(self.gpa, entry.key_ptr.*);
     }
-
-    // Remove bindings introduced after the snapshot and restore prior bindings.
-    for (scratch_names.items) |name| {
-        _ = env.map.swapRemove(name);
-    }
+    for (scratch_names.items) |name| _ = env.map.swapRemove(name);
     try self.restoreBindings(env, saved);
 }

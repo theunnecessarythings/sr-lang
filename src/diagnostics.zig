@@ -5,133 +5,105 @@ const Context = @import("compile.zig").Context;
 const BinaryOp = @import("ast.zig").BinaryOp;
 const UnaryOp = @import("ast.zig").UnaryOp;
 const ast = @import("ast.zig");
-
-/// Context used while formatting diagnostics to look up type names and interned strings.
-pub const DiagnosticContext = struct {
-    /// Type store used to print SR types referenced in diagnostics.
-    type_store: *types.TypeStore,
-    /// String interner used to resolve identifiers within messages.
-    str_interner: *types.StringInterner,
-    /// Allocator used for temporary diagnostic buffers.
-    gpa: std.mem.Allocator,
-};
 const types = @import("types.zig");
 const TypeKind = types.TypeKind;
 
-/// Severity level for diagnostics emitted by the compiler.
-pub const Severity = enum {
-    /// Reported error that stops compilation.
-    err,
-    /// Warning that does not halt compilation.
-    warning,
-    /// Supplemental note attached to another diagnostic.
-    note,
+fn oom() noreturn {
+    @branchHint(.cold);
+    @panic("OOM");
+}
+
+pub const DiagnosticContext = struct {
+    type_store: *types.TypeStore,
+    str_interner: *types.StringInterner,
+    gpa: std.mem.Allocator,
 };
 
-/// Build a synthetic enum type that can tag all payload sources used in diagnostics.
-fn payloadTag() type {
-    // combine Tag enum BinOp enum and UnOp enum into one
-    const tag_fields = std.meta.fields(Tag);
-    const binop_fields = std.meta.fields(BinaryOp);
-    const unop_fields = std.meta.fields(UnaryOp);
-    const type_kind_fields = std.meta.fields(TypeKind);
-    const fields = tag_fields ++ binop_fields ++ unop_fields ++ type_kind_fields;
+pub const Severity = enum { err, warning, note };
 
-    var enum_fields: [fields.len]std.builtin.Type.EnumField = undefined;
-    var decls = [_]std.builtin.Type.Declaration{};
-    inline for (fields, 0..) |field, i| {
-        enum_fields[i] = .{
-            .name = field.name,
-            .value = i,
-        };
-    }
+// --- Payload Tagging Optimization ---
+const TagCount = std.meta.fields(Tag).len;
+const BinOpCount = std.meta.fields(BinaryOp).len;
+const UnOpCount = std.meta.fields(UnaryOp).len;
+const TypeKindCount = std.meta.fields(TypeKind).len;
+
+fn payloadTag() type {
+    const total_fields = TagCount + BinOpCount + UnOpCount + TypeKindCount;
     return @Type(.{
         .@"enum" = .{
-            .tag_type = std.math.IntFittingRange(0, fields.len - 1),
-            .fields = &enum_fields,
-            .decls = &decls,
+            .tag_type = std.math.IntFittingRange(0, total_fields - 1),
+            .fields = &generateFields(total_fields),
+            .decls = &.{},
             .is_exhaustive = true,
         },
     });
 }
 
+fn generateFields(comptime N: usize) [N]std.builtin.Type.EnumField {
+    var fields: [N]std.builtin.Type.EnumField = undefined;
+    const all_source_fields = std.meta.fields(Tag) ++ std.meta.fields(BinaryOp) ++ std.meta.fields(UnaryOp) ++ std.meta.fields(TypeKind);
+    inline for (all_source_fields, 0..) |f, i| {
+        fields[i] = .{ .name = f.name, .value = i };
+    }
+    return fields;
+}
+
 const PayloadTag = payloadTag();
 
-/// Map an AST/lexer enum value into the unified `PayloadTag` range.
 fn convertToPayloadTag(value: anytype) PayloadTag {
-    const tag_field_count = std.meta.fields(Tag).len;
-    const binop_field_count = std.meta.fields(BinaryOp).len;
-    const unop_field_count = std.meta.fields(UnaryOp).len;
-    const int_value = @intFromEnum(value);
+    const val = @intFromEnum(value);
     switch (@TypeOf(value)) {
-        Tag => return @enumFromInt(int_value),
-        BinaryOp => return @enumFromInt(int_value + tag_field_count),
-        UnaryOp => return @enumFromInt(int_value + tag_field_count + binop_field_count),
-        TypeKind => return @enumFromInt(int_value + tag_field_count + binop_field_count + unop_field_count),
+        Tag => return @enumFromInt(val),
+        BinaryOp => return @enumFromInt(val + TagCount),
+        UnaryOp => return @enumFromInt(val + TagCount + BinOpCount),
+        TypeKind => return @enumFromInt(val + TagCount + BinOpCount + UnOpCount),
         else => @compileError("Unsupported type for PayloadTag"),
     }
 }
 
-/// Payload attached to a diagnostic for formatting context-specific information.
 const MessagePayload = union(enum) {
-    /// No payload attached to the diagnostic.
     none,
-    /// Raw string slice appended directly into the diagnostic text.
     string: []const u8,
-    /// Single tag (e.g., found token or operator).
     one: struct { a: PayloadTag },
-    /// Two tags when diagnostics compare two tokens or kinds.
     two: struct { a: PayloadTag, b: PayloadTag },
-    /// Three tags when more context is needed (e.g., binary op + operands).
     three: struct { a: PayloadTag, b: PayloadTag, c: PayloadTag },
-    /// Identifier reference stored as an interned string ID.
     str_id: ast.StrId,
-    /// Type reference stored as a `TypeId`.
     type_id: types.TypeId,
-    /// Pair of type IDs for expected vs. found comparisons.
     two_type_ids: struct { a: types.TypeId, b: types.TypeId },
-    /// Integer literal payload.
     integer: i64,
-    /// Two integers, useful for ranges or mismatched sizes.
     two_integers: struct { a: i64, b: i64 },
-    /// String plus type, used when a name and type are both mentioned.
     string_and_type: struct { s: ast.StrId, t: types.TypeId },
-    /// Two strings plus a type, used for more detailed templates.
     two_strings_and_type: struct { s1: ast.StrId, s2: ast.StrId, t: types.TypeId },
 };
 
-/// Enumerates every diagnostic emitted by the compiler with optional payload hints.
 pub const DiagnosticCode = enum {
-    // Lexer / parser level
-    unexpected_token, // payload: one (found)
-    unexpected_closing_delimiter, // payload: one (found)
-    mismatched_closing_delimiter, // payload: two (expected, found)
-    expected_identifier, // payload: one (found)
-    expected_expression_after_operator, // payload: one (operator)
-    expected_type_in_declaration, // payload: one (found)
-    expected_field_name_or_index, // payload: one (found)
-    expected_closure_param_separator, // payload: one (found)
-    expected_loop_after_label, // payload: one (found)
-    unexpected_postfix_operator, // payload: one (operator)
-    unexpected_token_in_expression, // payload: one (found)
-    invalid_float_literal, // payload: one (offending token)
-    invalid_integer_literal, // payload: one (offending token)
-    invalid_imaginary_literal, // payload: one (offending token)
-    expected_attribute_name, // payload: one (found)
-    expected_map_type_or_literal_continuation, // payload: one (found)
-    expected_array_like_continuation, // payload: one (found)
-    expected_attribute_value, // payload: one (found)
-    expected_extern_async_function, // payload: one (found)
-    expected_extern_declaration, // payload: one (found)
-    expected_parameter_type_or_end, // payload: one (found)
-    invalid_import_operand, // payload: one (found)
-    import_not_found, // payload: one (path)
+    unexpected_token,
+    unexpected_closing_delimiter,
+    mismatched_closing_delimiter,
+    expected_identifier,
+    expected_expression_after_operator,
+    expected_type_in_declaration,
+    expected_field_name_or_index,
+    expected_closure_param_separator,
+    expected_loop_after_label,
+    unexpected_postfix_operator,
+    unexpected_token_in_expression,
+    invalid_float_literal,
+    invalid_integer_literal,
+    invalid_imaginary_literal,
+    expected_attribute_name,
+    expected_map_type_or_literal_continuation,
+    expected_array_like_continuation,
+    expected_attribute_value,
+    expected_extern_async_function,
+    expected_extern_declaration,
+    expected_parameter_type_or_end,
+    invalid_import_operand,
+    import_not_found,
     invalid_package_name,
-
-    // Pattern / matching
-    token_cannot_start_pattern, // payload: one (found)
-    unexpected_token_in_pattern, // payload: one (found)
-    invalid_binding_name_in_at_pattern, // payload: one (found)
+    token_cannot_start_pattern,
+    unexpected_token_in_pattern,
+    invalid_binding_name_in_at_pattern,
     underscore_not_const_in_range_pattern,
     left_side_not_const_like_in_range_pattern,
     descending_range_pattern,
@@ -143,8 +115,6 @@ pub const DiagnosticCode = enum {
     empty_path_pattern,
     unknown_type_in_path,
     unsupported_pattern_type,
-
-    // Type/form checking
     tensor_missing_arguments,
     tensor_missing_element_type,
     tensor_dimension_not_integer_literal,
@@ -160,7 +130,7 @@ pub const DiagnosticCode = enum {
     cannot_infer_type_from_empty_array,
     cannot_infer_type_from_null,
     cannot_infer_range_type,
-    could_not_resolve_type, // payload: one (offending token)
+    could_not_resolve_type,
     map_wrong_key_type,
     map_mixed_key_types,
     map_mixed_value_types,
@@ -168,20 +138,16 @@ pub const DiagnosticCode = enum {
     type_value_mismatch,
     type_annotation_mismatch,
     mlir_block_not_a_type,
-
-    // Casts / conversions
     cast_target_not_type,
-    invalid_cast, // broad catch-all (left for back-compat)
+    invalid_cast,
     invalid_checked_cast,
     invalid_bitcast,
     bitcast_non_numeric_or_pointer,
     bitcast_target_non_numeric_or_pointer,
     numeric_cast_on_non_numeric,
     bitcast_size_unknown,
-
-    // Operators / expressions
-    invalid_binary_op_operands, // payload: three (op, lhs token, rhs token)
-    invalid_unary_op_operand, // payload: two (op, operand token)
+    invalid_binary_op_operands,
+    invalid_unary_op_operand,
     division_by_zero,
     in_operator_not_supported,
     non_boolean_condition,
@@ -200,33 +166,25 @@ pub const DiagnosticCode = enum {
     loop_break_value_type_conflict,
     assignment_type_mismatch,
     unreachable_code_after_break,
-
-    // Async/await
     await_non_async,
     await_type_mismatch,
     await_outside_async_context,
-
-    // Values / indexing / fields
     field_access_on_non_aggregate,
-    invalid_struct_field_index, // payload: one (found)
+    invalid_struct_field_index,
     non_integer_index,
     await_on_non_future,
     not_indexable,
-    invalid_index_type, // payload: one (found)
-
-    // Types
-    identifier_not_type, // payload: one (name)
-    expected_array_type, // payload: one (found)
+    invalid_index_type,
+    identifier_not_type,
+    expected_array_type,
     expected_tensor_type,
-    expected_map_type, // payload: one (found)
-    expected_struct_type, // payload: one (found)
-    expected_enum_type, // payload: one (found)
-    expected_tuple_type, // payload: one (found)
-    expected_pointer_type, // payload: one (found)
-    expected_integer_type, // payload: one (found)
-    expected_float_type, // payload: one (found)
-
-    // Methods
+    expected_map_type,
+    expected_struct_type,
+    expected_enum_type,
+    expected_tuple_type,
+    expected_pointer_type,
+    expected_integer_type,
+    expected_float_type,
     method_requires_function_value,
     method_requires_self_parameter,
     method_self_must_be_binding,
@@ -234,12 +192,10 @@ pub const DiagnosticCode = enum {
     method_self_type_mismatch,
     method_owner_not_struct,
     method_invalid_owner_path,
-    duplicate_method_on_type, // payload: one (method name)
+    duplicate_method_on_type,
     method_receiver_requires_pointer,
     method_receiver_requires_value,
     method_receiver_not_addressable,
-
-    // Decls / control flow
     checker_insert_not_expanded,
     checker_comptime_not_executed,
     checker_code_block_not_executed,
@@ -253,8 +209,6 @@ pub const DiagnosticCode = enum {
     errdefer_outside_function,
     errdefer_in_non_error_function,
     nested_function_not_allowed,
-
-    // Structs/tuples/enums/unions
     duplicate_field,
     duplicate_enum_field,
     enum_discriminant_not_integer,
@@ -270,8 +224,6 @@ pub const DiagnosticCode = enum {
     unknown_tuple_field,
     expected_pattern_on_decl_lhs,
     missing_field_name_in_struct_literal,
-
-    // Variants
     unknown_enum_tag,
     unknown_variant_tag,
     enum_tag_type_mismatch,
@@ -279,15 +231,11 @@ pub const DiagnosticCode = enum {
     variant_payload_field_mismatch,
     variant_payload_field_type_mismatch,
     variant_payload_field_requires_non_null,
-
-    // Unions
     union_literal_multiple_fields,
     union_field_type_mismatch,
     unknown_union_field,
     union_empty_literal,
     union_field_requires_non_null,
-
-    // Errors / optionals / purity
     unknown_error_tag,
     error_assigned_to_non_error_union,
     invalid_use_of_orelse_on_non_optional,
@@ -300,46 +248,34 @@ pub const DiagnosticCode = enum {
     purity_violation,
     struct_field_requires_non_null,
     assign_null_to_non_optional,
-
-    // Pointers
     pointer_type_mismatch,
     deref_non_pointer,
     pointer_constness_violation,
     slice_constness_violation,
-
-    // Calls
     wrong_arity_in_call,
     argument_type_mismatch,
     call_non_callable,
     argument_count_mismatch,
     null_to_non_optional_param,
-
-    // Names
     undefined_identifier,
     unknown_function,
-
-    // New, more specific variants for common vague errors (opt-in)
-    unexpected_after_expression, // payload: one (found)
-    expected_comma_or_rparen, // payload: one (found)
-    expected_colon_or_comma_in_param, // payload: one (found)
-
+    unexpected_after_expression,
+    expected_comma_or_rparen,
+    expected_colon_or_comma_in_param,
     mlir_verification_failed,
     mlir_parse_error,
     mlir_splice_unknown_identifier,
     mlir_splice_not_comptime,
     mlir_splice_unbound,
     mlir_operation_missing_result_type,
-
     comptime_type_not_supported,
     package_missing_declaration,
     entry_package_missing,
     entry_package_not_main,
     checker_internal_error,
-    // TIR lowering (temporary diagnostics for debugging)
     tir_lowering_failed,
     tir_variant_tag_not_found,
     tir_codegen_missing_operand,
-    // Module/import cycles
     import_cycle_detected,
     imports_blocked_by_cycle,
     unused_function,
@@ -347,29 +283,8 @@ pub const DiagnosticCode = enum {
     unused_variable,
 };
 
-/// Concatenate `items` with `sep` joining them, allocating via `allocator`.
-pub fn joinStrings(allocator: std.mem.Allocator, sep: []const u8, items: []const []const u8) ![]const u8 {
-    if (items.len == 0) return try allocator.alloc(u8, 0);
-    var total_len: usize = sep.len * (items.len - 1);
-    for (items) |item| total_len += item.len;
-
-    var buffer = try allocator.alloc(u8, total_len);
-    var offset: usize = 0;
-    for (items, 0..) |item, idx| {
-        if (idx != 0 and sep.len > 0) {
-            std.mem.copyForwards(u8, buffer[offset .. offset + sep.len], sep);
-            offset += sep.len;
-        }
-        std.mem.copyForwards(u8, buffer[offset .. offset + item.len], item);
-        offset += item.len;
-    }
-    return buffer[0..buffer.len];
-}
-
-/// Return the formatting string associated with `code`.
 pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
     return switch (code) {
-        // Lexer / parser level
         .unexpected_token => "expected {s}, found {s}",
         .unexpected_closing_delimiter => "unexpected closing delimiter: {s}",
         .mismatched_closing_delimiter => "mismatched closing delimiter: expected {s}, found {s}",
@@ -394,8 +309,6 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .invalid_import_operand => "invalid import operand; expected string-like path, found {s}",
         .import_not_found => "import not found: '{s}'",
         .invalid_package_name => "invalid package name: '{s}'",
-
-        // Pattern / matching
         .token_cannot_start_pattern => "this token cannot start a pattern: {s}",
         .unexpected_token_in_pattern => "unexpected token in pattern: {s}",
         .invalid_binding_name_in_at_pattern => "only simple identifier paths can be used as binding names in '@' patterns; found {s}",
@@ -410,8 +323,6 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .empty_path_pattern => "empty path pattern",
         .unknown_type_in_path => "unknown type in path pattern: '{s}'",
         .unsupported_pattern_type => "unsupported pattern type: {s}",
-
-        // Type/form checking
         .tensor_missing_arguments => "expected at least one argument to 'tensor', found none",
         .tensor_missing_element_type => "tensor is missing the element type",
         .tensor_dimension_not_integer_literal => "tensor dimension must be integer literal, found {s}",
@@ -434,8 +345,6 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .noreturn_not_storable => "type 'noreturn' cannot be used as a variable or struct field type",
         .type_value_mismatch => "expected a type, found value of type {s}",
         .type_annotation_mismatch => "type mismatch: annotated as {s}, initialized with {s}",
-
-        // Casts / conversions
         .cast_target_not_type => "cast target is not a type",
         .invalid_cast => "invalid cast from {s} to {s}",
         .invalid_checked_cast => "checked cast from {s} to {s} cannot succeed",
@@ -444,8 +353,6 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .bitcast_target_non_numeric_or_pointer => "bitcast target must be numeric or pointer, found {s}",
         .numeric_cast_on_non_numeric => "numeric cast applied to non-numeric type: {s}",
         .bitcast_size_unknown => "cannot determine size for bitcast",
-
-        // Operators / expressions
         .invalid_binary_op_operands => "invalid operands for binary operator '{s}': {s} and {s}",
         .invalid_unary_op_operand => "invalid operand for unary operator '{s}': {s}",
         .division_by_zero => "division by zero",
@@ -466,21 +373,15 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .loop_break_value_type_conflict => "loop break type conflict: {s} vs {s}",
         .assignment_type_mismatch => "assignment type mismatch: variable is {s}, value is {s}",
         .unreachable_code_after_break => "unreachable code after an unconditional break",
-
-        // Async/await
         .await_non_async => "'await' on non-async expression of type {s}",
         .await_type_mismatch => "await type mismatch: expected {s}, found {s}",
         .await_outside_async_context => "'await' used outside of an async context",
-
-        // Values / indexing / fields
         .field_access_on_non_aggregate => "field access on non-aggregate value of type {s}",
         .invalid_struct_field_index => "numeric field access is invalid on a struct; found {s}",
         .not_indexable => "value of type {s} is not indexable",
         .non_integer_index => "array index must be integer, found {s}",
         .await_on_non_future => "cannot 'await' on non-future type {s}",
         .invalid_index_type => "invalid index type: {s}",
-
-        // Types
         .identifier_not_type => "identifier '{s}' is not a type",
         .expected_array_type => "expected array type, found {s}",
         .expected_tensor_type => "expected tensor type, found {s}",
@@ -491,8 +392,6 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .expected_pointer_type => "expected pointer type, found {s}",
         .expected_integer_type => "expected integer type, found {s}",
         .expected_float_type => "expected float type, found {s}",
-
-        // Methods
         .method_requires_function_value => "methods must be defined with a function value",
         .method_requires_self_parameter => "methods must declare a 'self' parameter as the first argument",
         .method_self_must_be_binding => "the first parameter of a method must bind to 'self'",
@@ -504,8 +403,6 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .method_receiver_requires_pointer => "method '{s}' requires a pointer receiver",
         .method_receiver_requires_value => "method '{s}' requires a value receiver",
         .method_receiver_not_addressable => "method '{s}' requires an addressable receiver",
-
-        // Decls / control flow
         .checker_insert_not_expanded => "checker: insert not expanded yet; walking only",
         .checker_comptime_not_executed => "checker: comptime not executed; walking only",
         .checker_code_block_not_executed => "checker: code block not executed; walking only",
@@ -519,8 +416,6 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .errdefer_outside_function => "'errdefer' only valid inside a function",
         .errdefer_in_non_error_function => "'errdefer' only valid in functions returning an error union",
         .nested_function_not_allowed => "function definitions are only allowed at top level",
-
-        // Structs/tuples/enums/unions
         .duplicate_field => "duplicate field '{s}'",
         .duplicate_enum_field => "duplicate enum field '{s}'",
         .enum_discriminant_not_integer => "enum discriminant should be an integer literal",
@@ -536,8 +431,6 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .unknown_module_field => "member `{s}` not found in module/file",
         .expected_pattern_on_decl_lhs => "lhs of decl should be a pattern",
         .missing_field_name_in_struct_literal => "missing field name in struct literal",
-
-        // Variants
         .unknown_enum_tag => "unknown enum tag '{s}'",
         .unknown_variant_tag => "unknown variant tag '{s}'",
         .enum_tag_type_mismatch => "enum tag '{s}' does not belong to enum {s}",
@@ -545,15 +438,11 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .variant_payload_field_mismatch => "variant payload field mismatch: {s}",
         .variant_payload_field_type_mismatch => "variant payload field type mismatch: expected {s}, found {s}",
         .variant_payload_field_requires_non_null => "variant payload field '{s}' requires non-null value",
-
-        // Unions
         .union_literal_multiple_fields => "union literal must specify exactly one field",
         .union_field_type_mismatch => "union field type mismatch: expected {s}, found {s}",
         .unknown_union_field => "unknown union field '{s}'",
         .union_empty_literal => "union literal must specify a field",
         .union_field_requires_non_null => "union field '{s}' requires non-null value",
-
-        // Errors / optionals / purity
         .unknown_error_tag => "unknown error tag '{s}'",
         .error_assigned_to_non_error_union => "cannot assign error {s} to non error-union type {s}",
         .invalid_use_of_orelse_on_non_optional => "'orelse' on non-optional value of type {s}",
@@ -566,29 +455,20 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .purity_violation => "purity violation: {s}",
         .struct_field_requires_non_null => "struct field '{s}' requires non-null value",
         .assign_null_to_non_optional => "cannot assign null to non-optional type {s}",
-
-        // Pointers
         .pointer_type_mismatch => "pointer type mismatch: expected {s}, found {s}",
         .deref_non_pointer => "cannot dereference non-pointer type {s}",
         .pointer_constness_violation => "cannot assign a *const pointer to a mutable * pointer",
         .slice_constness_violation => "cannot assign a []const slice to a mutable [] slice",
-
-        // Calls
         .wrong_arity_in_call => "wrong number of arguments: expected {d}, found {d}",
         .argument_type_mismatch => "expected argument of type {s}, found {s}",
         .call_non_callable => "attempted to call non-callable value of type {s}",
         .argument_count_mismatch => "argument count mismatch: expected {d}, found {d}",
         .null_to_non_optional_param => "null passed to non-optional parameter '{s}'",
-
-        // Names
         .undefined_identifier => "use of undefined identifier '{s}'",
         .unknown_function => "unknown function '{s}'",
-
-        // Specific variants for vague parser situations
         .unexpected_after_expression => "unexpected token after expression: {s}",
         .expected_comma_or_rparen => "expected ',' or ')', found {s}",
         .expected_colon_or_comma_in_param => "expected ':' (type) or ',' (next parameter), found {s}",
-
         .mlir_verification_failed => "MLIR verification failed: {s}",
         .mlir_block_not_a_type => "MLIR block is not a type",
         .mlir_parse_error => "failed to parse inline MLIR block: {s}",
@@ -596,7 +476,6 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .mlir_splice_not_comptime => "'@{s}' must name a comptime value or type",
         .mlir_splice_unbound => "no comptime binding available for '@{s}'",
         .mlir_operation_missing_result_type => "inline MLIR operation must have an explicit result type",
-
         .comptime_type_not_supported => "comptime type not supported",
         .package_missing_declaration => "missing package declaration; expected 'package {s}'",
         .entry_package_missing => "entry modules must declare 'package main'",
@@ -613,88 +492,80 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
     };
 }
 
-/// Codes for supplemental notes attached to diagnostics.
 pub const NoteCode = enum {
-    unexpected_token_here, // no payload
-    expected_identifier_or_keyword, // no payload
-    did_you_mean_equal, // no payload
-    token_cannot_start_expression, // no payload
-    operator_cannot_be_used_here, // no payload
-    expected_field_name_or_index_note, // no payload
-    separate_parameters, // no payload
-    labeled_loops, // no payload
-    use_literal_constant_or_binding, // no payload
-    use_literal_constant_or_simple_binding, // no payload
-    use_single_identifier, // no payload
-    provide_element_type_last, // no payload
-    attribute_names_identifiers_or_keywords, // no payload
-    expected_map_type_or_literal_continuation_note, // no payload
-    expected_array_type_or_literal_continuation, // no payload
-    attribute_values_literals_or_identifiers, // no payload
-    use_extern_async_proc_or_fn, // no payload
-    use_extern_proc_fn_or_type, // no payload
-    use_colon_for_type_or_comma_or_paren, // no payload
-    token_cannot_start_pattern, // no payload
-    // New, more actionable note variants (with lightweight payload)
-    expected_token_note, // payload: one (expected tag)
-    found_token_note, // payload: one (found tag)
-    try_inserting_token, // payload: one (token to insert)
-    this_token_starts_new_stmt, // payload: one (token)
-    // Pattern matching guidance
-    pattern_binding_help, // no payload
-    exhaustiveness_hint, // payload: string (missing cases)
-    checker_insert_not_expanded, // no payload
-    // Critical Priority
-    did_you_mean, // payload: string (suggestion)
-    did_you_mean_field, // payload: string (suggestion)
-    did_you_mean_tag, // payload: string (suggestion)
-    available_fields, // payload: string (list)
-    available_tags, // payload: string (list)
-    add_wildcard, // payload: string (example)
-    missing_fields_list, // payload: string (list)
-    function_signature, // payload: string (signature)
-    try_cast, // payload: string (suggestion)
-    remove_annotation, // payload: none
-    first_defined_here, // payload: location
-    // High Priority
-    expected_return_type, // payload: string (type)
-    constness_explanation, // payload: none
-    try_const, // payload: string (suggestion)
-    search_paths, // payload: string (paths)
-    receiver_explanation, // payload: string (signature)
-    try_address_of, // payload: string (suggestion)
-    make_optional, // payload: string (type)
-    wrong_operator, // payload: string (operator)
-    value_already_present, // payload: none
-    // Medium Priority
-    array_elements_count, // payload: int
-    first_type_mismatch, // payload: location + types
-    add_type_annotation, // payload: string (example)
-    add_else_branch, // payload: none
-    try_else, // payload: string (example)
-    requires_loop_context, // payload: none
-    requires_function_context, // payload: none
-    requires_async_context, // payload: none
-    make_async, // payload: string (example)
-    defer_context_requirement, // payload: none
-    use_defer, // payload: none
-    top_level_only, // payload: none
-    use_closure, // payload: string (example)
-    tuple_size, // payload: int (size)
-    cast_alternatives, // payload: string (suggestions)
-    check_divisor, // payload: none
-    previous_arm_covers, // payload: location
-    // Low Priority
-    prefix_underscore, // payload: none
-    purity_explanation, // payload: string (violation)
-    remove_pure, // payload: none
-    cycle_path, // payload: string (cycle)
-    break_cycle, // payload: none
-
-    mlir_help, // payload: string (link)
-    comptime_limitation, // payload: none
+    unexpected_token_here,
+    expected_identifier_or_keyword,
+    did_you_mean_equal,
+    token_cannot_start_expression,
+    operator_cannot_be_used_here,
+    expected_field_name_or_index_note,
+    separate_parameters,
+    labeled_loops,
+    use_literal_constant_or_binding,
+    use_literal_constant_or_simple_binding,
+    use_single_identifier,
+    provide_element_type_last,
+    attribute_names_identifiers_or_keywords,
+    expected_map_type_or_literal_continuation_note,
+    expected_array_type_or_literal_continuation,
+    attribute_values_literals_or_identifiers,
+    use_extern_async_proc_or_fn,
+    use_extern_proc_fn_or_type,
+    use_colon_for_type_or_comma_or_paren,
+    token_cannot_start_pattern,
+    expected_token_note,
+    found_token_note,
+    try_inserting_token,
+    this_token_starts_new_stmt,
+    pattern_binding_help,
+    exhaustiveness_hint,
+    checker_insert_not_expanded,
+    did_you_mean,
+    did_you_mean_field,
+    did_you_mean_tag,
+    available_fields,
+    available_tags,
+    add_wildcard,
+    missing_fields_list,
+    function_signature,
+    try_cast,
+    remove_annotation,
+    first_defined_here,
+    expected_return_type,
+    constness_explanation,
+    try_const,
+    search_paths,
+    receiver_explanation,
+    try_address_of,
+    make_optional,
+    wrong_operator,
+    value_already_present,
+    array_elements_count,
+    first_type_mismatch,
+    add_type_annotation,
+    add_else_branch,
+    try_else,
+    requires_loop_context,
+    requires_function_context,
+    requires_async_context,
+    make_async,
+    defer_context_requirement,
+    use_defer,
+    top_level_only,
+    use_closure,
+    tuple_size,
+    cast_alternatives,
+    check_divisor,
+    previous_arm_covers,
+    prefix_underscore,
+    purity_explanation,
+    remove_pure,
+    cycle_path,
+    break_cycle,
+    mlir_help,
+    comptime_limitation,
 };
-/// Return the formatting template string for `code`.
+
 pub fn diagnosticNoteFmt(code: NoteCode) []const u8 {
     return switch (code) {
         .unexpected_token_here => "unexpected token here",
@@ -717,16 +588,13 @@ pub fn diagnosticNoteFmt(code: NoteCode) []const u8 {
         .use_extern_proc_fn_or_type => "use 'extern proc', 'extern fn', or 'extern struct/enum/union'",
         .use_colon_for_type_or_comma_or_paren => "use ':' to specify a type, or ',' / ')' to end the parameter",
         .token_cannot_start_pattern => "this token cannot start a pattern here",
-        // New variants (payload-driven)
         .expected_token_note => "expected token: {s}",
         .found_token_note => "found token: {s}",
         .try_inserting_token => "try inserting: {s}",
         .this_token_starts_new_stmt => "this token starts a new statement: {s}",
-        // Pattern matching guidance
         .pattern_binding_help => "all arms of an 'or' pattern must bind the same variables with the same types",
         .exhaustiveness_hint => "missing cases: {s}",
         .checker_insert_not_expanded => "insert expressions are not expanded during type checking",
-        // Critical Priority
         .did_you_mean => "did you mean '{s}'?",
         .did_you_mean_field => "did you mean '{s}'?",
         .did_you_mean_tag => "did you mean '{s}'?",
@@ -738,7 +606,6 @@ pub fn diagnosticNoteFmt(code: NoteCode) []const u8 {
         .try_cast => "try casting explicitly: {s}",
         .remove_annotation => "try removing the type annotation",
         .first_defined_here => "first defined here",
-        // High Priority
         .expected_return_type => "function signature: {s}",
         .constness_explanation => "const pointers cannot be assigned to mutable pointers (would violate const guarantees)",
         .try_const => "try declaring as: {s}",
@@ -748,7 +615,6 @@ pub fn diagnosticNoteFmt(code: NoteCode) []const u8 {
         .make_optional => "try making the type optional: {s}",
         .wrong_operator => "'{s}' is for optional or error types",
         .value_already_present => "value is already present, no need for 'orelse'",
-        // Medium Priority
         .array_elements_count => "array literal has {d} elements",
         .first_type_mismatch => "first element has type {s} (at index 0)",
         .add_type_annotation => "try: {s}",
@@ -766,7 +632,6 @@ pub fn diagnosticNoteFmt(code: NoteCode) []const u8 {
         .cast_alternatives => "consider using: {s}",
         .check_divisor => "if divisor is a runtime value, add a check: if divisor != 0 { ... }",
         .previous_arm_covers => "this case is already covered by a previous arm",
-        // Low Priority
         .prefix_underscore => "prefix with an underscore to indicate it's intentionally unused: `_{s}`",
         .purity_explanation => "purity violation: {s}",
         .remove_pure => "remove 'pure' annotation or make function non-pure",
@@ -777,80 +642,60 @@ pub fn diagnosticNoteFmt(code: NoteCode) []const u8 {
     };
 }
 
-/// Supplementary note attached to a diagnostic, capturing optional location/context.
 pub const Note = struct {
-    /// Optional secondary location.
     loc: ?Loc = null,
-    /// Note code describing the message template.
     code: NoteCode,
-    /// Payload used to interpolate tokens into the note.
     payload: MessagePayload = .none,
+    next_note: u32,
 };
 
-/// Recorded diagnostic message (errors, warnings, notes).
 pub const Message = struct {
-    /// Severity level (error/warning/note).
     severity: Severity,
-    /// Location of the diagnostic.
     loc: Loc,
-    /// Primary diagnostic code.
     code: DiagnosticCode,
-    /// Payload used to format the diagnostic message.
     payload: MessagePayload,
-    /// Attached notes providing extra guidance.
-    notes: std.array_list.Managed(Note),
+    first_note: u32,
 };
 
-/// Central diagnostics collector, thread-safe guard around `Message`.
 pub const Diagnostics = struct {
-    /// Allocator used for message storage.
     allocator: std.mem.Allocator,
-    /// Container of recorded messages.
-    messages: std.array_list.Managed(Message),
-    /// Mutex protecting concurrent access to the container.
+    messages: std.ArrayListUnmanaged(Message) = .{},
+    notes: std.ArrayListUnmanaged(Note) = .{},
     mutex: std.Thread.Mutex = .{},
-    /// Optional type store used when formatting type strings.
     type_store: ?*types.TypeStore = null,
-    /// Optional string interner used for resolving identifiers.
     str_interner: ?*types.StringInterner = null,
 
-    /// Construct a diagnostics collector with optional type/string context.
-    pub fn init(allocator: std.mem.Allocator, type_store: ?*types.TypeStore, str_interner: ?*types.StringInterner) Diagnostics {
-        return .{
-            .allocator = allocator,
-            .messages = .init(allocator),
-            .type_store = type_store,
-            .str_interner = str_interner,
-        };
-    }
+    const NO_NOTE: u32 = 0xFFFFFFFF;
 
-    /// Release all stored messages and their notes.
-    pub fn deinit(self: *Diagnostics) void {
-        for (self.messages.items) |*m| {
-            m.notes.deinit();
+    pub const NoteIter = struct {
+        diags: *Diagnostics,
+        idx: u32,
+
+        pub fn next(self: *NoteIter) ?Note {
+            if (self.idx == NO_NOTE) return null;
+            const note = self.diags.notes.items[self.idx];
+            self.idx = note.next_note;
+            return note;
         }
-        self.messages.deinit();
+    };
+
+    pub fn init(allocator: std.mem.Allocator, type_store: ?*types.TypeStore, str_interner: ?*types.StringInterner) Diagnostics {
+        return .{ .allocator = allocator, .type_store = type_store, .str_interner = str_interner };
     }
 
-    /// Record an error at `loc` with the supplied payload.
+    pub fn deinit(self: *Diagnostics) void {
+        self.messages.deinit(self.allocator);
+        self.notes.deinit(self.allocator);
+    }
+
     pub fn addError(self: *Diagnostics, loc: Loc, comptime code: DiagnosticCode, args: anytype) !void {
         try self.addMessage(.err, loc, code, args);
     }
-
-    /// Record a warning diagnostic.
     pub fn addWarning(self: *Diagnostics, loc: Loc, comptime code: DiagnosticCode, args: anytype) !void {
         try self.addMessage(.warning, loc, code, args);
     }
-
-    /// Record a note-level diagnostic.
     pub fn addNote(self: *Diagnostics, loc: Loc, comptime code: DiagnosticCode, args: anytype) !void {
         try self.addMessage(.note, loc, code, args);
-    }
-
-    /// Convert the anonymous payload `args` into a `MessagePayload`.
-    fn isIntegerType(T: type) bool {
-        const info = @typeInfo(T);
-        return info == .int or info == .comptime_int;
     }
 
     fn payloadFromArgs(args: anytype) MessagePayload {
@@ -859,402 +704,246 @@ pub const Diagnostics = struct {
         if (n == 0) return .none;
         if (n == 1) {
             const f0 = info.fields[0];
-            const T1 = f0.type;
             const v0 = @field(args, f0.name);
-            if (T1 == []const u8) return .{ .string = v0 };
-            if (T1 == ast.StrId) return .{ .str_id = v0 };
-            if (T1 == types.TypeId) return .{ .type_id = v0 };
-            if (@typeInfo(T1) == .int) return .{ .integer = @intCast(v0) };
-
+            if (f0.type == []const u8) return .{ .string = v0 };
+            if (f0.type == ast.StrId) return .{ .str_id = v0 };
+            if (f0.type == types.TypeId) return .{ .type_id = v0 };
+            if (@typeInfo(f0.type) == .int) return .{ .integer = @intCast(v0) };
             return .{ .one = .{ .a = convertToPayloadTag(v0) } };
         } else if (n == 2) {
             const f0 = info.fields[0];
             const f1 = info.fields[1];
-            const T1 = f0.type;
-            const T2 = f1.type;
             const v0 = @field(args, f0.name);
             const v1 = @field(args, f1.name);
-
-            if (T1 == types.TypeId and T2 == types.TypeId)
-                return .{ .two_type_ids = .{ .a = v0, .b = v1 } };
-
-            if (@typeInfo(T1) == .int or @typeInfo(T2) == .int)
-                return .{ .two_integers = .{ .a = @intCast(v0), .b = @intCast(v1) } };
-
-            if (T1 == ast.StrId and T2 == types.TypeId)
-                return .{ .string_and_type = .{ .s = v0, .t = v1 } };
-
-            return .{ .two = .{
-                .a = convertToPayloadTag(v0),
-                .b = convertToPayloadTag(v1),
-            } };
+            if (f0.type == types.TypeId and f1.type == types.TypeId) return .{ .two_type_ids = .{ .a = v0, .b = v1 } };
+            if (@typeInfo(f0.type) == .int or @typeInfo(f1.type) == .int) return .{ .two_integers = .{ .a = @intCast(v0), .b = @intCast(v1) } };
+            if (f0.type == ast.StrId and f1.type == types.TypeId) return .{ .string_and_type = .{ .s = v0, .t = v1 } };
+            return .{ .two = .{ .a = convertToPayloadTag(v0), .b = convertToPayloadTag(v1) } };
         } else if (n == 3) {
             const f0 = info.fields[0];
             const f1 = info.fields[1];
             const f2 = info.fields[2];
-            const T1 = f0.type;
-            const T2 = f1.type;
-            const T3 = f2.type;
             const v0 = @field(args, f0.name);
             const v1 = @field(args, f1.name);
             const v2 = @field(args, f2.name);
-            if (T1 == ast.StrId and T2 == ast.StrId and T3 == types.TypeId)
-                return .{ .two_strings_and_type = .{ .s1 = v0, .s2 = v1, .t = v2 } };
-
-            return .{ .three = .{
-                .a = convertToPayloadTag(v0),
-                .b = convertToPayloadTag(v1),
-                .c = convertToPayloadTag(v2),
-            } };
-        } else {
-            @compileError("Diagnostics.addMessage supports up to 3 payload items (Tag)");
+            if (f0.type == ast.StrId and f1.type == ast.StrId and f2.type == types.TypeId) return .{ .two_strings_and_type = .{ .s1 = v0, .s2 = v1, .t = v2 } };
+            return .{ .three = .{ .a = convertToPayloadTag(v0), .b = convertToPayloadTag(v1), .c = convertToPayloadTag(v2) } };
         }
+        @compileError("Max 3 args");
     }
 
-    /// Internal helper that deduplicates and stores messages with `sev`.
     fn addMessage(self: *Diagnostics, sev: Severity, loc: Loc, comptime code: DiagnosticCode, args: anytype) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
-
-        const info = @typeInfo(@TypeOf(args)).@"struct";
-        const arg_count = info.fields.len;
-        const payload: MessagePayload = if (arg_count == 0) .none else payloadFromArgs(args);
-
-        // De-duplication check
+        const payload = if (@typeInfo(@TypeOf(args)).@"struct".fields.len == 0) .none else payloadFromArgs(args);
+        // dedup
         for (self.messages.items) |m| {
-            if (m.severity == sev and m.code == code and std.meta.eql(m.loc, loc) and std.meta.eql(m.payload, payload)) {
-                return;
-            }
+            if (m.severity == sev and m.code == code and std.meta.eql(m.loc, loc) and std.meta.eql(m.payload, payload)) return;
         }
-
-        const notes: std.array_list.Managed(Note) = .init(self.allocator);
-        try self.messages.append(.{
-            .severity = sev,
-            .loc = loc,
-            .code = code,
-            .payload = payload,
-            .notes = notes,
-        });
+        self.messages.append(self.allocator, .{ .severity = sev, .loc = loc, .code = code, .payload = payload, .first_note = NO_NOTE }) catch oom();
     }
 
-    /// Back-compat: simple attachNote without payload.
-    /// Append a note to message `idx` (no payload).
     pub fn attachNote(self: *Diagnostics, idx: usize, loc: ?Loc, comptime code: NoteCode) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        if (idx >= self.messages.items.len) return;
-        try self.messages.items[idx].notes.append(.{ .loc = loc, .code = code, .payload = .none });
+        try self.attachNoteArgs(idx, loc, code, .{});
     }
 
-    /// New: attach a note with lightweight payload (Tag values)
-    /// Append a note with payload to message `idx`.
     pub fn attachNoteArgs(self: *Diagnostics, idx: usize, loc: ?Loc, comptime code: NoteCode, args: anytype) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (idx >= self.messages.items.len) return;
         const payload = payloadFromArgs(args);
-        try self.messages.items[idx].notes.append(.{ .loc = loc, .code = code, .payload = payload });
+        const note_idx: u32 = @intCast(self.notes.items.len);
+        self.notes.append(self.allocator, .{ .loc = loc, .code = code, .payload = payload, .next_note = NO_NOTE }) catch oom();
+
+        // Append note to the end of the linked list for this message
+        var curr = &self.messages.items[idx].first_note;
+        while (curr.* != NO_NOTE) {
+            curr = &self.notes.items[curr.*].next_note;
+        }
+        curr.* = note_idx;
     }
 
-    /// Return true if any recorded message has error severity.
     pub fn anyErrors(self: *Diagnostics) bool {
         for (self.messages.items) |m| if (m.severity == .err) return true;
         return false;
     }
-
-    /// Return true if any recorded message is a warning.
     pub fn anyWarnings(self: *Diagnostics) bool {
-        for (self.messages.items) |m| if (m.severity == .warn) return true;
+        for (self.messages.items) |m| if (m.severity == .warning) return true;
         return false;
     }
-
-    /// Return the total number of messages tracked.
     pub fn count(self: *Diagnostics) usize {
         return self.messages.items.len;
     }
 
-    /// Format `message` into an owned string, capturing payload values.
+    pub fn joinStrings(allocator: std.mem.Allocator, sep: []const u8, items: []const []const u8) ![]const u8 {
+        if (items.len == 0) return try allocator.alloc(u8, 0);
+        var len: usize = sep.len * (items.len - 1);
+        for (items) |item| len += item.len;
+        const buf = try allocator.alloc(u8, len);
+        var off: usize = 0;
+        for (items, 0..) |item, i| {
+            if (i > 0) {
+                @memcpy(buf[off..][0..sep.len], sep);
+                off += sep.len;
+            }
+            @memcpy(buf[off..][0..item.len], item);
+            off += item.len;
+        }
+        return buf;
+    }
+
+    pub fn noteIterator(self: *Diagnostics, message: Message) NoteIter {
+        return .{ .diags = self, .idx = message.first_note };
+    }
+
     pub fn messageToOwnedSlice(self: *Diagnostics, allocator: std.mem.Allocator, message: Message) ![]u8 {
-        var buffer: std.ArrayList(u8) = .empty;
-        defer buffer.deinit(allocator);
+        var buf = std.ArrayList(u8){};
+        defer buf.deinit(allocator);
         if (self.type_store == null or self.str_interner == null) {
-            // Fallback if context is missing (should not happen in LSP)
-            try buffer.writer(allocator).print("Internal Error: Diagnostic context missing", .{});
-            return buffer.toOwnedSlice(allocator);
+            try buf.writer(allocator).writeAll("Internal Error: Diagnostic context missing");
+            return buf.toOwnedSlice(allocator);
         }
-        const ctx = DiagnosticContext{
-            .type_store = self.type_store.?,
-            .str_interner = self.str_interner.?,
-            .gpa = allocator,
-        };
-        try writeInterpolated(buffer.writer(allocator), diagnosticMessageFmt(message.code), message.payload, ctx);
-        return buffer.toOwnedSlice(allocator);
+        try writeInterpolated(buf.writer(allocator), diagnosticMessageFmt(message.code), message.payload, .{ .type_store = self.type_store.?, .str_interner = self.str_interner.?, .gpa = allocator });
+        return buf.toOwnedSlice(allocator);
     }
 
-    /// Format `note` into an owned string using the current interner/type context.
     pub fn noteToOwnedSlice(self: *Diagnostics, allocator: std.mem.Allocator, note: Note) ![]u8 {
-        var buffer: std.ArrayList(u8) = .empty;
-        defer buffer.deinit(allocator);
+        var buf = std.ArrayList(u8){};
+        defer buf.deinit(allocator);
         if (self.type_store == null or self.str_interner == null) {
-            try buffer.writer(allocator).print("Internal Error: Diagnostic context missing", .{});
-            return buffer.toOwnedSlice(allocator);
+            try buf.writer(allocator).writeAll("Internal Error: Diagnostic context missing");
+            return buf.toOwnedSlice(allocator);
         }
-        const ctx = DiagnosticContext{
-            .type_store = self.type_store.?,
-            .str_interner = self.str_interner.?,
-            .gpa = allocator,
-        };
-        try writeInterpolated(buffer.writer(allocator), diagnosticNoteFmt(note.code), note.payload, ctx);
-        return buffer.toOwnedSlice(allocator);
+        try writeInterpolated(buf.writer(allocator), diagnosticNoteFmt(note.code), note.payload, .{ .type_store = self.type_store.?, .str_interner = self.str_interner.?, .gpa = allocator });
+        return buf.toOwnedSlice(allocator);
     }
 
-    // Pretty-print diagnostics with source excerpt and caret span (unstyled)
-    /// Emit diagnostics using default styling (with color if supported).
     pub fn emit(self: *Diagnostics, context: *Context, writer: anytype) !void {
         try self.emitStyled(context, writer, true);
     }
 
-    // Pretty-print diagnostics Rust-like with optional ANSI colors
-    /// Emit diagnostics with optional ANSI `color`, dumping source snippets/notes.
     pub fn emitStyled(self: *Diagnostics, context: *Context, writer: anytype, color: bool) !void {
-        const diag_ctx = DiagnosticContext{
-            .type_store = context.type_store,
-            .str_interner = context.interner,
-            .gpa = context.gpa,
-        };
-        const max_errors_to_show = 20;
-        var error_count: usize = 0;
-        for (self.messages.items) |m| {
-            if (m.severity == .err) {
-                error_count += 1;
-            }
-        }
-
-        var source_map: std.AutoArrayHashMap(usize, []const u8) = .init(context.gpa);
+        const ctx = DiagnosticContext{ .type_store = context.type_store, .str_interner = context.interner, .gpa = context.gpa };
+        var source_map = std.AutoArrayHashMap(usize, []const u8).init(context.gpa);
         defer source_map.deinit();
 
-        var errors_shown: usize = 0;
         for (self.messages.items) |m| {
-            if (errors_shown >= max_errors_to_show) {
-                // Stop printing after reaching the error limit.
-                // break;
-            }
+            if (m.severity != .err) continue; // Simplification: print errors primarily, can change logic if needed
+            const src = source_map.get(m.loc.file_id) orelse blk: {
+                const d = try context.source_manager.read(m.loc.file_id);
+                try source_map.put(m.loc.file_id, d);
+                break :blk d;
+            };
+            const lc = lineCol(src, m.loc.start);
+            if (color) try writer.print("\x1b[36m", .{});
+            try writer.print("{s}:{d}:{d}: ", .{ context.source_manager.get(m.loc.file_id) orelse "unknown", lc.line + 1, lc.col + 1 });
+            if (color) try writer.print("\x1b[0m", .{});
 
+            const sev_col = switch (m.severity) {
+                .err => "\x1b[31m",
+                .warning => "\x1b[33m",
+                .note => "\x1b[34m",
+            };
             const sev_str = switch (m.severity) {
                 .err => "error",
                 .warning => "warning",
                 .note => "note",
             };
-            const sev_col = switch (m.severity) {
-                .err => Colors.red,
-                .warning => Colors.yellow,
-                .note => Colors.blue,
-            };
-            // Source location
-            const src = source_map.get(m.loc.file_id) orelse blk: {
-                const data = try context.source_manager.read(m.loc.file_id);
-                try source_map.put(m.loc.file_id, data);
-                break :blk data;
-            };
-            const filename = context.source_manager.get(m.loc.file_id) orelse "unknown";
+            if (color) try writer.print("\x1b[1m{s}{s}\x1b[0m\x1b[1m: ", .{ sev_col, sev_str });
+            try writeInterpolated(writer, diagnosticMessageFmt(m.code), m.payload, ctx);
+            if (color) {
+                try writer.print("\x1b[0m\n", .{});
+            } else try writer.writeByte('\n');
 
-            // Location line
-            const lc = lineCol(src, m.loc.start);
-            try writer.print("{s}{s}{s}:{d}:{d}: ", .{
-                if (color) Colors.cyan else "",
-                filename,
-                if (color) Colors.reset else "",
-                lc.line + 1,
-                lc.col + 1,
-            });
-
-            // Header: error[code]: message (with payload)
-            try writer.print("{s}{s}{s}: {s}{s}", .{
-                if (color) Colors.bold else "",
-                if (color) sev_col else "",
-                sev_str,
-                if (color) Colors.reset else "",
-                if (color) Colors.bold else "",
-            });
-            try writeInterpolated(writer, diagnosticMessageFmt(m.code), m.payload, diag_ctx);
-            if (color) try writer.print("{s}", .{Colors.reset});
-
+            const line_slice = src[lc.line_start..lc.line_end];
             const line_no = lc.line + 1;
             const width = digits(line_no);
-            // Gutter spacer
-            // try writer.print("\n {s}{s}▌{s}\n", .{ gutterPad(width), if (color) Colors.cyan else "", if (color) Colors.reset else "" });
-            try writer.print("\n", .{});
-            // Source line
-            const line_slice = src[lc.line_start..lc.line_end];
-            const num_pad = numPad(width, line_no);
-            try writer.print("{s}{d} {s}▌{s} {s}\n", .{ num_pad, line_no, Colors.cyan, Colors.reset, line_slice });
-            // Underline (single-line span)
-            const caret_start = lc.col;
-            const span = if (m.loc.end > m.loc.start and m.loc.end <= lc.line_end) (m.loc.end - m.loc.start) else 1;
-            try writer.print(" {s}{s}▌{s} ", .{ gutterPad(width), Colors.cyan, Colors.reset });
-            var i: usize = 0;
-            while (i < caret_start) : (i += 1) try writer.print(" ", .{});
-            if (color) try writer.print("{s}", .{sev_col});
-            i = 0;
-            while (i < span) : (i += 1) try writer.print("^", .{});
-            if (color) try writer.print("{s}", .{Colors.reset});
-            try writer.print("\n", .{});
+            const pad = if (width > 16) 16 else width;
+            var num_pad: [16]u8 = .{' '} ** 16;
+            const p = if (width > digits(line_no)) width - digits(line_no) else 0;
 
-            // Notes (with optional secondary locations)
-            // Notes (with optional secondary locations)
-            for (m.notes.items) |n| {
+            try writer.print("{s}{d} \x1b[36m▌\x1b[0m {s}\n", .{ num_pad[0..p], line_no, line_slice });
+            try writer.print(" {s}\x1b[36m▌\x1b[0m ", .{num_pad[0..pad]});
+
+            var i: usize = 0;
+            while (i < lc.col) : (i += 1) try writer.writeByte(' ');
+            if (color) try writer.print("{s}", .{sev_col});
+            const span = if (m.loc.end > m.loc.start and m.loc.end <= lc.line_end) (m.loc.end - m.loc.start) else 1;
+            i = 0;
+            while (i < span) : (i += 1) try writer.writeByte('^');
+            if (color) {
+                try writer.print("\x1b[0m\n", .{});
+            } else try writer.writeByte('\n');
+
+            var nid = m.first_note;
+            while (nid != NO_NOTE) {
+                const n = self.notes.items[nid];
+                try writer.print(" {s}= \x1b[34mnote[{s}]\x1b[0m: ", .{ num_pad[0..pad], @tagName(n.code) });
+                try writeInterpolated(writer, diagnosticNoteFmt(n.code), n.payload, ctx);
                 if (n.loc) |nl| {
                     const nlc = lineCol(src, nl.start);
-                    try writer.print(" {s}= {s}note[{s}]{s}: ", .{ gutterPad(width), if (color) Colors.blue else "", @tagName(n.code), if (color) Colors.reset else "" });
-                    try writeInterpolated(writer, diagnosticNoteFmt(n.code), n.payload, diag_ctx);
-                    try writer.print(" (at {s}{d}:{d}{s})\n", .{ if (color) Colors.cyan else "", nlc.line + 1, nlc.col + 1, if (color) Colors.reset else "" });
-                } else {
-                    try writer.print(" {s}= {s}note[{s}]{s}: ", .{ gutterPad(width), if (color) Colors.blue else "", @tagName(n.code), if (color) Colors.reset else "" });
-                    try writeInterpolated(writer, diagnosticNoteFmt(n.code), n.payload, diag_ctx);
-                    try writer.print("\n", .{});
+                    try writer.print(" (at \x1b[36m{d}:{d}\x1b[0m)", .{ nlc.line + 1, nlc.col + 1 });
                 }
+                try writer.writeByte('\n');
+                nid = n.next_note;
             }
-
-            try writer.print("\n", .{});
-
-            if (m.severity == .err) {
-                errors_shown += 1;
-            }
+            try writer.writeByte('\n');
         }
-
-        // if (error_count > errors_shown) {
-        //     const remaining = error_count - errors_shown;
-        //     try writer.print("\n... and {d} more error(s) not shown.\n", .{remaining});
-        // }
-
-        try writer.flush();
     }
 
-    /// Walk `fmt` and substitute each `{}` with the appropriate payload argument.
     fn writeInterpolated(writer: anytype, fmt: []const u8, payload: MessagePayload, context: DiagnosticContext) !void {
-        var args_idx: usize = 0;
+        var start: usize = 0;
         var i: usize = 0;
+        var args_idx: usize = 0;
         while (i < fmt.len) {
             if (i + 2 < fmt.len and fmt[i] == '{' and fmt[i + 2] == '}') {
+                if (i > start) try writer.print("{s}", .{fmt[start..i]});
                 try printPayloadArg(writer, payload, args_idx, context, fmt[i + 1]);
                 args_idx += 1;
                 i += 3;
+                start = i;
             } else {
-                try writer.print("{c}", .{fmt[i]});
                 i += 1;
             }
         }
+        if (start < fmt.len) try writer.print("{s}", .{fmt[start..]});
     }
 
-    /// Render the payload argument at `index` according to the specifier `spec`.
     fn printPayloadArg(writer: anytype, payload: MessagePayload, index: usize, context: DiagnosticContext, spec: u8) !void {
         switch (payload) {
             .none => {},
-            .string => |s| if (index == 0 and spec == 's') try writer.print("{s}", .{s}),
-            .str_id => |id| if (index == 0 and spec == 's') {
-                const s = context.str_interner.get(id);
-                try writer.print("{s}", .{s});
-            },
-            .type_id => |id| if (index == 0 and spec == 's') {
-                try context.type_store.formatTypeForDiagnostic(id, .{}, writer);
-            },
-            .two_type_ids => |ids| {
-                if (spec != 's') return;
-                switch (index) {
-                    0 => try context.type_store.formatTypeForDiagnostic(ids.a, .{}, writer),
-                    1 => try context.type_store.formatTypeForDiagnostic(ids.b, .{}, writer),
-                    else => {},
-                }
+            .string => |s| if (index == 0 and spec == 's') try writer.writeAll(s),
+            .str_id => |id| if (index == 0 and spec == 's') try writer.writeAll(context.str_interner.get(id)),
+            .type_id => |id| if (index == 0 and spec == 's') try context.type_store.formatTypeForDiagnostic(id, .{}, writer),
+            .two_type_ids => |ids| if (spec == 's') {
+                if (index == 0) try context.type_store.formatTypeForDiagnostic(ids.a, .{}, writer) else if (index == 1) try context.type_store.formatTypeForDiagnostic(ids.b, .{}, writer);
             },
             .one => |p| if (index == 0 and spec == 's') try printTag(writer, p.a),
-            .two => |p| {
-                if (spec != 's') return;
-                switch (index) {
-                    0 => try printTag(writer, p.a),
-                    1 => try printTag(writer, p.b),
-                    else => {},
-                }
+            .two => |p| if (spec == 's') {
+                if (index == 0) try printTag(writer, p.a) else if (index == 1) try printTag(writer, p.b);
             },
-            .three => |p| {
-                if (spec != 's') return;
-                switch (index) {
-                    0 => try printTag(writer, p.a),
-                    1 => try printTag(writer, p.b),
-                    2 => try printTag(writer, p.c),
-                    else => {},
-                }
+            .three => |p| if (spec == 's') {
+                if (index == 0) try printTag(writer, p.a) else if (index == 1) try printTag(writer, p.b) else if (index == 2) try printTag(writer, p.c);
             },
-            .integer => |val| {
-                if (spec == 'd' and index == 0) try writer.print("{d}", .{val});
+            .integer => |val| if (spec == 'd' and index == 0) try writer.print("{d}", .{val}),
+            .two_integers => |vals| if (spec == 'd') {
+                if (index == 0) try writer.print("{d}", .{vals.a}) else if (index == 1) try writer.print("{d}", .{vals.b});
             },
-            .two_integers => |vals| {
-                if (spec != 'd') return;
-                switch (index) {
-                    0 => try writer.print("{d}", .{vals.a}),
-                    1 => try writer.print("{d}", .{vals.b}),
-                    else => {},
-                }
+            .string_and_type => |sat| if (spec == 's') {
+                if (index == 0) try writer.writeAll(context.str_interner.get(sat.s)) else if (index == 1) try context.type_store.formatTypeForDiagnostic(sat.t, .{}, writer);
             },
-            .string_and_type => |sat| {
-                if (spec != 's') return;
-                switch (index) {
-                    0 => {
-                        const s = context.str_interner.get(sat.s);
-                        try writer.print("{s}", .{s});
-                    },
-                    1 => try context.type_store.formatTypeForDiagnostic(sat.t, .{}, writer),
-                    else => {},
-                }
-            },
-            .two_strings_and_type => |tst| {
-                if (spec != 's') return;
-                switch (index) {
-                    0 => {
-                        const s = context.str_interner.get(tst.s1);
-                        try writer.print("{s}", .{s});
-                    },
-                    1 => {
-                        const s = context.str_interner.get(tst.s2);
-                        try writer.print("{s}", .{s});
-                    },
-                    2 => try context.type_store.formatTypeForDiagnostic(tst.t, .{}, writer),
-                    else => {},
-                }
+            .two_strings_and_type => |tst| if (spec == 's') {
+                if (index == 0) try writer.writeAll(context.str_interner.get(tst.s1)) else if (index == 1) try writer.writeAll(context.str_interner.get(tst.s2)) else if (index == 2) try context.type_store.formatTypeForDiagnostic(tst.t, .{}, writer);
             },
         }
     }
 
-    /// Print the lowercase name of a `PayloadTag`.
     fn printTag(writer: anytype, tag: PayloadTag) !void {
         var buf: [64]u8 = undefined;
-        const tag_str = @tagName(tag);
-        const lower = std.ascii.lowerString(&buf, tag_str);
-        try writer.print("{s}", .{lower});
+        try writer.writeAll(std.ascii.lowerString(&buf, @tagName(tag)));
     }
 
-    // (Old helper retained for reference; no longer used)
-    /// Legacy formatter retained for reference.
-    fn printMessage(writer: anytype, comptime fmt: []const u8, payload: MessagePayload) !void {
-        switch (payload) {
-            .none => try writer.print("{s}", .{fmt}),
-            .one => |p| try writer.print(fmt, .{@tagName(p.a)}),
-            .two => |p| try writer.print(fmt, .{ @tagName(p.a), @tagName(p.b) }),
-            .three => |p| try writer.print(fmt, .{ @tagName(p.a), @tagName(p.b), @tagName(p.c) }),
-        }
-    }
-
-    /// Position information for a source location (line/column/span).
-    const LineCol = struct {
-        /// Line number (0-based).
-        line: usize,
-        /// Column offset of `idx`.
-        col: usize,
-        /// Byte index of line start.
-        line_start: usize,
-        /// Byte index one past the line end.
-        line_end: usize,
-    };
-    /// Compute the line/column/span covering `idx` within `src`.
+    const LineCol = struct { line: usize, col: usize, line_start: usize, line_end: usize };
     fn lineCol(src: []const u8, idx: usize) LineCol {
         var i: usize = 0;
         var line: usize = 0;
@@ -1265,50 +954,18 @@ pub const Diagnostics = struct {
                 last_nl = i + 1;
             }
         }
-        // find end of line
         var end: usize = idx;
         while (end < src.len and src[end] != '\n' and src[end] != '\r') : (end += 1) {}
         return .{ .line = line, .col = idx - last_nl, .line_start = last_nl, .line_end = end };
     }
-
-    /// Count digits in `n` used for gutter width computation.
     fn digits(n: usize) usize {
-        var v: usize = n;
+        var v = n;
         var c: usize = 1;
         while (v >= 10) : (v /= 10) c += 1;
         return c;
     }
-
-    /// Return a slice of spaces for `width` padding (max 16).
-    fn gutterPad(width: usize) []const u8 {
-        // Return a short run of spaces for gutter alignment (max 16)
-        const max = 16;
-        const n = if (width > max) max else width;
-        return space_buf[0..n];
-    }
-
-    const space_buf = [_]u8{' '} ** 16;
-
-    /// Compute pre-row padding so line numbers align in the gutter.
-    fn numPad(width: usize, n: usize) []const u8 {
-        const d = digits(n);
-        const pad = if (width > d) width - d else 0;
-        return gutterPad(pad);
-    }
-
-    /// ANSI coloring used when emitting diagnostics.
-    const Colors = struct {
-        /// Reset all ANSI attributes.
-        pub const reset = "\x1b[0m";
-        /// Bold text attribute.
-        pub const bold = "\x1b[1m";
-        /// Red text attribute (errors).
-        pub const red = "\x1b[31m";
-        /// Yellow text attribute (warnings).
-        pub const yellow = "\x1b[33m";
-        /// Blue text attribute (notes).
-        pub const blue = "\x1b[34m";
-        /// Cyan text used for gutter/labels.
-        pub const cyan = "\x1b[36m";
-    };
 };
+
+pub fn joinStrings(allocator: std.mem.Allocator, sep: []const u8, items: []const []const u8) ![]const u8 {
+    return Diagnostics.joinStrings(allocator, sep, items);
+}
