@@ -221,6 +221,23 @@ inline fn exprLocFromId(ast_unit: *ast.Ast, eid: ast.ExprId) Loc {
 inline fn exprLoc(ast_unit: *ast.Ast, expr: anytype) Loc {
     return ast_unit.exprs.locs.get(expr.loc);
 }
+inline fn patternLoc(ast_unit: *ast.Ast, pid: ast.PatternId) Loc {
+    const loc_id = switch (ast_unit.kind(pid)) {
+        .Wildcard => ast_unit.pats.get(.Wildcard, pid).loc,
+        .Literal => ast_unit.pats.get(.Literal, pid).loc,
+        .Path => ast_unit.pats.get(.Path, pid).loc,
+        .Binding => ast_unit.pats.get(.Binding, pid).loc,
+        .Tuple => ast_unit.pats.get(.Tuple, pid).loc,
+        .Slice => ast_unit.pats.get(.Slice, pid).loc,
+        .Struct => ast_unit.pats.get(.Struct, pid).loc,
+        .VariantTuple => ast_unit.pats.get(.VariantTuple, pid).loc,
+        .VariantStruct => ast_unit.pats.get(.VariantStruct, pid).loc,
+        .Range => ast_unit.pats.get(.Range, pid).loc,
+        .Or => ast_unit.pats.get(.Or, pid).loc,
+        .At => ast_unit.pats.get(.At, pid).loc,
+    };
+    return ast_unit.exprs.locs.get(loc_id);
+}
 inline fn getStmt(ast_unit: *ast.Ast, comptime K: ast.StmtKind, id: ast.StmtId) ast.StmtRowT(K) {
     return ast_unit.stmts.get(K, id);
 }
@@ -1948,57 +1965,128 @@ fn tryTypeCoercion(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, dec
     }
 }
 /// Validate the assignment statement `stmt`, handling destructuring and coercions.
+fn lookupAssignBindingType(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, name: ast.StrId) ?types.TypeId {
+    if (self.resolveDynamicBinding(ctx, ast_unit, name)) |t| return t;
+    if (self.lookup(ctx, name)) |sid| {
+        const srow = ctx.symtab.syms.get(sid);
+        if (!srow.origin_decl.isNone()) return self.resolveDeclType(ctx, ast_unit, name, srow.origin_decl.unwrap()) catch null;
+        if (!srow.origin_param.isNone()) return self.resolveParamType(ctx, ast_unit, name, srow.origin_param.unwrap()) catch null;
+    }
+    return null;
+}
+
+fn checkAssignPatternBindings(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, pid: ast.PatternId, vty: types.TypeId) anyerror!void {
+    switch (ast_unit.kind(pid)) {
+        .Wildcard => return,
+        .Binding => {
+            const name = ast_unit.pats.get(.Binding, pid).name;
+            const bind_ty = lookupAssignBindingType(self, ctx, ast_unit, name) orelse {
+                try self.context.diags.addError(patternLoc(ast_unit, pid), .undefined_identifier, .{ast_unit.pats.strs.get(name)});
+                return;
+            };
+            if (self.assignable(vty, bind_ty) != .success) {
+                try self.context.diags.addError(patternLoc(ast_unit, pid), .type_annotation_mismatch, .{ bind_ty, vty });
+            }
+        },
+        .Tuple => {
+            const elems = ast_unit.pats.pat_pool.slice(ast_unit.pats.get(.Tuple, pid).elems);
+            const tuple_elems = self.context.type_store.type_pool.slice(self.context.type_store.get(.Tuple, vty).elems);
+            for (elems, 0..) |e, i| try checkAssignPatternBindings(self, ctx, ast_unit, e, tuple_elems[i]);
+        },
+        .Struct => {
+            const fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Struct, vty).fields);
+            for (ast_unit.pats.field_pool.slice(ast_unit.pats.get(.Struct, pid).fields)) |fid| {
+                const pf = ast_unit.pats.StructField.get(fid);
+                var fty: ?types.TypeId = null;
+                for (fields) |field_id| {
+                    const f = self.context.type_store.Field.get(field_id);
+                    if (f.name.eq(pf.name)) {
+                        fty = f.ty;
+                        break;
+                    }
+                }
+                if (fty) |t| try checkAssignPatternBindings(self, ctx, ast_unit, pf.pattern, t);
+            }
+        },
+        .Slice => {
+            const elem_ty = switch (self.typeKind(vty)) {
+                .Array => self.context.type_store.get(.Array, vty).elem,
+                .Slice => self.context.type_store.get(.Slice, vty).elem,
+                .DynArray => self.context.type_store.get(.DynArray, vty).elem,
+                else => self.context.type_store.tAny(),
+            };
+            const sl = ast_unit.pats.get(.Slice, pid);
+            const elems = ast_unit.pats.pat_pool.slice(sl.elems);
+            for (elems) |e| try checkAssignPatternBindings(self, ctx, ast_unit, e, elem_ty);
+            if (sl.has_rest and !sl.rest_binding.isNone()) {
+                const is_const = if (self.typeKind(vty) == .Slice) self.context.type_store.get(.Slice, vty).is_const else false;
+                const slice_ty = self.context.type_store.mkSlice(elem_ty, is_const);
+                try checkAssignPatternBindings(self, ctx, ast_unit, sl.rest_binding.unwrap(), slice_ty);
+            }
+        },
+        else => {},
+    }
+}
+
 fn checkAssign(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, stmt: *const ast.StmtRows.Assign) !void {
-    // 1. Discard
-    if (ast_unit.kind(stmt.left) == .Ident and std.mem.eql(u8, ast_unit.exprs.strs.get(getExpr(ast_unit, .Ident, stmt.left).name), "_")) {
-        try self.pushValueReq(ctx, false);
-        _ = try self.checkExpr(ctx, ast_unit, stmt.right);
-        self.popValueReq(ctx);
-        return;
-    }
-
-    // 2. Destructuring
-    const lk = ast_unit.kind(stmt.left);
-    if (lk == .TupleLit or lk == .StructLit or lk == .ArrayLit) {
-        try self.pushValueReq(ctx, true);
-        const rv = try self.checkExpr(ctx, ast_unit, stmt.right);
-        self.popValueReq(ctx);
-        if (self.typeKind(rv) != .TypeError) {
-            switch (pattern_matching.checkPatternShapeForAssignExpr(self, ast_unit, stmt.left, rv)) {
-                .ok => {},
-                inline else => |x| try self.context.diags.addError(exprLoc(ast_unit, stmt), @field(diag.DiagnosticCode, @tagName(x)), .{}),
+    switch (stmt.left) {
+        .expr => |left_expr| {
+            // 1. Discard
+            if (ast_unit.kind(left_expr) == .Ident and std.mem.eql(u8, ast_unit.exprs.strs.get(getExpr(ast_unit, .Ident, left_expr).name), "_")) {
+                try self.pushValueReq(ctx, false);
+                _ = try self.checkExpr(ctx, ast_unit, stmt.right);
+                self.popValueReq(ctx);
+                return;
             }
-        }
-        return;
-    }
 
-    // 3. Standard Assign
-    const lt = try self.checkExpr(ctx, ast_unit, stmt.left);
-    try self.pushValueReq(ctx, true);
-    var rt = try self.checkExpr(ctx, ast_unit, stmt.right);
-    self.popValueReq(ctx);
+            // 2. Standard Assign
+            const lt = try self.checkExpr(ctx, ast_unit, left_expr);
+            try self.pushValueReq(ctx, true);
+            var rt = try self.checkExpr(ctx, ast_unit, stmt.right);
+            self.popValueReq(ctx);
 
-    if (self.tryCoerceNullLiteral(ast_unit, stmt.right, lt)) {
-        ast_unit.type_info.expr_types.items[stmt.right.toRaw()] = lt;
-        rt = lt;
-    }
-
-    if (self.typeKind(lt) != .TypeError and self.typeKind(rt) != .TypeError) {
-        var val = rt;
-        if (self.assignable(val, lt) != .success) {
-            var ok = false;
-            if (check_types.isNumericKind(self, self.typeKind(lt))) {
-                var vk = self.typeKind(val);
-                if (try self.updateCoercedLiteral(ast_unit, stmt.right, lt, &val, &vk) and self.assignable(val, lt) == .success) ok = true;
+            if (self.tryCoerceNullLiteral(ast_unit, stmt.right, lt)) {
+                ast_unit.type_info.expr_types.items[stmt.right.toRaw()] = lt;
+                rt = lt;
             }
-            if (!ok) try self.context.diags.addError(exprLoc(ast_unit, stmt), .type_annotation_mismatch, .{ lt, val });
-        }
+
+            if (self.typeKind(lt) != .TypeError and self.typeKind(rt) != .TypeError) {
+                var val = rt;
+                if (self.assignable(val, lt) != .success) {
+                    var ok = false;
+                    if (check_types.isNumericKind(self, self.typeKind(lt))) {
+                        var vk = self.typeKind(val);
+                        if (try self.updateCoercedLiteral(ast_unit, stmt.right, lt, &val, &vk) and self.assignable(val, lt) == .success) ok = true;
+                    }
+                    if (!ok) try self.context.diags.addError(exprLoc(ast_unit, stmt), .type_annotation_mismatch, .{ lt, val });
+                }
+            }
+        },
+        .pattern => |pid| {
+            try self.pushValueReq(ctx, true);
+            const rv = try self.checkExpr(ctx, ast_unit, stmt.right);
+            self.popValueReq(ctx);
+            if (self.typeKind(rv) != .TypeError) {
+                const shape = pattern_matching.checkPatternShapeForAssignPattern(self, ast_unit, pid, rv);
+                switch (shape) {
+                    .ok => try checkAssignPatternBindings(self, ctx, ast_unit, pid, rv),
+                    inline else => |x| try self.context.diags.addError(exprLoc(ast_unit, stmt), @field(diag.DiagnosticCode, @tagName(x)), .{}),
+                }
+            }
+        },
     }
 
-    // 4. Purity
-    if (self.inFunction(ctx) and self.currentFunc(ctx).?.require_pure and self.lvalueRootKind(ctx, ast_unit, stmt.left) != .LocalDecl) {
-        try self.context.diags.addError(exprLoc(ast_unit, stmt), .purity_violation, StringPayload{ .value = "assignment touches non-local" });
-        ctx.func_stack.items[ctx.func_stack.items.len - 1].pure = false;
+    // 3. Purity
+    if (self.inFunction(ctx) and self.currentFunc(ctx).?.require_pure) {
+        switch (stmt.left) {
+            .expr => |left_expr| {
+                if (self.lvalueRootKind(ctx, ast_unit, left_expr) != .LocalDecl) {
+                    try self.context.diags.addError(exprLoc(ast_unit, stmt), .purity_violation, StringPayload{ .value = "assignment touches non-local" });
+                    ctx.func_stack.items[ctx.func_stack.items.len - 1].pure = false;
+                }
+            },
+            .pattern => {},
+        }
     }
 }
 /// Type-check statement `sid`, returning the resulting type (usually void).
@@ -3276,6 +3364,9 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
         },
         .Tuple => {
             const elems = self.context.type_store.type_pool.slice(self.context.type_store.get(.Tuple, ty).elems);
+            if (std.mem.eql(u8, field_name, "len")) {
+                return self.context.type_store.tUsize();
+            }
             const index = std.fmt.parseInt(usize, field_name, 10) catch {
                 try self.context.diags.addError(field_loc, .expected_field_name_or_index, StringPayload{ .value = field_name });
                 return self.context.type_store.tTypeError();
@@ -3522,12 +3613,124 @@ fn typeExprNameForDiag(ast_unit: *ast.Ast, expr: ast.ExprId) ?ast.StrId {
     };
 }
 
+fn resolveStructLitExpectedType(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, lit_ty: ast.ExprId) !types.TypeId {
+    const resolved = try check_types.typeFromTypeExpr(self, ctx, ast_unit, lit_ty);
+    if (resolved[0]) return resolved[1];
+
+    const loc = exprLocFromId(ast_unit, lit_ty);
+    if (typeExprNameForDiag(ast_unit, lit_ty)) |name| {
+        try self.context.diags.addError(loc, .undefined_identifier, .{ast_unit.exprs.strs.get(name)});
+    } else {
+        try self.context.diags.addError(loc, .could_not_resolve_type, StringPayload{ .value = "type expression" });
+    }
+    return self.context.type_store.tTypeError();
+}
+
+fn coerceStructLitFields(self: *Checker, ast_unit: *ast.Ast, lit_fields: []const ast.StructFieldValueId, expect_ty: types.TypeId) !bool {
+    const ts = self.context.type_store;
+    const diags = self.context.diags;
+    if (self.typeKind(expect_ty) != .Struct) return true;
+
+    const expect_fields = ts.field_pool.slice(ts.get(.Struct, expect_ty).fields);
+    for (lit_fields) |fid| {
+        const f = ast_unit.exprs.StructFieldValue.get(fid);
+        if (f.name.isNone()) continue;
+
+        var expected_field_ty: ?types.TypeId = null;
+        for (expect_fields) |efid| {
+            const ef = ts.Field.get(efid);
+            if (ef.name.eq(f.name.unwrap())) {
+                expected_field_ty = ef.ty;
+                break;
+            }
+        }
+
+        if (expected_field_ty) |ety| {
+            const got_ty = ast_unit.type_info.expr_types.items[f.value.toRaw()] orelse continue;
+            if (!got_ty.eq(ety)) {
+                if (self.tryCoerceNullLiteral(ast_unit, f.value, ety)) {
+                    ast_unit.type_info.expr_types.items[f.value.toRaw()] = ety;
+                    continue;
+                }
+
+                if (ast_unit.kind(f.value) == .NullLit) {
+                    try diags.addError(exprLocFromId(ast_unit, f.value), .struct_field_type_mismatch, .{ ety, got_ty });
+                    return false;
+                }
+
+                if (check_types.isNumericKind(self, self.typeKind(ety))) {
+                    var coerced = got_ty;
+                    var k = self.typeKind(coerced);
+                    _ = try self.updateCoercedLiteral(ast_unit, f.value, ety, &coerced, &k);
+                }
+            }
+        }
+    }
+    return true;
+}
+
 /// Validate struct literal `id` against its optional type annotation, generating diagnostics on mismatch.
 fn checkStructLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const ts = self.context.type_store;
     const diags = self.context.diags;
     const struct_lit = getExpr(ast_unit, .StructLit, id);
     const lit_fields = ast_unit.exprs.sfv_pool.slice(struct_lit.fields);
+    var spread_expr: ?ast.ExprId = null;
+
+    for (lit_fields) |fid| {
+        const f = ast_unit.exprs.StructFieldValue.get(fid);
+        if (f.name.isNone()) {
+            if (ast.structFieldSpreadExpr(ast_unit, fid)) |payload| {
+                if (spread_expr != null) {
+                    try diags.addError(exprLoc(ast_unit, struct_lit), .struct_field_name_mismatch, .{});
+                    return ts.tTypeError();
+                }
+                spread_expr = payload;
+                continue;
+            }
+            try diags.addError(exprLoc(ast_unit, struct_lit), .struct_field_name_mismatch, .{});
+            return ts.tTypeError();
+        }
+    }
+
+    if (spread_expr != null) {
+        const spread_ty = try self.checkExpr(ctx, ast_unit, spread_expr.?);
+        if (self.typeKind(spread_ty) == .TypeError) return ts.tTypeError();
+
+        const base_ty = if (!struct_lit.ty.isNone())
+            try resolveStructLitExpectedType(self, ctx, ast_unit, struct_lit.ty.unwrap())
+        else
+            spread_ty;
+        if (self.typeKind(base_ty) == .TypeError) return ts.tTypeError();
+        if (self.typeKind(base_ty) != .Struct) {
+            try diags.addError(exprLocFromId(ast_unit, spread_expr.?), .expected_struct_type, .{base_ty});
+            return ts.tTypeError();
+        }
+        if (!spread_ty.eq(base_ty) and self.assignable(spread_ty, base_ty) != .success) {
+            try diags.addError(exprLocFromId(ast_unit, spread_expr.?), .struct_field_type_mismatch, .{ base_ty, spread_ty });
+            return ts.tTypeError();
+        }
+
+        const base_fields = ts.field_pool.slice(ts.get(.Struct, base_ty).fields);
+        for (lit_fields) |fid| {
+            const f = ast_unit.exprs.StructFieldValue.get(fid);
+            if (f.name.isNone()) continue;
+            const ft = try self.checkExpr(ctx, ast_unit, f.value);
+            if (self.typeKind(ft) == .TypeError) return ts.tTypeError();
+
+            const match = self.findFieldByName(base_fields, f.name.unwrap()) orelse {
+                try diags.addError(exprLoc(ast_unit, struct_lit), .unknown_struct_field, StringPayload{ .value = getStr(ast_unit, f.name.unwrap()) });
+                return ts.tTypeError();
+            };
+            if (self.assignable(ft, match.field.ty) != .success) {
+                try diags.addError(ast_unit.exprs.locs.get(f.loc), .struct_field_type_mismatch, .{ match.field.ty, ft });
+                return ts.tTypeError();
+            }
+        }
+
+        if (!try self.coerceStructLitFields(ast_unit, lit_fields, base_ty)) return ts.tTypeError();
+        return base_ty;
+    }
 
     // Phase 1: Check Field Expressions
     const buf = try ts.gpa.alloc(types.TypeStore.StructFieldArg, lit_fields.len);
@@ -3549,19 +3752,8 @@ fn checkStructLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
     if (struct_lit.ty.isNone()) return struct_ty;
 
     // Phase 2: Resolve Expected Type
-    const lit_ty = struct_lit.ty.unwrap();
-    const expect_ty = blk: {
-        const resolved = try check_types.typeFromTypeExpr(self, ctx, ast_unit, lit_ty);
-        if (resolved[0]) break :blk resolved[1];
-
-        const loc = exprLocFromId(ast_unit, lit_ty);
-        if (typeExprNameForDiag(ast_unit, lit_ty)) |name| {
-            try diags.addError(loc, .undefined_identifier, .{ast_unit.exprs.strs.get(name)});
-        } else {
-            try diags.addError(loc, .could_not_resolve_type, StringPayload{ .value = "type expression" });
-        }
-        return ts.tTypeError();
-    };
+    const expect_ty = try resolveStructLitExpectedType(self, ctx, ast_unit, struct_lit.ty.unwrap());
+    if (self.typeKind(expect_ty) == .TypeError) return ts.tTypeError();
 
     // Phase 3: Validation & Coercion
     const is_assignable = self.assignable(struct_ty, expect_ty);
@@ -3607,45 +3799,7 @@ fn checkStructLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
     }
 
     // Phase 4: Coercion (apply inferred types to literals)
-    if (self.typeKind(expect_ty) == .Struct) {
-        const expect_fields = ts.field_pool.slice(ts.get(.Struct, expect_ty).fields);
-
-        for (lit_fields, 0..) |fid, i| {
-            const f = ast_unit.exprs.StructFieldValue.get(fid);
-            if (f.name.isNone()) continue;
-
-            // Find expected field type
-            var expected_field_ty: ?types.TypeId = null;
-            for (expect_fields) |efid| {
-                const ef = ts.Field.get(efid);
-                if (ef.name.eq(f.name.unwrap())) {
-                    expected_field_ty = ef.ty;
-                    break;
-                }
-            }
-
-            if (expected_field_ty) |ety| {
-                const got_ty = buf[i].ty;
-                if (!got_ty.eq(ety)) {
-                    if (self.tryCoerceNullLiteral(ast_unit, f.value, ety)) {
-                        ast_unit.type_info.expr_types.items[f.value.toRaw()] = ety;
-                        continue;
-                    }
-
-                    if (ast_unit.kind(f.value) == .NullLit) {
-                        try diags.addError(exprLocFromId(ast_unit, f.value), .struct_field_type_mismatch, .{ ety, got_ty });
-                        return ts.tTypeError();
-                    }
-
-                    if (check_types.isNumericKind(self, self.typeKind(ety))) {
-                        var coerced = got_ty;
-                        var k = self.typeKind(coerced);
-                        _ = try self.updateCoercedLiteral(ast_unit, f.value, ety, &coerced, &k);
-                    }
-                }
-            }
-        }
-    }
+    if (!try self.coerceStructLitFields(ast_unit, lit_fields, expect_ty)) return ts.tTypeError();
 
     return expect_ty;
 }

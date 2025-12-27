@@ -1515,6 +1515,99 @@ fn emitReturnWithErrDefers(
     env.defers.items.len = defer_mark;
 }
 
+pub fn sliceRestValue(
+    self: *LowerTir,
+    f: *Builder.FunctionFrame,
+    blk: *Builder.BlockFrame,
+    value: tir.ValueId,
+    vty: types.TypeId,
+    elem_ty: types.TypeId,
+    rest_index: u32,
+    loc: tir.OptLocId,
+) struct { val: tir.ValueId, ty: types.TypeId } {
+    const ts = self.context.type_store;
+    const slice_ty = ts.mkSlice(elem_ty, if (ts.getKind(vty) == .Slice) ts.get(.Slice, vty).is_const else false);
+    const len_val = if (ts.getKind(vty) == .Array)
+        blk.builder.tirValue(.ConstInt, blk, ts.tUsize(), loc, .{ .value = ts.get(.Array, vty).len })
+    else
+        blk.builder.extractFieldNamed(blk, ts.tUsize(), value, f.builder.intern("len"), loc);
+    const range_val = blk.builder.rangeMake(
+        blk,
+        ts.mkSlice(ts.tUsize(), false),
+        blk.builder.tirValue(.ConstInt, blk, ts.tUsize(), loc, .{ .value = rest_index }),
+        len_val,
+        blk.builder.tirValue(.ConstBool, blk, ts.tBool(), loc, .{ .value = false }),
+        loc,
+    );
+    return .{ .val = blk.builder.indexOp(blk, slice_ty, value, range_val, loc), .ty = slice_ty };
+}
+
+fn lowerAssignPattern(
+    self: *LowerTir,
+    a: *ast.Ast,
+    env: *cf.Env,
+    f: *Builder.FunctionFrame,
+    blk: *Builder.BlockFrame,
+    pid: ast.PatternId,
+    value: tir.ValueId,
+    vty: types.TypeId,
+) anyerror!void {
+    switch (a.kind(pid)) {
+        .Wildcard => return,
+        .Binding => {
+            const name = a.pats.get(.Binding, pid).name;
+            const loc = optLoc(a, pid);
+            const ptr = try self.lowerIdentAddrByName(a, env, f, blk, name, vty, vty, loc);
+            _ = f.builder.tirValue(.Store, blk, vty, loc, .{ .ptr = ptr, .value = value, .@"align" = 0 });
+        },
+        .Tuple => {
+            const elems = a.pats.pat_pool.slice(a.pats.get(.Tuple, pid).elems);
+            const tuple_elems = self.context.type_store.type_pool.slice(self.context.type_store.get(.Tuple, vty).elems);
+            for (elems, 0..) |e, i| {
+                const ety = tuple_elems[i];
+                const elem_loc = optLoc(a, e);
+                const elem_val = blk.builder.extractElem(blk, ety, value, @intCast(i), elem_loc);
+                try self.lowerAssignPattern(a, env, f, blk, e, elem_val, ety);
+            }
+        },
+        .Struct => {
+            const fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Struct, vty).fields);
+            for (a.pats.field_pool.slice(a.pats.get(.Struct, pid).fields)) |fid| {
+                const pf = a.pats.StructField.get(fid);
+                const idx = self.getFieldIndex(vty, pf.name) orelse return error.LoweringBug;
+                const fty = self.context.type_store.Field.get(fields[idx]).ty;
+                const field_loc = optLoc(a, pf.pattern);
+                const elem_val = blk.builder.extractField(blk, fty, value, idx, field_loc);
+                try self.lowerAssignPattern(a, env, f, blk, pf.pattern, elem_val, fty);
+            }
+        },
+        .Slice => {
+            const ts = self.context.type_store;
+            const elem_ty = switch (ts.getKind(vty)) {
+                .Array => ts.get(.Array, vty).elem,
+                .Slice => ts.get(.Slice, vty).elem,
+                .DynArray => ts.get(.DynArray, vty).elem,
+                else => ts.tAny(),
+            };
+            const sl = a.pats.get(.Slice, pid);
+            const elems = a.pats.pat_pool.slice(sl.elems);
+            for (elems, 0..) |e, i| {
+                if (sl.has_rest and i == sl.rest_index) continue;
+                const elem_loc = optLoc(a, e);
+                const idx_val = blk.builder.tirValue(.ConstInt, blk, ts.tUsize(), elem_loc, .{ .value = @as(u64, @intCast(i)) });
+                const elem_val = blk.builder.indexOp(blk, elem_ty, value, idx_val, elem_loc);
+                try self.lowerAssignPattern(a, env, f, blk, e, elem_val, elem_ty);
+            }
+            if (sl.has_rest and !sl.rest_binding.isNone()) {
+                const loc = optLoc(a, pid);
+                const rest = self.sliceRestValue(f, blk, value, vty, elem_ty, sl.rest_index, loc);
+                try self.lowerAssignPattern(a, env, f, blk, sl.rest_binding.unwrap(), rest.val, rest.ty);
+            }
+        },
+        else => return error.LoweringBug,
+    }
+}
+
 fn lowerAssign(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -1526,33 +1619,42 @@ fn lowerAssign(
 ) !void {
     const as = a.stmts.get(.Assign, sid);
 
-    // 1. Handle discard: `_ = rhs`
-    if (a.kind(as.left) == .Ident) {
-        if (std.mem.eql(u8, a.exprs.strs.get(a.exprs.get(.Ident, as.left).name), "_")) {
-            _ = try self.lowerExpr(ctx, a, env, f, blk, as.right, null, .rvalue);
-            return;
-        }
-    }
-
-    const rty = self.getExprType(ctx, a, as.left);
-    const stmt_loc = optLoc(a, sid);
-
-    // 2. Handle simple local assignment optimization
-    if (a.kind(as.left) == .Ident) {
-        const name = a.exprs.get(.Ident, as.left).name;
-        if (env.lookup(name)) |bnd| {
-            if (!bnd.is_slot) {
-                const rhs = try self.lowerExpr(ctx, a, env, f, blk, as.right, rty, .rvalue);
-                try env.bind(self.gpa, name, .{ .value = rhs, .ty = rty, .is_slot = false }, f.builder, blk, stmt_loc);
-                return;
+    switch (as.left) {
+        .expr => |left_expr| {
+            // 1. Handle discard: `_ = rhs`
+            if (a.kind(left_expr) == .Ident) {
+                if (std.mem.eql(u8, a.exprs.strs.get(a.exprs.get(.Ident, left_expr).name), "_")) {
+                    _ = try self.lowerExpr(ctx, a, env, f, blk, as.right, null, .rvalue);
+                    return;
+                }
             }
-        }
-    }
 
-    // 3. General L-Value Store
-    const lhs_ptr = try self.lowerExpr(ctx, a, env, f, blk, as.left, null, .lvalue_addr);
-    const rhs = try self.lowerExpr(ctx, a, env, f, blk, as.right, rty, .rvalue);
-    _ = f.builder.tirValue(.Store, blk, rty, stmt_loc, .{ .ptr = lhs_ptr, .value = rhs, .@"align" = 0 });
+            const rty = self.getExprType(ctx, a, left_expr);
+            const stmt_loc = optLoc(a, sid);
+
+            // 2. Handle simple local assignment optimization
+            if (a.kind(left_expr) == .Ident) {
+                const name = a.exprs.get(.Ident, left_expr).name;
+                if (env.lookup(name)) |bnd| {
+                    if (!bnd.is_slot) {
+                        const rhs = try self.lowerExpr(ctx, a, env, f, blk, as.right, rty, .rvalue);
+                        try env.bind(self.gpa, name, .{ .value = rhs, .ty = rty, .is_slot = false }, f.builder, blk, stmt_loc);
+                        return;
+                    }
+                }
+            }
+
+            // 3. General L-Value Store
+            const lhs_ptr = try self.lowerExpr(ctx, a, env, f, blk, left_expr, null, .lvalue_addr);
+            const rhs = try self.lowerExpr(ctx, a, env, f, blk, as.right, rty, .rvalue);
+            _ = f.builder.tirValue(.Store, blk, rty, stmt_loc, .{ .ptr = lhs_ptr, .value = rhs, .@"align" = 0 });
+        },
+        .pattern => |pid| {
+            const rhs_ty = self.getExprType(ctx, a, as.right);
+            const rhs_val = try self.lowerExpr(ctx, a, env, f, blk, as.right, rhs_ty, .rvalue);
+            try self.lowerAssignPattern(a, env, f, blk, pid, rhs_val, rhs_ty);
+        },
+    }
 }
 
 fn lowerStmt(
@@ -1823,8 +1925,11 @@ fn resolveCallee(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, f: *Builder.F
                 const val_kind = a.kind(drow.value);
 
                 if (val_kind == .Ident or val_kind == .FieldAccess) {
-                    current = drow.value;
-                    continue;
+                    if (drow.flags.is_const) {
+                        current = drow.value;
+                        continue;
+                    }
+                    return CalleeInfo{ .name = ident.name, .qualified_name = null, .fty = self.getExprType(ctx, a, row.callee), .expr = current };
                 }
 
                 return CalleeInfo{ .name = ident.name, .qualified_name = null, .fty = self.getExprType(ctx, a, row.callee), .expr = current };
@@ -2478,7 +2583,19 @@ fn emitCallValue(
 
     // Determine if indirect call is forced
     const should_force_indirect = switch (a.kind(callee_expr)) {
-        .Ident => false,
+        .Ident => blk: {
+            const ident = a.exprs.get(.Ident, callee_expr);
+            if (env.lookup(ident.name)) |bnd| {
+                const bnd_ty = if (!self.isType(callee_ty, .Any)) callee_ty else bnd.ty;
+                if (self.context.type_store.getKind(bnd_ty) == .Function) break :blk true;
+                if (self.context.type_store.getKind(bnd_ty) == .Ptr and
+                    self.context.type_store.getKind(self.context.type_store.get(.Ptr, bnd_ty).elem) == .Function)
+                {
+                    break :blk true;
+                }
+            }
+            break :blk false;
+        },
         .FieldAccess => !isImportMemberExpr(a, callee_expr) and a.type_info.getMethodBinding(callee_expr) == null,
         else => true,
     };
@@ -2641,7 +2758,9 @@ fn handleExternVariadicArgs(
 
         if (promoted_ty) |pty| {
             if (k == .Any) {
-                entry.value = try self.lowerExpr(ctx, a, env, f, blk, entry.expr.?, pty, .rvalue);
+                if (entry.expr) |eid| {
+                    entry.value = try self.lowerExpr(ctx, a, env, f, blk, eid, pty, .rvalue);
+                }
             } else {
                 entry.value = self.emitCoerce(blk, entry.value, entry.ty, pty, entry.loc);
             }
@@ -3111,6 +3230,54 @@ fn lowerStructLit(
     }
 
     const fids = a.exprs.sfv_pool.slice(row.fields);
+    var spread_expr: ?ast.ExprId = null;
+    for (fids) |fid_idx| {
+        if (ast.structFieldSpreadExpr(a, fid_idx)) |payload| {
+            spread_expr = payload;
+            break;
+        }
+    }
+
+    if (spread_expr != null) {
+        const ty0_kind = self.context.type_store.getKind(ty0);
+        if (ty0_kind != .Struct) return error.LoweringBug;
+
+        const type_fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Struct, ty0).fields);
+        const base_val = try self.lowerExpr(ctx, a, env, f, blk, spread_expr.?, ty0, .rvalue);
+        var field_inits = try self.gpa.alloc(tir.Rows.StructFieldInit, type_fields.len);
+        defer self.gpa.free(field_inits);
+
+        for (type_fields, 0..) |fid, j| {
+            const fdef = self.context.type_store.Field.get(fid);
+            field_inits[j] = .{
+                .index = @intCast(j),
+                .name = .some(fdef.name),
+                .value = blk.builder.extractField(blk, fdef.ty, base_val, @intCast(j), loc),
+            };
+        }
+
+        for (fids) |fid_idx| {
+            const sfv = a.exprs.StructFieldValue.get(fid_idx);
+            if (sfv.name.isNone()) continue;
+            var field_idx: ?usize = null;
+            var want: types.TypeId = self.context.type_store.tAny();
+            const name_id = sfv.name.unwrap();
+            for (type_fields, 0..) |fid, j| {
+                const fdef = self.context.type_store.Field.get(fid);
+                if (fdef.name.eq(name_id)) {
+                    field_idx = j;
+                    want = fdef.ty;
+                    break;
+                }
+            }
+            const idx = field_idx orelse return error.LoweringBug;
+            field_inits[idx].value = try self.lowerExpr(ctx, a, env, f, blk, sfv.value, want, .rvalue);
+        }
+
+        const v = blk.builder.structMake(blk, ty0, field_inits, loc);
+        return if (expected_ty) |want| self.emitCoerce(blk, v, ty0, want, loc) else v;
+    }
+
     var field_inits = List(tir.Rows.StructFieldInit){};
     defer field_inits.deinit(self.gpa);
     try field_inits.ensureTotalCapacity(self.gpa, fids.len); // Optimization: Pre-allocate known minimum
@@ -3514,6 +3681,12 @@ fn lowerFieldAccess(
             const v = blk.builder.tirValue(.ConstInt, blk, ty0, loc, .{ .value = @as(u64, @intCast(len)) });
             return if (expected_ty) |want| self.emitCoerce(blk, v, ty0, want, loc) else v;
         }
+        if (parent_kind == .Tuple) {
+            const len = self.context.type_store.get(.Tuple, parent_ty).elems.len;
+            const ty0 = self.context.type_store.tUsize();
+            const v = blk.builder.tirValue(.ConstInt, blk, ty0, loc, .{ .value = @as(u64, @intCast(len)) });
+            return if (expected_ty) |want| self.emitCoerce(blk, v, ty0, want, loc) else v;
+        }
         if (parent_kind == .Slice or parent_kind == .DynArray or parent_kind == .String) {
             const base = try self.lowerExpr(ctx, a, env, f, blk, row.parent, null, .rvalue);
             const ty0 = self.context.type_store.tUsize();
@@ -3700,6 +3873,47 @@ fn tryLowerImportedModuleMember(
 }
 
 /// Lower identifier expressions, resolving globals/locals/types/slots and emitting loads.
+fn lowerIdentAddrByName(
+    self: *LowerTir,
+    a: *ast.Ast,
+    env: *cf.Env,
+    f: *Builder.FunctionFrame,
+    blk: *Builder.BlockFrame,
+    name: ast.StrId,
+    expr_ty: types.TypeId,
+    want_elem: types.TypeId,
+    loc: tir.OptLocId,
+) anyerror!tir.ValueId {
+    if (env.lookup(name)) |bnd| {
+        if (bnd.is_slot) return bnd.value;
+        if (self.context.type_store.getKind(bnd.ty) == .Ptr) return bnd.value;
+    }
+
+    const did_opt = call_resolution.findDeclId(a, name);
+    if (did_opt) |did| {
+        const d = a.exprs.Decl.get(did);
+        const gty = getDeclType(a, did) orelse unreachable;
+        if (self.context.type_store.getKind(gty) != .TypeType) {
+            const ptr_ty = self.context.type_store.mkPtr(gty, !d.flags.is_const);
+            const sym = (try self.symbolNameForDecl(a, did)) orelse name;
+            return blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = sym });
+        }
+    }
+
+    if (env.lookup(name)) |bnd| {
+        const slot_ty = self.context.type_store.mkPtr(want_elem, false);
+        const slot = f.builder.tirValue(.Alloca, blk, slot_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
+        const src_ty = if (!self.isType(expr_ty, .Any)) expr_ty else bnd.ty;
+        const to_store = self.emitCoerce(blk, bnd.value, src_ty, want_elem, loc);
+        _ = f.builder.tirValue(.Store, blk, want_elem, loc, .{ .ptr = slot, .value = to_store, .@"align" = 0 });
+        try env.bind(self.gpa, name, .{ .value = slot, .ty = want_elem, .is_slot = true }, f.builder, blk, loc);
+        return slot;
+    }
+
+    try self.context.diags.addError(a.exprs.locs.get(loc.unwrap()), .undefined_identifier, .{});
+    return error.LoweringBug;
+}
+
 fn lowerIdent(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3727,33 +3941,7 @@ fn lowerIdent(
         expr_ty;
 
     if (mode == .lvalue_addr) {
-        if (env.lookup(name)) |bnd| {
-            if (bnd.is_slot) return bnd.value;
-            if (self.context.type_store.getKind(bnd.ty) == .Ptr) return bnd.value;
-        }
-
-        if (did_opt) |did| {
-            const d = a.exprs.Decl.get(did);
-            const gty = getDeclType(a, did) orelse unreachable;
-            if (self.context.type_store.getKind(gty) != .TypeType) {
-                const ptr_ty = self.context.type_store.mkPtr(gty, !d.flags.is_const);
-                const sym = (try self.symbolNameForDecl(a, did)) orelse name;
-                return blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = sym });
-            }
-        }
-
-        if (env.lookup(name)) |bnd| {
-            const slot_ty = self.context.type_store.mkPtr(want_elem, false);
-            const slot = f.builder.tirValue(.Alloca, blk, slot_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
-            const src_ty = if (!self.isType(expr_ty, .Any)) expr_ty else bnd.ty;
-            const to_store = self.emitCoerce(blk, bnd.value, src_ty, want_elem, loc);
-            _ = f.builder.tirValue(.Store, blk, want_elem, loc, .{ .ptr = slot, .value = to_store, .@"align" = 0 });
-            try env.bind(self.gpa, name, .{ .value = slot, .ty = want_elem, .is_slot = true }, f.builder, blk, loc);
-            return slot;
-        }
-
-        try self.context.diags.addError(a.exprs.locs.get(loc.unwrap()), .undefined_identifier, .{});
-        return error.LoweringBug;
+        return try self.lowerIdentAddrByName(a, env, f, blk, name, expr_ty, want_elem, loc);
     }
 
     // RValue Path

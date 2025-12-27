@@ -314,7 +314,12 @@ fn lowerStmtFromDecl(self: *Lower, id: cst.DeclId) !ast.StmtId {
 
     // Simple assignment
     if (d.flags.is_assign) {
-        const left = try self.lowerExpr(d.lhs.unwrap());
+        const lhs_expr = d.lhs.unwrap();
+        const left = if (try self.patternFromAssignExpr(lhs_expr)) |pid|
+            ast.StmtRows.AssignLhs{ .pattern = pid }
+        else
+            ast.StmtRows.AssignLhs{ .expr = try self.lowerExpr(lhs_expr) };
+
         const right = try self.lowerExpr(d.rhs);
         return self.ast_unit.stmts.add(.Assign, .{ .left = left, .right = right, .loc = d.loc });
     }
@@ -411,7 +416,7 @@ fn tryLowerCompoundAssign(self: *Lower, i: *const cst.Rows.Infix) !?ast.StmtId {
         .saturate = bin_info.sat,
         .loc = base_loc,
     });
-    return self.ast_unit.stmts.add(.Assign, .{ .left = L, .right = rhs_expr, .loc = base_loc });
+    return self.ast_unit.stmts.add(.Assign, .{ .left = .{ .expr = L }, .right = rhs_expr, .loc = base_loc });
 }
 
 // ---------------- Expressions ----------------
@@ -1001,6 +1006,14 @@ fn collectPathSegs(self: *Lower, id: cst.ExprId, segs: *std.ArrayList(ast.PathSe
 fn lowerOptionalPatternFromExpr(self: *Lower, e: cst.OptExprId) !ast.OptPatternId {
     if (e.isNone()) return .none();
     return if (try self.patternFromExpr(e.unwrap())) |pid| .some(pid) else .none();
+}
+
+/// Try to interpret an assignment LHS expression as a pattern literal.
+fn patternFromAssignExpr(self: *Lower, id: cst.ExprId) !?ast.PatternId {
+    return switch (self.cst_program.kind(id)) {
+        .Tuple, .StructLit, .ArrayLit => self.patternFromExpr(id),
+        else => null,
+    };
 }
 
 /// Try to interpret an expression as a pattern literal.

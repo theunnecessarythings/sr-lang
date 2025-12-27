@@ -808,7 +808,10 @@ const SymbolResolver = struct {
             },
             .Assign => {
                 const row = stmt_store.get(.Assign, stmt_id);
-                try self.walkExpr(scope, row.left);
+                switch (row.left) {
+                    .expr => |e| try self.walkExpr(scope, e),
+                    .pattern => {},
+                }
                 try self.walkExpr(scope, row.right);
             },
             else => {},

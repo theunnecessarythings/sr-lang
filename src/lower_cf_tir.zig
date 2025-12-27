@@ -1059,10 +1059,8 @@ pub fn bindPattern(
             }
 
             if (sl.has_rest and !sl.rest_binding.isNone()) {
-                const slice_ty = ts.mkSlice(elem_ty, if (ts.getKind(vty) == .Slice) ts.get(.Slice, vty).is_const else false);
-                const len_val = if (ts.getKind(vty) == .Array) blk.builder.tirValue(.ConstInt, blk, ts.tUsize(), loc, .{ .value = ts.get(.Array, vty).len }) else blk.builder.extractFieldNamed(blk, ts.tUsize(), value, f.builder.intern("len"), loc);
-                const range_val = blk.builder.rangeMake(blk, ts.mkSlice(ts.tUsize(), false), blk.builder.tirValue(.ConstInt, blk, ts.tUsize(), loc, .{ .value = sl.rest_index }), len_val, blk.builder.tirValue(.ConstBool, blk, ts.tBool(), loc, .{ .value = false }), loc);
-                try bindPattern(self, ctx, a, env, f, blk, sl.rest_binding.unwrap(), blk.builder.indexOp(blk, slice_ty, value, range_val, loc), slice_ty);
+                const rest = self.sliceRestValue(f, blk, value, vty, elem_ty, sl.rest_index, loc);
+                try bindPattern(self, ctx, a, env, f, blk, sl.rest_binding.unwrap(), rest.val, rest.ty);
             }
         },
         .VariantTuple => {

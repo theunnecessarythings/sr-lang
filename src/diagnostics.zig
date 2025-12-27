@@ -429,7 +429,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .unknown_struct_field => "unknown field '{s}' in struct",
         .unknown_tuple_field => "unknown tuple field at index {d}",
         .unknown_module_field => "member `{s}` not found in module/file",
-        .expected_pattern_on_decl_lhs => "lhs of decl should be a pattern",
+        .expected_pattern_on_decl_lhs => "lhs should be a pattern",
         .missing_field_name_in_struct_literal => "missing field name in struct literal",
         .unknown_enum_tag => "unknown enum tag '{s}'",
         .unknown_variant_tag => "unknown variant tag '{s}'",
@@ -889,6 +889,7 @@ pub const Diagnostics = struct {
             }
             try writer.writeByte('\n');
         }
+        try writer.flush();
     }
 
     fn writeInterpolated(writer: anytype, fmt: []const u8, payload: MessagePayload, context: DiagnosticContext) !void {

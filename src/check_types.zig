@@ -441,7 +441,10 @@ fn collectStmtExprs(
         .Decl => try collectDeclExprs(gpa, ast_unit, stmt_store.get(.Decl, stmt_id).decl, out),
         .Assign => {
             const row = stmt_store.get(.Assign, stmt_id);
-            try collectExprIds(gpa, ast_unit, row.left, out);
+            switch (row.left) {
+                .expr => |e| try collectExprIds(gpa, ast_unit, e, out),
+                .pattern => |p| try collectPatternExprs(gpa, ast_unit, p, out),
+            }
             try collectExprIds(gpa, ast_unit, row.right, out);
         },
         .Return => {
@@ -845,7 +848,10 @@ fn clearStmtTypes(ast_unit: *ast.Ast, stmt_id: ast.StmtId) void {
         .Decl => clearDeclTypes(ast_unit, stmt_store.get(.Decl, stmt_id).decl),
         .Assign => {
             const row = stmt_store.get(.Assign, stmt_id);
-            clearExprTypes(ast_unit, row.left);
+            switch (row.left) {
+                .expr => |e| clearExprTypes(ast_unit, e),
+                .pattern => |p| clearPatternTypes(ast_unit, p),
+            }
             clearExprTypes(ast_unit, row.right);
         },
         inline .Return, .Break => |k| {

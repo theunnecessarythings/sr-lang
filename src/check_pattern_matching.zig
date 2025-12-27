@@ -679,7 +679,9 @@ fn patternBindingDeclarerOnBinding(ctx: *void, ast_unit: *ast.Ast, _: ast.Patter
 
 pub const PatternShapeCheck = enum { ok, tuple_arity_mismatch, struct_pattern_field_mismatch, pattern_shape_mismatch };
 
-pub fn checkPatternShapeForDecl(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId, value_ty: types.TypeId) PatternShapeCheck {
+const PatternShapeMode = enum { decl, assign };
+
+fn checkPatternShape(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId, value_ty: types.TypeId, mode: PatternShapeMode) PatternShapeCheck {
     const pk = self.typeKind(value_ty);
     switch (ast_unit.kind(pid)) {
         .Wildcard, .Binding => return .ok,
@@ -688,7 +690,7 @@ pub fn checkPatternShapeForDecl(self: *Checker, ast_unit: *ast.Ast, pid: ast.Pat
             const vals = self.context.type_store.type_pool.slice(self.context.type_store.get(.Tuple, value_ty).elems);
             const elems = ast_unit.pats.pat_pool.slice(ast_unit.pats.get(.Tuple, pid).elems);
             if (elems.len != vals.len) return .tuple_arity_mismatch;
-            for (elems, 0..) |e, i| if (checkPatternShapeForDecl(self, ast_unit, e, vals[i]) != .ok) return .pattern_shape_mismatch;
+            for (elems, 0..) |e, i| if (checkPatternShape(self, ast_unit, e, vals[i], mode) != .ok) return .pattern_shape_mismatch;
             return .ok;
         },
         .Struct => {
@@ -705,7 +707,7 @@ pub fn checkPatternShapeForDecl(self: *Checker, ast_unit: *ast.Ast, pid: ast.Pat
                     }
                 }
                 if (fty == null) return .struct_pattern_field_mismatch;
-                if (checkPatternShapeForDecl(self, ast_unit, pf.pattern, fty.?) != .ok) return .pattern_shape_mismatch;
+                if (checkPatternShape(self, ast_unit, pf.pattern, fty.?, mode) != .ok) return .pattern_shape_mismatch;
             }
             return .ok;
         },
@@ -723,15 +725,24 @@ pub fn checkPatternShapeForDecl(self: *Checker, ast_unit: *ast.Ast, pid: ast.Pat
                 const len = self.context.type_store.get(.Array, value_ty).len;
                 if ((sl.has_rest and elems.len > len) or (!sl.has_rest and elems.len != len)) return .pattern_shape_mismatch;
             }
-            for (elems) |e| if (checkPatternShapeForDecl(self, ast_unit, e, elem_ty) != .ok) return .pattern_shape_mismatch;
+            for (elems) |e| if (checkPatternShape(self, ast_unit, e, elem_ty, mode) != .ok) return .pattern_shape_mismatch;
             if (sl.has_rest and !sl.rest_binding.isNone()) {
                 const is_const = if (pk == .Slice) self.context.type_store.get(.Slice, value_ty).is_const else false;
-                if (checkPatternShapeForDecl(self, ast_unit, sl.rest_binding.unwrap(), self.context.type_store.mkSlice(elem_ty, is_const)) != .ok) return .pattern_shape_mismatch;
+                if (checkPatternShape(self, ast_unit, sl.rest_binding.unwrap(), self.context.type_store.mkSlice(elem_ty, is_const), mode) != .ok) return .pattern_shape_mismatch;
             }
             return .ok;
         },
-        else => return .ok,
+        else => return if (mode == .decl) .ok else .pattern_shape_mismatch,
     }
+}
+
+pub fn checkPatternShapeForDecl(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId, value_ty: types.TypeId) PatternShapeCheck {
+    return checkPatternShape(self, ast_unit, pid, value_ty, .decl);
+}
+
+/// Validate assignment patterns (binding/tuple/struct/slice) against a value type.
+pub fn checkPatternShapeForAssignPattern(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId, value_ty: types.TypeId) PatternShapeCheck {
+    return checkPatternShape(self, ast_unit, pid, value_ty, .assign);
 }
 
 pub fn checkPatternShapeForAssignExpr(self: *Checker, ast_unit: *ast.Ast, expr: ast.ExprId, value_ty: types.TypeId) PatternShapeCheck {

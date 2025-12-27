@@ -176,7 +176,8 @@ pub const Rows = struct {
 pub const StmtRows = struct {
     pub const Expr = struct { expr: ExprId };
     pub const Decl = struct { decl: DeclId };
-    pub const Assign = struct { left: ExprId, right: ExprId, loc: LocId };
+    pub const AssignLhs = union(enum) { expr: ExprId, pattern: PatternId };
+    pub const Assign = struct { left: AssignLhs, right: ExprId, loc: LocId };
     pub const Insert = Rows.Insert;
     pub const Return = Rows.Return;
     pub const Break = Rows.Break;
@@ -434,6 +435,15 @@ pub const Ast = struct {
         self.backing_gpa.destroy(self.arena);
     }
 };
+
+pub fn structFieldSpreadExpr(a: *Ast, sfv_id: StructFieldValueId) ?ExprId {
+    const sfv = a.exprs.StructFieldValue.get(sfv_id);
+    if (!sfv.name.isNone()) return null;
+    if (a.kind(sfv.value) != .Range) return null;
+    const r = a.exprs.get(.Range, sfv.value);
+    if (!r.start.isNone() or r.end.isNone() or r.inclusive_right) return null;
+    return r.end.unwrap();
+}
 
 // --- Printers ---
 

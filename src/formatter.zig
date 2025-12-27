@@ -1684,4 +1684,3 @@ fn infixOpStr(op: cst.InfixOp) []const u8 {
         .contains => "in",
     };
 }
-

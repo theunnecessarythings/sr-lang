@@ -267,8 +267,16 @@ pub const Interpreter = struct {
             },
             .Assign => {
                 const r = self.ast.stmts.get(.Assign, stmt_id);
-                if (self.ast.kind(r.left) != .Ident) return Error.InvalidStatement;
-                try self.setBinding(self.ast.exprs.get(.Ident, r.left).name, try self.evalExpr(r.right));
+                switch (r.left) {
+                    .expr => |e| {
+                        if (self.ast.kind(e) != .Ident) return Error.InvalidStatement;
+                        try self.setBinding(self.ast.exprs.get(.Ident, e).name, try self.evalExpr(r.right));
+                    },
+                    .pattern => |p| {
+                        if (self.ast.kind(p) != .Binding) return Error.InvalidStatement;
+                        try self.setBinding(self.ast.pats.get(.Binding, p).name, try self.evalExpr(r.right));
+                    },
+                }
             },
             .Return => {
                 const r = self.ast.stmts.get(.Return, stmt_id);
@@ -536,16 +544,46 @@ pub const Interpreter = struct {
 
     fn evalStructLit(self: *Interpreter, row: ast.Rows.StructLit) !Value {
         const fids = self.ast.exprs.sfv_pool.slice(row.fields);
-        const owner = self.resolveOwner(null, row.ty);
+        var spread_val: ?Value = null;
+        for (fids) |id| {
+            if (ast.structFieldSpreadExpr(self.ast, id)) |payload| {
+                const v = try self.evalExpr(payload);
+                if (v != .Struct) return Error.InvalidStatement;
+                spread_val = v;
+                break;
+            }
+        }
+
+        const owner = self.resolveOwner(spread_val, row.ty);
         var list = try std.ArrayListUnmanaged(StructField).initCapacity(self.allocator, fids.len);
         errdefer {
             for (list.items) |*f| f.value.destroy(self.allocator);
             list.deinit(self.allocator);
         }
+        if (spread_val) |sval| {
+            var val = sval;
+            for (sval.Struct.fields.items) |f| {
+                list.appendAssumeCapacity(.{ .name = f.name, .value = try self.cloneValue(f.value) });
+            }
+            val.destroy(self.allocator);
+        }
         for (fids) |id| {
             const f = self.ast.exprs.StructFieldValue.get(id);
-            if (f.name.isNone()) return Error.InvalidStatement;
-            list.appendAssumeCapacity(.{ .name = f.name.unwrap(), .value = try self.evalExpr(f.value) });
+            if (f.name.isNone()) continue;
+            const name = f.name.unwrap();
+            const v = try self.evalExpr(f.value);
+            var replaced = false;
+            for (list.items) |*field| {
+                if (field.name.eq(name)) {
+                    field.value.destroy(self.allocator);
+                    field.value = v;
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced) {
+                list.appendAssumeCapacity(.{ .name = name, .value = v });
+            }
         }
         return Value{ .Struct = .{ .fields = list, .owner = owner } };
     }
