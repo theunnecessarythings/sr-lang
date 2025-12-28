@@ -433,6 +433,7 @@ fn printComptimeValue(v: *const comp.ComptimeValue) void {
         .MlirAttribute => std.debug.print("<mlir-attribute>", .{}),
         .MlirModule => std.debug.print("<mlir-module>", .{}),
         .Function => std.debug.print("<function>", .{}),
+        .Code => std.debug.print("<code>", .{}),
         .Pointer => std.debug.print("<pointer>", .{}),
         .Map => |m| std.debug.print("<map len={d}>", .{m.entries.items.len}),
     }

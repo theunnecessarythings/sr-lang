@@ -364,7 +364,7 @@ pub const TypeInfo = struct {
     }
 };
 
-pub const TypeKind = enum(u8) { Void, Bool, I8, I16, I32, I64, U8, U16, U32, U64, F32, F64, Usize, Complex, Tensor, Simd, String, Any, Undef, Ptr, Slice, Array, DynArray, Map, Optional, Tuple, Function, Struct, Union, Enum, Variant, Error, ErrorSet, MlirModule, MlirAttribute, MlirType, TypeType, Future, Noreturn, Ast, TypeError };
+pub const TypeKind = enum(u8) { Void, Bool, I8, I16, I32, I64, U8, U16, U32, U64, F32, F64, Usize, Complex, Tensor, Simd, String, Any, Code, Undef, Ptr, Slice, Array, DynArray, Map, Optional, Tuple, Function, Struct, Union, Enum, Variant, Error, ErrorSet, MlirModule, MlirAttribute, MlirType, TypeType, Future, Noreturn, Ast, TypeError };
 
 pub const Rows = struct {
     pub const Void = struct {};
@@ -382,6 +382,7 @@ pub const Rows = struct {
     pub const Usize = struct {};
     pub const String = struct {};
     pub const Any = struct {};
+    pub const Code = struct {};
     pub const Undef = struct {};
     pub const Noreturn = struct {};
 
@@ -450,6 +451,7 @@ pub const TypeStore = struct {
     Usize: Table(Rows.Usize) = .{},
     String: Table(Rows.String) = .{},
     Any: Table(Rows.Any) = .{},
+    Code: Table(Rows.Code) = .{},
     Undef: Table(Rows.Undef) = .{},
     Noreturn: Table(Rows.Noreturn) = .{},
     MlirModule: Table(Rows.MlirModule) = .{},
@@ -503,6 +505,7 @@ pub const TypeStore = struct {
     t_usize: ?TypeId = null,
     t_string: ?TypeId = null,
     t_any: ?TypeId = null,
+    t_code: ?TypeId = null,
     t_undef: ?TypeId = null,
     t_type: ?TypeId = null,
     t_noreturn: ?TypeId = null,
@@ -626,6 +629,9 @@ pub const TypeStore = struct {
     }
     pub fn tAny(self: *TypeStore) TypeId {
         return self.mkPrim(.Any, &self.t_any);
+    }
+    pub fn tCode(self: *TypeStore) TypeId {
+        return self.mkPrim(.Code, &self.t_code);
     }
     pub fn tUndef(self: *TypeStore) TypeId {
         return self.mkPrim(.Undef, &self.t_undef);
@@ -902,6 +908,7 @@ pub const TypeStore = struct {
             .Usize => try w.print("usize", .{}),
             .String => try w.print("string", .{}),
             .Any => try w.print("any", .{}),
+            .Code => try w.print("Code", .{}),
             .Noreturn => try w.print("noreturn", .{}),
             .Undef => try w.print("undef", .{}),
             .MlirModule => try w.print("mlir.module", .{}),
@@ -1057,7 +1064,7 @@ pub const TypeStore = struct {
 
         const kind = self.getKind(type_id);
         switch (kind) {
-            .Void, .Bool, .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .F64, .Usize, .String, .Any, .Noreturn, .Undef, .MlirModule, .MlirAttribute, .MlirType, .TypeType, .TypeError, .Ast => try self.fmt(type_id, writer),
+            .Void, .Bool, .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .F64, .Usize, .String, .Any, .Code, .Noreturn, .Undef, .MlirModule, .MlirAttribute, .MlirType, .TypeType, .TypeError, .Ast => try self.fmt(type_id, writer),
             .Ptr => {
                 const r = self.get(.Ptr, type_id);
                 try writer.print("{s}", .{if (options.show_const and r.is_const) "*const " else "*"});

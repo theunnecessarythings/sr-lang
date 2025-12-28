@@ -20,11 +20,10 @@ test "composite_types: struct default values" {
 }
 
 test "composite_types: struct update syntax" {
-    return Error.Fail
-    // p1 := Point{ x: 10, y: 20 }
-    // p2 := Point{ x: 5, ..p1 }
-    // if !testing.expect_equal_i64(5, p2.x.(i64)) { return Error.Fail }
-    // if !testing.expect_equal_i64(20, p2.y.(i64)) { return Error.Fail }
+    p1 := Point{ x: 10, y: 20 }
+    p2 := Point{ x: 5, ..p1 }
+    if !testing.expect_equal_i64(5, p2.x.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(20, p2.y.(i64)) { return Error.Fail }
 }
 
 test "composite_types: nested structs" {

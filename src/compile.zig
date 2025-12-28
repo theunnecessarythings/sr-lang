@@ -540,7 +540,7 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const 
     const alloc = arena.allocator();
 
     var cmd = std.ArrayList([]const u8){};
-    try cmd.appendSlice(alloc, &[_][]const u8{ "clang", try std.fmt.allocPrint(alloc, "-O{s}", .{opt_lvl orelse "0"}) });
+    try cmd.appendSlice(alloc, &[_][]const u8{ "clang", try std.fmt.allocPrint(alloc, "-O{s}", .{opt_lvl orelse "0"}), "-w" });
     if (debug) try cmd.append(alloc, "-g");
     try cmd.appendSlice(alloc, &[_][]const u8{ "-o", "out/output_program", "out/output.ll" });
 

@@ -1,0 +1,77 @@
+package behavior_defer
+
+testing :: import "std/testing"
+
+// Helper globals or way to track execution? 
+// Since tests run in parallel or unsure context, better to use local variables if closures are supported.
+// But if closures aren't fully supported, I might need another way.
+// `behavior_functions.sr` didn't show closures.
+// I'll try to use a struct pointer modification if possible, or return values.
+
+// Wait, without closures, `defer` usually executes a statement or expression.
+// `defer x = x + 1` works if x is in scope.
+
+test "defer: basic execution" {
+    x := 0
+    {
+        defer { x = 1; }
+        if !testing.expect_equal_i64(0, x.(i64)) { return Error.Fail }
+    }
+    if !testing.expect_equal_i64(1, x.(i64)) { return Error.Fail }
+}
+
+test "defer: LIFO order" {
+    x := 0
+    {
+        defer { x = x + 10; } // Executed 2nd: 5 + 10 = 15
+        defer { x = x + 5; }  // Executed 1st: 0 + 5 = 5
+    }
+    if !testing.expect_equal_i64(15, x.(i64)) { return Error.Fail }
+}
+
+// Pure function modifying local variable is fine
+defer_test_f :: fn() i32 {
+    x := 10
+    defer { x = 20; } // This modifies local x, but return value is already evaluated?
+    // Usually `defer` runs *after* return expression evaluation but *before* function exit.
+    // If return value is by value, it won't change.
+    return x
+}
+
+test "defer: execution on return" {
+    // To test side effects:
+    // We can't easily test side effects without globals or pointers if return value is copied.
+    // Let's use a pointer if possible? 
+    // `behavior_pointers.sr` exists.
+    
+    val := 0
+    
+    defer_test_f_ptr(&val)
+    if !testing.expect_equal_i64(2, val.(i64)) { return Error.Fail }
+}
+
+defer_test_f_ptr :: proc(p: *i32) {
+    defer { p.* = 2; }
+    p.* = 1
+}
+
+DeferError :: error { Fail }
+
+errdefer_test_f :: proc(p: *i32, fail: bool) DeferError!i32 {
+    errdefer { p.* = 99; }
+    p.* = 1
+    if fail { return DeferError.Fail }
+    return 0
+}
+
+test "errdefer: execution on error" {
+    val := 0
+    _ = errdefer_test_f(&val, true) catch 0
+    if !testing.expect_equal_i64(99, val.(i64)) { return Error.Fail }
+}
+
+test "errdefer: no execution on success" {
+    val := 0
+    _ = errdefer_test_f(&val, false) catch 0
+    if !testing.expect_equal_i64(1, val.(i64)) { return Error.Fail }
+}

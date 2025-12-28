@@ -173,6 +173,7 @@ pub const Token = struct {
         coloneq,
         fatarrow,
         question,
+        backtick,
         lcurly,
         rcurly,
         lsquare,
@@ -317,6 +318,7 @@ pub const Token = struct {
                 .coloneq => ":=",
                 .fatarrow => "=>",
                 .question => "?",
+                .backtick => "`",
                 .lcurly => "{",
                 .rcurly => "}",
                 .lsquare => "[",
@@ -529,6 +531,7 @@ pub const Tokenizer = struct {
             .dotstar,
             .question,
             .bang,
+            .backtick,
 
             // keywords that end statements
             .keyword_true,
@@ -612,6 +615,10 @@ pub const Tokenizer = struct {
                     },
                     '?' => {
                         result.tag = .question;
+                        self.advance();
+                    },
+                    '`' => {
+                        result.tag = .backtick;
                         self.advance();
                     },
                     '{' => {

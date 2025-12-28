@@ -335,6 +335,7 @@ fn appendMlirSpliceValue(self: *Codegen, buf: *ArrayList(u8), value: comp.Compti
         .MlirModule => |mm| try self.appendMlirModuleText(buf, mm),
         .Pointer => try buf.appendSlice("<pointer>"),
         .Function => return error.MlirSpliceMissingValue,
+        .Code => return error.MlirSpliceMissingValue,
     }
 }
 
@@ -5306,7 +5307,7 @@ pub fn llvmTypeOf(self: *Codegen, ty: types.TypeId) !mlir.Type {
         .F32 => return self.f32_ty,
         .F64 => return self.f64_ty,
 
-        .Function, .Ptr, .MlirModule, .MlirAttribute => return self.llvm_ptr_ty,
+        .Function, .Ptr, .MlirModule, .MlirAttribute, .Code => return self.llvm_ptr_ty,
 
         .MlirType => {
             const mt = self.context.type_store.get(.MlirType, ty);

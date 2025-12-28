@@ -556,6 +556,12 @@ const Formatter = struct {
                 const node = self.exprs.get(.Ident, id);
                 try self.printLiteral(self.s(node.name));
             },
+            .Splice => {
+                const node = self.exprs.get(.Splice, id);
+                try self.printLiteral("`");
+                try self.printLiteral(self.s(node.name));
+                try self.printLiteral("`");
+            },
             .Prefix => {
                 const node = self.exprs.get(.Prefix, id);
                 try self.printLiteral(prefixOpStr(node.op));

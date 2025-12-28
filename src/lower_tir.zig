@@ -2114,7 +2114,13 @@ fn tryComptimeCall(
 
     if (!(is_print or is_get_type or is_type_of)) return null;
 
-    const api_ptr_bnd = env.lookup(f.builder.intern("comptime_api_ptr")) orelse unreachable;
+    const api_ptr_bnd = env.lookup(f.builder.intern("comptime_api_ptr")) orelse {
+        if (!loc.isNone()) {
+            const where = a.exprs.locs.get(loc.unwrap());
+            _ = self.context.diags.addError(where, .comptime_type_not_supported, .{}) catch {};
+        }
+        return error.LoweringBug;
+    };
     const api_ptr = api_ptr_bnd.value;
 
     const ptr_ty = self.context.type_store.mkPtr(self.context.type_store.tU8(), false);
@@ -3229,6 +3235,7 @@ fn lowerStructLit(
         if (self.context.type_store.getKind(opt.elem) == .Struct) ty0 = opt.elem;
     }
 
+    const ty0_kind = self.context.type_store.getKind(ty0);
     const fids = a.exprs.sfv_pool.slice(row.fields);
     var spread_expr: ?ast.ExprId = null;
     for (fids) |fid_idx| {
@@ -3238,8 +3245,29 @@ fn lowerStructLit(
         }
     }
 
+    if ((ty0_kind == .Variant or ty0_kind == .Error) and !row.ty.isNone() and a.kind(row.ty.unwrap()) == .FieldAccess) {
+        const fr = a.exprs.get(.FieldAccess, row.ty.unwrap());
+        if (self.tagIndexForCase(ty0, fr.field)) |tag_idx| {
+            const fields = if (ty0_kind == .Variant)
+                self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, ty0).variants)
+            else
+                self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, ty0).variants);
+            const payload_ty = self.context.type_store.Field.get(fields[tag_idx]).ty;
+            if (self.context.type_store.getKind(payload_ty) == .Struct) {
+                const payload_val = try self.lowerStructLit(ctx, a, env, f, blk, id, payload_ty);
+                const union_ty = self.getUnionTypeFromVariant(ty0) orelse return error.LoweringBug;
+                const union_val = blk.builder.tirValue(.UnionMake, blk, union_ty, loc, .{ .field_index = tag_idx, .value = payload_val });
+                const tag_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), loc, .{ .value = tag_idx });
+                const v = blk.builder.structMake(blk, ty0, &[_]tir.Rows.StructFieldInit{
+                    .{ .index = 0, .name = .none(), .value = tag_val },
+                    .{ .index = 1, .name = .none(), .value = union_val },
+                }, loc);
+                return if (expected_ty) |want| self.emitCoerce(blk, v, ty0, want, loc) else v;
+            }
+        }
+    }
+
     if (spread_expr != null) {
-        const ty0_kind = self.context.type_store.getKind(ty0);
         if (ty0_kind != .Struct) return error.LoweringBug;
 
         const type_fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Struct, ty0).fields);
@@ -3282,7 +3310,6 @@ fn lowerStructLit(
     defer field_inits.deinit(self.gpa);
     try field_inits.ensureTotalCapacity(self.gpa, fids.len); // Optimization: Pre-allocate known minimum
 
-    const ty0_kind = self.context.type_store.getKind(ty0);
     const type_fields = switch (ty0_kind) {
         .Struct => self.context.type_store.field_pool.slice(self.context.type_store.get(.Struct, ty0).fields),
         .Union => self.context.type_store.field_pool.slice(self.context.type_store.get(.Union, ty0).fields),
@@ -4517,11 +4544,18 @@ pub fn lowerExpr(
     expected_ty: ?types.TypeId,
     mode: LowerMode,
 ) anyerror!tir.ValueId {
+    const kind = a.kind(id);
+    if (kind == .CodeBlock) {
+        const idx = id.toRaw();
+        const has_type = idx < a.type_info.expr_types.items.len and a.type_info.expr_types.items[idx] != null;
+        const ty = if (has_type) self.getExprType(ctx, a, id) else self.context.type_store.tCode();
+        return self.safeUndef(blk, expected_ty orelse ty, optLoc(a, id));
+    }
     try self.ensureExprTypeStamped(ctx, a, id);
     _ = try self.refineExprType(ctx, a, env, id, self.getExprType(ctx, a, id));
     try self.ensureExprTypeNotError(ctx, a, id);
 
-    return switch (a.kind(id)) {
+    return switch (kind) {
         .Literal => self.lowerLiteral(ctx, a, blk, id, expected_ty),
         .NullLit => blk_null: {
             const loc = optLoc(a, id);
@@ -4544,6 +4578,20 @@ pub fn lowerExpr(
         .IndexAccess => self.lowerIndexAccess(ctx, a, env, f, blk, id, expected_ty, mode),
         .FieldAccess => self.lowerFieldAccess(ctx, a, env, f, blk, id, expected_ty, mode),
         .Block => try self.lowerBlockExprValue(ctx, a, env, f, blk, id, expected_ty orelse self.getExprType(ctx, a, id)),
+        .Splice => blk_splice: {
+            var cval = try self.getCachedComptimeValue(a, id);
+            if (cval) |*comptime_val| {
+                defer comptime_val.destroy(self.gpa);
+                if (comptime_val.* == .Code) {
+                    if (comp.codeExprFromCodeValue(a, comptime_val.Code)) |expr_id| {
+                        break :blk_splice try self.lowerExpr(ctx, a, env, f, blk, expr_id, expected_ty, mode);
+                    }
+                    return error.LoweringBug;
+                }
+                break :blk_splice try comp.constValueFromComptime(self, blk, expected_ty orelse self.getExprType(ctx, a, id), comptime_val.*);
+            }
+            return error.LoweringBug;
+        },
         .Ident => self.lowerIdent(ctx, a, env, f, blk, id, expected_ty, mode),
         .Binary => self.lowerBinary(ctx, a, env, f, blk, id, expected_ty),
         .Catch => self.lowerCatch(ctx, a, env, f, blk, id, expected_ty),

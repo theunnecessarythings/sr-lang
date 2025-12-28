@@ -428,6 +428,10 @@ fn lowerExpr(self: *Lower, id: cst.ExprId) anyerror!ast.ExprId {
             const row = self.cst_program.exprs.get(.Ident, id);
             break :blk self.ast_unit.exprs.add(.Ident, .{ .name = row.name, .loc = row.loc });
         },
+        .Splice => blk: {
+            const row = self.cst_program.exprs.get(.Splice, id);
+            break :blk self.ast_unit.exprs.add(.Splice, .{ .name = row.name, .loc = row.loc });
+        },
         .Literal => try self.lowerLiteral(id),
         .Prefix => blk: {
             const p = self.cst_program.exprs.get(.Prefix, id);

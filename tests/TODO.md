@@ -12,10 +12,10 @@ This document outlines the language constructs to be covered by behavioral tests
 - [x] Async function/procedure (`async`)
 - [x] Assembly function (`asm`)
 - [x] Pattern-based declarations
-  - [ ] Tuple destructuring
-  - [ ] Struct destructuring
-  - [ ] Variant destructuring
-  - [ ] Nested destructuring
+  - [x] Tuple destructuring
+  - [x] Struct destructuring
+  - [x] Variant destructuring
+  - [x] Nested destructuring
 
 ## Types & Literals
 - [ ] **Primitives**
@@ -53,10 +53,10 @@ This document outlines the language constructs to be covered by behavioral tests
 - [x] `while is` loops (pattern matching)
 - [x] `for` loops (range-based `..`, iterator-based)
 - [x] `match` expressions (see Patterns section)
-- [ ] `break` (with and without label, with value)
-- [ ] `continue` (with and without label)
-- [ ] `return` from functions
-- [ ] `unreachable` statement
+- [x] `break` (with and without label, with value)
+- [x] `continue` (with and without label)
+- [x] `return` from functions
+- [x] `unreachable` statement
 
 ## Expressions & Operators
 - [x] **Arithmetic**: `+`, `-`, `*`, `/`, `%`
@@ -94,18 +94,18 @@ This document outlines the language constructs to be covered by behavioral tests
 - [x] Array/Slice patterns (`[head, ..tail]`)
 - [x] Struct patterns (full, partial with `..`)
 - [x] Variant patterns
-- [ ] Patterns with `if` guards
+- [x] Patterns with `if` guards
 
 ## Functions & Closures
 - [x] Default arguments
-- [ ] Variadic functions
+- [x] Variadic functions
 - [ ] Closures (`|x| ...`)
 - [ ] Higher-order functions (passing functions as arguments)
 - [ ] Function pointers (assignment and calls)
 
 ## Defer & Error Handling
-- [ ] `defer` statement
-- [ ] `errdefer` statement
+- [x] `defer` statement
+- [x] `errdefer` statement
 
 ## Modules & Imports
 - [ ] `package` declarations

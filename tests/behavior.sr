@@ -19,8 +19,10 @@ _ :: import "behavior_char_literals"
 _ :: import "behavior_checked_casts"
 _ :: import "behavior_comparison_operators"
 _ :: import "behavior_complex_types"
+_ :: import "behavior_control_flow_advanced"
 _ :: import "behavior_declarations"
 _ :: import "behavior_default_arguments"
+_ :: import "behavior_defer"
 _ :: import "behavior_dynamic_arrays"
 _ :: import "behavior_enums"
 _ :: import "behavior_error_types"
@@ -29,6 +31,7 @@ _ :: import "behavior_extern"
 _ :: import "behavior_float_literals"
 _ :: import "behavior_for_loops"
 _ :: import "behavior_functions"
+_ :: import "behavior_functions_closures"
 _ :: import "behavior_generics"
 _ :: import "behavior_if_else"
 _ :: import "behavior_if_guard_patterns"
@@ -670,15 +673,15 @@ test "behavior: error union catch" {
     if !testing.expect_equal_i64(100, r2.(i64)) { return Error.Fail }
 }
 
-// add :: fn(a: i32, b: i32) i32 {
-//     return a + b
-// }
-//
-// test "behavior: function pointer call" {
-//     add_ptr := add
-//     r := add_ptr(10, 20)
-//     if !testing.expect_equal_i64(30, r.(i64)) { return Error.Fail }
-// }
+add :: fn(a: i32, b: i32) i32 {
+    return a + b
+}
+
+test "behavior: function pointer call" {
+    add_ptr := add
+    r := add_ptr(10, 20)
+    if !testing.expect_equal_i64(30, r.(i64)) { return Error.Fail }
+}
 
 // test "behavior: code block and insert" {
 //     const src =
@@ -888,10 +891,10 @@ inc :: fn(x: i32) i32 {
     return x + 1
 }
 
-// test "behavior: function pointer as argument" {
-//      r := apply(inc, 5)
-//      if !testing.expect_equal_i64(6, r.(i64)) { return Error.Fail }
-// }
+test "behavior: function pointer as argument" {
+    r := apply(inc, 5)
+    if !testing.expect_equal_i64(6, r.(i64)) { return Error.Fail }
+}
 
 // test "behavior: closure returning closure" {
 //     const src =

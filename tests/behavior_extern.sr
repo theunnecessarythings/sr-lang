@@ -20,6 +20,11 @@ test "declarations: extern fn with different input" {
     if !testing.expect_equal_f64(1.0, 0.000001, r) { return Error.Fail }
 }
 
+test "declarations: extern variadic with tuple spread" {
+    t := (1, 2)
+    printf("%d %d\n".ptr, ..t)
+}
+
 // extern_modify_int :: extern proc(ptr: *i32)
 //
 // test "declarations: extern fn with pointer type" {

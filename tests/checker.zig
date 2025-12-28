@@ -1170,12 +1170,6 @@ test "type/any/noreturn - success" {
     try checkProgram("tt :: type", &.{});
     try checkProgram("tv: type = i32", &.{});
 
-    // 'any' accepts values of different shapes
-    try checkProgram("at :: any", &.{});
-    try checkProgram("av1: any = 123", &.{});
-    try checkProgram("av2: any = \"str\"", &.{});
-    try checkProgram("av3: any = (1, 2)", &.{});
-
     // 'noreturn' for diverging function type
     try checkProgram("nt :: noreturn", &.{});
     try checkProgram("df :: fn() noreturn", &.{});
@@ -1187,6 +1181,12 @@ test "type/any/noreturn - failures" {
 
     // Use 'any' in arithmetic without concrete type
     try checkProgram("bad_a1 :: any + 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+
+    // 'any' is only allowed in parameter types
+    try checkProgram("at :: any", &[_]diag.DiagnosticCode{.invalid_any_type_annotation});
+
+    // 'any' is not allowed as a value type annotation
+    try checkProgram("av1: any = 123", &[_]diag.DiagnosticCode{.invalid_any_type_annotation});
 
     // 'noreturn' is not a storable value type
     try checkProgram("bad_n1: noreturn = 0", &[_]diag.DiagnosticCode{.noreturn_not_storable});

@@ -23,6 +23,26 @@ pub const FunctionValue = struct {
     ast: *ast.Ast,
 };
 
+pub const CodeValue = struct {
+    block: ast.ExprId,
+    ast: *ast.Ast,
+    captures: std.ArrayList(CodeBinding),
+};
+
+pub const CodeBinding = struct {
+    name: ast.StrId,
+    value: ComptimeValue,
+};
+
+pub fn codeExprFromCodeValue(ast_unit: *ast.Ast, code: CodeValue) ?ast.ExprId {
+    if (code.ast != ast_unit) return null;
+    if (ast_unit.kind(code.block) != .Block) return null;
+    const block = ast_unit.exprs.get(.Block, code.block);
+    const stmts = ast_unit.stmts.stmt_pool.slice(block.items);
+    if (stmts.len != 1 or ast_unit.kind(stmts[0]) != .Expr) return null;
+    return ast_unit.stmts.get(.Expr, stmts[0]).expr;
+}
+
 pub const Sequence = struct {
     values: std.ArrayList(ComptimeValue),
 };
@@ -68,6 +88,7 @@ pub const ComptimeValue = union(enum) {
     MlirAttribute: mlir.Attribute,
     MlirModule: mlir.Module,
     Function: FunctionValue,
+    Code: CodeValue,
 
     pub fn destroy(self: *ComptimeValue, gpa: std.mem.Allocator) void {
         switch (self.*) {
@@ -92,6 +113,10 @@ pub const ComptimeValue = union(enum) {
                 gpa.destroy(ptr);
             },
             .MlirModule => |*mod| mod.destroy(),
+            .Code => |*code| {
+                for (code.captures.items) |*binding| binding.value.destroy(gpa);
+                code.captures.deinit(gpa);
+            },
             else => {},
         }
         self.* = .Void;
@@ -151,16 +176,17 @@ pub const BindingInfo = struct {
 // Helper: Builtin Type Map
 // =============================
 
-const BuiltinTypeTag = enum { Bool, I8, I16, I32, I64, U8, U16, U32, U64, F32, F64, Usize, Char, String, Void, Any };
+const BuiltinTypeTag = enum { Bool, I8, I16, I32, I64, U8, U16, U32, U64, F32, F64, Usize, Char, String, Void, Any, Code };
 
-const builtin_type_map = std.ComptimeStringMap(BuiltinTypeTag, .{
+const builtin_type_map = std.StaticStringMap(BuiltinTypeTag).initComptime(.{
     .{ "bool", .Bool }, .{ "i8", .I8 },         .{ "i16", .I16 },   .{ "i32", .I32 },
     .{ "i64", .I64 },   .{ "u8", .U8 },         .{ "u16", .U16 },   .{ "u32", .U32 },
     .{ "u64", .U64 },   .{ "f32", .F32 },       .{ "f64", .F64 },   .{ "usize", .Usize },
     .{ "char", .Char }, .{ "string", .String }, .{ "void", .Void }, .{ "any", .Any },
+    .{ "Code", .Code },
 });
 
-fn getBuiltinTypeId(ts: *types.TypeStore, name: []const u8) ?types.TypeId {
+pub fn builtinTypeId(ts: *types.TypeStore, name: []const u8) ?types.TypeId {
     const tag = builtin_type_map.get(name) orelse return null;
     return switch (tag) {
         .Bool => ts.tBool(),
@@ -179,6 +205,7 @@ fn getBuiltinTypeId(ts: *types.TypeStore, name: []const u8) ?types.TypeId {
         .String => ts.tString(),
         .Void => ts.tVoid(),
         .Any => ts.tAny(),
+        .Code => ts.tCode(),
     };
 }
 
@@ -200,7 +227,7 @@ pub fn comptime_print_impl(context: ?*anyopaque, format: [*c]const u8, ...) call
 
 pub fn get_type_by_name_impl(context: ?*anyopaque, name: [*c]const u8) callconv(.c) u32 {
     const ctx: *Context = @ptrCast(@alignCast(context.?));
-    if (getBuiltinTypeId(ctx.type_store, std.mem.sliceTo(name, 0))) |ty| {
+    if (builtinTypeId(ctx.type_store, std.mem.sliceTo(name, 0))) |ty| {
         return ty.toRaw();
     }
     return ctx.type_store.tVoid().toRaw();
@@ -216,7 +243,7 @@ fn evaluateTypeExpr(self: *LowerTir, ctx: *LowerTir.LowerContext, a: *ast.Ast, e
             const ident = a.exprs.get(.Ident, expr);
             if (self.lookupComptimeAliasType(a, ident.name)) |ty| return ty;
             const name_slice = self.context.type_store.strs.get(ident.name);
-            return getBuiltinTypeId(self.context.type_store, name_slice) orelse error.TypeNotFound;
+            return builtinTypeId(self.context.type_store, name_slice) orelse error.TypeNotFound;
         },
         .StructType => {
             const st = a.exprs.get(.StructType, expr);
@@ -444,6 +471,17 @@ pub fn cloneComptimeValue(gpa: std.mem.Allocator, value: ComptimeValue) !Comptim
         .MlirModule => |mod| .{ .MlirModule = mlir.Module.fromOperation(mlir.Operation.clone(mod.getOperation())) },
         .Range => |rng| .{ .Range = rng },
         .Function => |func| .{ .Function = func },
+        .Code => |code| blk: {
+            var captures = try std.ArrayList(CodeBinding).initCapacity(gpa, code.captures.items.len);
+            errdefer {
+                for (captures.items) |*binding| binding.value.destroy(gpa);
+                captures.deinit(gpa);
+            }
+            for (code.captures.items) |binding| {
+                captures.appendAssumeCapacity(.{ .name = binding.name, .value = try cloneComptimeValue(gpa, binding.value) });
+            }
+            break :blk .{ .Code = .{ .block = code.block, .ast = code.ast, .captures = captures } };
+        },
     };
 }
 
@@ -492,6 +530,17 @@ pub fn hashComptimeValue(value: ComptimeValue) u64 {
         .Function => |f| {
             const r = f.expr.toRaw();
             hasher.update(std.mem.asBytes(&r));
+        },
+        .Code => |c| {
+            const r = c.block.toRaw();
+            const fid: u32 = @intCast(c.ast.file_id);
+            hasher.update(std.mem.asBytes(&r));
+            hasher.update(std.mem.asBytes(&fid));
+            hasher.update(std.mem.asBytes(&c.captures.items.len));
+            for (c.captures.items) |cap| {
+                hasher.update(std.mem.asBytes(&cap.name));
+                hasher.update(std.mem.asBytes(&hashComptimeValue(cap.value)));
+            }
         },
         .Range => |r| hasher.update(std.mem.asBytes(&.{ r.start, r.end, r.inclusive })),
     }

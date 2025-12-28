@@ -142,6 +142,7 @@ pub const Interpreter = struct {
             },
             .TypeOf => return self.evalTypeOf(self.ast.exprs.get(.TypeOf, expr)),
             .MlirBlock => return self.evalMlirBlock(expr),
+            .CodeBlock => return try self.evalCodeBlock(expr),
             // Type Expressions
             .EnumType => return self.evalEnumType(self.ast.exprs.get(.EnumType, expr)),
             .StructType => return self.evalStructType(self.ast.exprs.get(.StructType, expr)),
@@ -149,6 +150,94 @@ pub const Interpreter = struct {
             .VariantType => return self.evalVariantType(self.ast.exprs.get(.VariantType, expr)),
             .ArrayType, .DynArrayType, .SliceType, .MapType, .OptionalType, .ErrorSetType, .PointerType, .SimdType, .TensorType, .TypeType, .AnyType, .NoreturnType, .ErrorType => return self.evalTypeExpr(k, expr),
             else => return Error.UnsupportedExpr,
+        }
+    }
+
+    fn evalCodeBlock(self: *Interpreter, expr: ast.ExprId) !Value {
+        const block_id = self.ast.exprs.get(.CodeBlock, expr).block;
+        var name_set = std.AutoArrayHashMapUnmanaged(ast.StrId, void){};
+        defer name_set.deinit(self.allocator);
+        try self.collectSpliceNamesInExpr(block_id, &name_set);
+
+        var captures = std.ArrayList(comptime_mod.CodeBinding){};
+        errdefer {
+            for (captures.items) |*binding| binding.value.destroy(self.allocator);
+            captures.deinit(self.allocator);
+        }
+
+        var it = name_set.iterator();
+        while (it.next()) |entry| {
+            if (self.findBinding(entry.key_ptr.*)) |b| {
+                try captures.append(self.allocator, .{ .name = b.name, .value = try self.cloneValue(b.value) });
+            }
+        }
+
+        return Value{ .Code = .{ .block = block_id, .ast = self.ast, .captures = captures } };
+    }
+
+    fn collectSpliceNamesInExpr(self: *Interpreter, expr: ast.ExprId, names: *std.AutoArrayHashMapUnmanaged(ast.StrId, void)) !void {
+        const kind = self.ast.kind(expr);
+        if (kind == .Splice) {
+            const row = self.ast.exprs.get(.Splice, expr);
+            try names.put(self.allocator, row.name, {});
+            return;
+        }
+        if (kind == .CodeBlock) return;
+        switch (kind) {
+            inline else => |k| {
+                const row = self.ast.exprs.get(k, expr);
+                inline for (@typeInfo(@TypeOf(row)).@"struct".fields) |f| {
+                    if (comptime std.mem.eql(u8, f.name, "loc")) continue;
+                    if (f.type == ast.ExprId) {
+                        try self.collectSpliceNamesInExpr(@field(row, f.name), names);
+                    } else if (f.type == ast.OptExprId) {
+                        const opt = @field(row, f.name);
+                        if (!opt.isNone()) try self.collectSpliceNamesInExpr(opt.unwrap(), names);
+                    } else if (f.type == ast.RangeExpr) {
+                        for (self.ast.exprs.expr_pool.slice(@field(row, f.name))) |child| {
+                            try self.collectSpliceNamesInExpr(child, names);
+                        }
+                    } else if (f.type == ast.RangeStmt) {
+                        for (self.ast.stmts.stmt_pool.slice(@field(row, f.name))) |sid| {
+                            try self.collectSpliceNamesInStmt(sid, names);
+                        }
+                    } else if (f.type == ast.RangeMatchArm) {
+                        for (self.ast.exprs.arm_pool.slice(@field(row, f.name))) |arm_id| {
+                            const arm = self.ast.exprs.MatchArm.get(arm_id);
+                            if (!arm.guard.isNone()) try self.collectSpliceNamesInExpr(arm.guard.unwrap(), names);
+                            try self.collectSpliceNamesInExpr(arm.body, names);
+                        }
+                    }
+                }
+            },
+        }
+    }
+
+    fn collectSpliceNamesInStmt(self: *Interpreter, sid: ast.StmtId, names: *std.AutoArrayHashMapUnmanaged(ast.StrId, void)) anyerror!void {
+        switch (self.ast.kind(sid)) {
+            .Expr => try self.collectSpliceNamesInExpr(self.ast.stmts.get(.Expr, sid).expr, names),
+            .Decl => {
+                const decl = self.ast.exprs.Decl.get(self.ast.stmts.get(.Decl, sid).decl);
+                if (!decl.ty.isNone()) try self.collectSpliceNamesInExpr(decl.ty.unwrap(), names);
+                try self.collectSpliceNamesInExpr(decl.value, names);
+            },
+            .Assign => {
+                const row = self.ast.stmts.get(.Assign, sid);
+                if (row.left == .expr) try self.collectSpliceNamesInExpr(row.left.expr, names);
+                try self.collectSpliceNamesInExpr(row.right, names);
+            },
+            .Insert => try self.collectSpliceNamesInExpr(self.ast.stmts.get(.Insert, sid).expr, names),
+            .Return => {
+                const row = self.ast.stmts.get(.Return, sid);
+                if (!row.value.isNone()) try self.collectSpliceNamesInExpr(row.value.unwrap(), names);
+            },
+            .Break => {
+                const row = self.ast.stmts.get(.Break, sid);
+                if (!row.value.isNone()) try self.collectSpliceNamesInExpr(row.value.unwrap(), names);
+            },
+            .Defer => try self.collectSpliceNamesInExpr(self.ast.stmts.get(.Defer, sid).expr, names),
+            .ErrDefer => try self.collectSpliceNamesInExpr(self.ast.stmts.get(.ErrDefer, sid).expr, names),
+            else => {},
         }
     }
 
@@ -262,7 +351,13 @@ pub const Interpreter = struct {
                 if (d.pattern.isNone()) return Error.InvalidStatement;
                 const pid = d.pattern.unwrap();
                 if (self.ast.kind(pid) == .Binding) {
-                    try self.setBinding(self.ast.pats.get(.Binding, pid).name, try self.evalExpr(d.value));
+                    const name = self.ast.pats.get(.Binding, pid).name;
+                    if (!d.ty.isNone() and self.ast.kind(d.ty.unwrap()) == .TypeType) {
+                        const ty = try self.typeIdFromTypeExpr(d.value);
+                        try self.setBinding(name, Value{ .Type = ty });
+                    } else {
+                        try self.setBinding(name, try self.evalExpr(d.value));
+                    }
                 } else return Error.InvalidStatement;
             },
             .Assign => {
@@ -281,6 +376,11 @@ pub const Interpreter = struct {
             .Return => {
                 const r = self.ast.stmts.get(.Return, stmt_id);
                 return if (!r.value.isNone()) try self.evalExpr(r.value.unwrap()) else Value{ .Void = {} };
+            },
+            .Insert => {
+                const r = self.ast.stmts.get(.Insert, stmt_id);
+                var v = try self.evalExpr(r.expr);
+                v.destroy(self.allocator);
             },
             else => return Error.InvalidStatement,
         }
@@ -842,7 +942,7 @@ pub const Interpreter = struct {
             if (ts.getKind(ty) == .TypeType) return Value{ .Type = ts.get(.TypeType, ty).of };
 
         if (self.ast.type_info.getExport(name)) |e| return Value{ .Type = e.ty };
-        if (lookupBuiltinType(self.ast.exprs.strs.get(name), ts)) |t| return Value{ .Type = t };
+        if (comptime_mod.builtinTypeId(ts, self.ast.exprs.strs.get(name))) |t| return Value{ .Type = t };
 
         for (self.ast.exprs.decl_pool.slice(self.ast.unit.decls)) |d| {
             const r = self.ast.exprs.Decl.get(d);
@@ -858,28 +958,6 @@ pub const Interpreter = struct {
             else => false,
         };
     }
-    fn lookupBuiltinType(name: []const u8, ts: *types.TypeStore) ?types.TypeId {
-        if (std.mem.eql(u8, name, "bool")) return ts.tBool();
-        if (std.mem.eql(u8, name, "i8")) return ts.tI8();
-        if (std.mem.eql(u8, name, "i16")) return ts.tI16();
-        if (std.mem.eql(u8, name, "i32")) return ts.tI32();
-        if (std.mem.eql(u8, name, "i64")) return ts.tI64();
-        if (std.mem.eql(u8, name, "u8")) return ts.tU8();
-        if (std.mem.eql(u8, name, "u16")) return ts.tU16();
-        if (std.mem.eql(u8, name, "u32")) return ts.tU32();
-        if (std.mem.eql(u8, name, "u64")) return ts.tU64();
-        if (std.mem.eql(u8, name, "usize")) return ts.tUsize();
-        if (std.mem.eql(u8, name, "f32")) return ts.tF32();
-        if (std.mem.eql(u8, name, "f64")) return ts.tF64();
-        if (std.mem.eql(u8, name, "void")) return ts.tVoid();
-        if (std.mem.eql(u8, name, "string")) return ts.tString();
-        if (std.mem.eql(u8, name, "any")) return ts.tAny();
-        if (std.mem.eql(u8, name, "char")) return ts.tU32();
-        if (std.mem.eql(u8, name, "Error")) return ts.tTestError();
-        if (std.mem.eql(u8, name, "type")) return ts.mkTypeType(ts.tAny());
-        return null;
-    }
-
     fn evalBinary(self: *Interpreter, row: ast.Rows.Binary) !Value {
         var l = try self.evalExpr(row.left);
         defer l.destroy(self.allocator);
@@ -1054,6 +1132,17 @@ pub const Interpreter = struct {
                 return Value{ .Pointer = n };
             },
             .Function => Value{ .Function = v.Function },
+            .Code => |code| blk: {
+                var captures = try std.ArrayList(comptime_mod.CodeBinding).initCapacity(self.allocator, code.captures.items.len);
+                errdefer {
+                    for (captures.items) |*binding| binding.value.destroy(self.allocator);
+                    captures.deinit(self.allocator);
+                }
+                for (code.captures.items) |binding| {
+                    captures.appendAssumeCapacity(.{ .name = binding.name, .value = try self.cloneValue(binding.value) });
+                }
+                break :blk Value{ .Code = .{ .block = code.block, .ast = code.ast, .captures = captures } };
+            },
             else => v,
         };
     }

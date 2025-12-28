@@ -289,7 +289,7 @@ pub fn ensureDIType(self: *Codegen, ty: types.TypeId) !mlir.Attribute {
         .Usize => diBasic(self, "usize", POINTER_SIZE_BITS, .Unsigned),
         .F32 => diBasic(self, "f32", 32, .FloatT),
         .F64 => diBasic(self, "f64", 64, .FloatT),
-        .Undef, .MlirModule, .MlirAttribute, .MlirType, .TypeType, .Future, .Ast, .TypeError => try ensureDINullTypeAttr(self),
+        .Undef, .MlirModule, .MlirAttribute, .MlirType, .TypeType, .Future, .Ast, .TypeError, .Code => try ensureDINullTypeAttr(self),
 
         .Ptr => blk: {
             const inner = try ensureDIType(self, self.context.type_store.get(.Ptr, ty).elem);

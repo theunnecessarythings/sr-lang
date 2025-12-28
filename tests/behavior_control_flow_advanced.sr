@@ -1,0 +1,75 @@
+package behavior_control_flow_advanced
+
+testing :: import "std/testing"
+
+test "control_flow: labeled break" {
+    i := 0
+    Outer: while i < 5 {
+        j := 0
+        while j < 5 {
+            if i == 2 { break :Outer }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    if !testing.expect_equal_i64(2, i.(i64)) { return Error.Fail }
+}
+
+test "control_flow: labeled continue" {
+    i := 0
+    hits := 0
+    Outer: while i < 3 {
+        i = i + 1
+        j := 0
+        while j < 3 {
+            j = j + 1
+            if j == 2 { continue :Outer } // Skips j=2 and j=3, goes to next i
+            hits = hits + 1
+        }
+    }
+    // i=1: j=1 (hit), j=2 (cont) -> hits=1
+    // i=2: j=1 (hit), j=2 (cont) -> hits=2
+    // i=3: j=1 (hit), j=2 (cont) -> hits=3
+    // Loop ends when i=3 checked at start (Wait, i incremented at start)
+    // i=0 -> inc to 1. j=1 hit, j=2 cont.
+    // i=1 -> inc to 2. j=1 hit, j=2 cont.
+    // i=2 -> inc to 3. j=1 hit, j=2 cont.
+    // i=3 -> loop terminates.
+    if !testing.expect_equal_i64(3, hits.(i64)) { return Error.Fail }
+}
+
+test "control_flow: break with value (expression loop)" {
+    result := while true {
+        break 42
+    }
+    if !testing.expect_equal_i64(42, result.(i64)) { return Error.Fail }
+}
+
+test "control_flow: labeled break with value" {
+    result := Outer: while true {
+        Inner: while true {
+            break :Outer 100
+        }
+        break 0 // Should not be reached
+    }
+    if !testing.expect_equal_i64(100, result.(i64)) { return Error.Fail }
+}
+
+// Unreachable is hard to test "successfully" because it crashes or is undefined behavior if reached.
+// But we can test that it compiles and maybe put it in a dead code path.
+test "control_flow: unreachable in dead code" {
+    if false {
+        unreachable
+    }
+    if !testing.expect_equal_i64(1, 1) { return Error.Fail }
+}
+
+// TODO: If `break` with value is allowed in `for` loops, test that too.
+// "break from for loop with value" was seen in search results in `behavior.sr`.
+test "control_flow: break from for loop with value" {
+    // pattern search showed this might be possible
+    x := for i in 0..10 {
+        if i == 5 { break i }
+    }
+    if !testing.expect_equal_i64(5, x.(i64)) { return Error.Fail }
+}

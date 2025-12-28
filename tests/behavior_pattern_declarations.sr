@@ -62,3 +62,68 @@ test "declarations: wildcard in tuple destructuring" {
     if !testing.expect_equal_i64(1, a.(i64)) { return Error.Fail }
     if !testing.expect_equal_i64(3, c.(i64)) { return Error.Fail }
 }
+
+test "assignments: tuple destructuring" {
+    a := 0
+    b := 0
+    (a, b) = (10, 20)
+    if !testing.expect_equal_i64(10, a.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(20, b.(i64)) { return Error.Fail }
+}
+
+test "assignments: tuple swap" {
+    a := 1
+    b := 2
+    (a, b) = (b, a)
+    if !testing.expect_equal_i64(2, a.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(1, b.(i64)) { return Error.Fail }
+}
+
+test "assignments: nested tuple destructuring" {
+    a := 0
+    b := 0
+    c := 0
+    (a, (b, c)) = (1, (2, 3))
+    if !testing.expect_equal_i64(1, a.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(2, b.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(3, c.(i64)) { return Error.Fail }
+}
+
+test "assignments: struct destructuring" {
+    x := 0
+    y := 0
+    Point{ x: x, y: y } = Point{ x: 100, y: 200 }
+    if !testing.expect_equal_i64(100, x.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(200, y.(i64)) { return Error.Fail }
+}
+
+test "assignments: nested struct destructuring" {
+    tx := 0
+    ty := 0
+    bx := 0
+    by := 0
+    Rect{ tl: Point{ x: tx, y: ty }, br: Point{ x: bx, y: by } } = Rect{ tl: Point{ x: 1, y: 2 }, br: Point{ x: 3, y: 4 } }
+    if !testing.expect_equal_i64(1, tx.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(2, ty.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(3, bx.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(4, by.(i64)) { return Error.Fail }
+}
+
+test "assignments: wildcard in tuple destructuring" {
+    a := 0
+    c := 0
+    (a, _, c) = (1, 2, 3)
+    if !testing.expect_equal_i64(1, a.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(3, c.(i64)) { return Error.Fail }
+}
+
+test "assignments: slice rest destructuring" {
+    a := 0
+    rest : []i32 = ([0])[0..1]
+    [a, ..rest] = [10, 20, 30, 40]
+    if !testing.expect_equal_i64(10, a.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(3, rest.len.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(20, rest[0].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(30, rest[1].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(40, rest[2].(i64)) { return Error.Fail }
+}

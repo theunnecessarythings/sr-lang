@@ -238,14 +238,16 @@ test "tir: generic call monomorphizes with mangled callee" {
 test "tir: any parameters specialize to argument types" {
     const src =
         \\
-        \\ max_any :: fn(a: any, b: any) any {
-        \\   return if a > b { a } else { b };
+        \\ max_any :: fn(a: any, b: any) void {
+        \\   _ = if a > b { a } else { b };
         \\ }
         \\ useInt :: fn(x: i32, y: i32) i32 {
-        \\   return max_any(x, y);
+        \\   max_any(x, y);
+        \\   return 0;
         \\ }
-        \\ useFloat :: fn(x: f64, y: f64) f64 {
-        \\   return max_any(x, y);
+        \\ useFloat :: fn(x: f64, y: f64) i32 {
+        \\   max_any(x, y);
+        \\   return 0;
         \\ }
     ;
 
@@ -268,14 +270,14 @@ test "tir: any parameters specialize to argument types" {
         const fname = t.instrs.strs.get(frow.name);
         if (std.mem.eql(u8, fname, expected_i32)) {
             found_i32 = true;
-            try testing.expectEqual(type_store.tI32().toRaw(), frow.result.toRaw());
+            try testing.expectEqual(type_store.tVoid().toRaw(), frow.result.toRaw());
             const params = t.funcs.param_pool.slice(frow.params);
             try testing.expectEqual(@as(usize, 2), params.len);
             try testing.expectEqual(type_store.tI32().toRaw(), t.funcs.Param.get(params[0]).ty.toRaw());
             try testing.expectEqual(type_store.tI32().toRaw(), t.funcs.Param.get(params[1]).ty.toRaw());
         } else if (std.mem.eql(u8, fname, expected_f64)) {
             found_f64 = true;
-            try testing.expectEqual(type_store.tF64().toRaw(), frow.result.toRaw());
+            try testing.expectEqual(type_store.tVoid().toRaw(), frow.result.toRaw());
             const params = t.funcs.param_pool.slice(frow.params);
             try testing.expectEqual(@as(usize, 2), params.len);
             try testing.expectEqual(type_store.tF64().toRaw(), t.funcs.Param.get(params[0]).ty.toRaw());
@@ -786,11 +788,11 @@ test "tir: imported call uses mangled prefix" {
 test "tir: runtime any specialization rejects mismatched numeric operands" {
     const gpa = std.heap.page_allocator;
     const src =
-        \\ add :: fn(a: any, b: any) any {
-        \\     return a + b
+        \\ add :: fn(a: any, b: any) void {
+        \\     _ = a + b
         \\ }
         \\ main :: fn() i32 {
-        \\     _ = add(1, 2.5)
+        \\     add(1, 2.5)
         \\     return 0
         \\ }
     ;
@@ -831,6 +833,55 @@ test "tir: runtime any specialization rejects mismatched numeric operands" {
 
     try testing.expectEqual(@as(usize, 1), context.diags.count());
     try testing.expectEqual(diag.DiagnosticCode.invalid_binary_op_operands, context.diags.messages.items[0].code);
+}
+
+test "tir: runtime reflection reports comptime API missing" {
+    const gpa = std.heap.page_allocator;
+    const src =
+        \\ type_of :: extern proc(any) u32
+        \\ main :: fn() i32 {
+        \\     v := 123
+        \\     _ = type_of(v)
+        \\     return 0
+        \\ }
+    ;
+
+    var context = compiler.compile.Context.init(gpa);
+    defer context.deinit();
+
+    const src0 = try std.mem.concatWithSentinel(gpa, u8, &.{src}, 0);
+    defer gpa.free(src0);
+
+    var parser = compiler.parser.Parser.init(gpa, src0, 0, &context);
+    var cst = try parser.parse();
+    defer cst.deinit();
+
+    var lower1 = try compiler.lower_to_ast.Lower.init(gpa, &cst, &context, 0);
+    defer lower1.deinit();
+    const result = try lower1.run();
+    defer result.deinit();
+    const hir = result.ast_unit;
+
+    var pipeline = compiler.pipeline.Pipeline.init(gpa, &context);
+    var chk = compiler.checker.Checker.init(gpa, &context, &pipeline);
+    defer chk.deinit();
+    try chk.runAst(hir);
+    try testing.expectEqual(@as(usize, 0), context.diags.count());
+
+    var lt = compiler.lower_tir.LowerTir.init(gpa, &context, &pipeline, &chk);
+    defer lt.deinit();
+
+    if (lt.runAst(hir)) |tir_result| {
+        defer tir_result.deinit();
+    } else |err| {
+        switch (err) {
+            error.LoweringBug, error.ComptimeExecutionFailed, error.UnsupportedComptimeType => {},
+            else => return err,
+        }
+    }
+
+    try testing.expectEqual(@as(usize, 1), context.diags.count());
+    try testing.expectEqual(diag.DiagnosticCode.comptime_type_not_supported, context.diags.messages.items[0].code);
 }
 
 // test "tir: catch expression carries value to join" {

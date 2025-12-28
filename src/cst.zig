@@ -391,6 +391,7 @@ pub const Comment = struct { kind: CommentKind, loc: LocId };
 pub const ExprKind = enum(u16) {
     Literal,
     Ident,
+    Splice,
     Prefix,
     Infix,
     Deref,
@@ -452,6 +453,7 @@ pub const ExprKind = enum(u16) {
 pub const Rows = struct {
     pub const Literal = struct { value: StrId, tag_small: LiteralKind, loc: LocId };
     pub const Ident = struct { name: StrId, loc: LocId };
+    pub const Splice = struct { name: StrId, loc: LocId };
     pub const Prefix = struct { right: ExprId, op: PrefixOp, loc: LocId };
     pub const Infix = struct { left: ExprId, right: ExprId, op: InfixOp, loc: LocId };
     pub const Deref = struct { expr: ExprId, loc: LocId };
@@ -594,6 +596,7 @@ pub const ExprStore = struct {
 
     Literal: Table(Rows.Literal) = .{},
     Ident: Table(Rows.Ident) = .{},
+    Splice: Table(Rows.Splice) = .{},
     Prefix: Table(Rows.Prefix) = .{},
     Infix: Table(Rows.Infix) = .{},
     Deref: Table(Rows.Deref) = .{},
@@ -868,6 +871,10 @@ pub const DodPrinter = struct {
             .Ident => {
                 const n = self.exprs.get(.Ident, id);
                 try self.leaf("(ident \"{s}\")", .{self.s(n.name)});
+            },
+            .Splice => {
+                const n = self.exprs.get(.Splice, id);
+                try self.leaf("(splice \"{s}\")", .{self.s(n.name)});
             },
             .Prefix => {
                 const n = self.exprs.get(.Prefix, id);

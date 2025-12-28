@@ -323,6 +323,7 @@ fn isTypeStart(_: *const Parser, tag: Token.Tag) bool {
     return switch (tag) {
         .identifier,
         .raw_identifier,
+        .backtick,
         .star,
         .question,
         .lsquare,
@@ -730,6 +731,7 @@ fn nud(self: *Parser, tag: Token.Tag, comptime mode: ParseMode) anyerror!cst.Exp
         .keyword_code => return try self.parseCodeBlock(),
         .keyword_mlir => return try self.parseMlir(),
         .keyword_insert => return try self.parseInsert(),
+        .backtick => return try self.parseSplice(),
         else => {},
     }
 
@@ -2629,6 +2631,22 @@ fn parseInsert(self: *Parser) !cst.ExprId {
     self.advance(); // "insert"
     const e = try self.parseExpr(0, .expr);
     return self.addExpr(.Insert, .{ .expr = e, .loc = loc });
+}
+
+fn parseSplice(self: *Parser) !cst.ExprId {
+    const start_loc = self.cur.loc;
+    try self.expect(.backtick);
+    const name_tok = self.cur;
+    if (name_tok.tag != .identifier and name_tok.tag != .raw_identifier) {
+        self.errorNote(name_tok.loc, .unexpected_token, .{}, name_tok.loc, .token_cannot_start_expression);
+        return error.UnexpectedToken;
+    }
+    const name = self.intern(self.slice(name_tok));
+    self.advance();
+    const end_loc = self.cur.loc;
+    try self.expect(.backtick);
+    const loc = self.toLocId(start_loc.merge(end_loc));
+    return self.addExpr(.Splice, .{ .name = name, .loc = loc });
 }
 
 /// Parse an MLIR block literal embedded inside SR source.

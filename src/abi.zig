@@ -29,7 +29,7 @@ pub fn abiSizeAlign(self: *Codegen, ty: types.TypeId) SizeAlign {
         .Bool, .I8, .U8 => return .{ .size = 1, .alignment = 1 },
         .I16, .U16 => return .{ .size = 2, .alignment = 2 },
         .I32, .U32, .F32 => return .{ .size = 4, .alignment = 4, .hasFloat = ts.getKind(ty) == .F32, .allIntsOnly = ts.getKind(ty) != .F32 },
-        .I64, .U64, .Usize, .Ptr, .Any, .Function, .MlirModule, .MlirAttribute, .MlirType, .F64 => return .{ .size = 8, .alignment = 8, .hasFloat = ts.getKind(ty) == .F64, .allIntsOnly = ts.getKind(ty) != .F64 },
+        .I64, .U64, .Usize, .Ptr, .Any, .Code, .Function, .MlirModule, .MlirAttribute, .MlirType, .F64 => return .{ .size = 8, .alignment = 8, .hasFloat = ts.getKind(ty) == .F64, .allIntsOnly = ts.getKind(ty) != .F64 },
 
         .Simd => {
             const S = ts.get(.Simd, ty);

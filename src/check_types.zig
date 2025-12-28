@@ -61,7 +61,7 @@ fn collectExprIds(
     try out.append(gpa, expr_id);
     const expr_store = &ast_unit.exprs;
     switch (ast_unit.kind(expr_id)) {
-        .Literal, .Ident, .NullLit, .UndefLit, .AnyType, .TypeType, .NoreturnType, .Continue => {},
+        .Literal, .Ident, .Splice, .NullLit, .UndefLit, .AnyType, .TypeType, .NoreturnType, .Continue => {},
         .Binary => {
             const row = expr_store.get(.Binary, expr_id);
             try collectExprIds(gpa, ast_unit, row.left, out);
@@ -271,6 +271,11 @@ pub fn exprMentionsAnyNameBitset(
     names: *const std.DynamicBitSetUnmanaged,
 ) !bool {
     if (names.count() == 0) return false;
+    if (ast_unit.kind(expr_id) == .Ident) {
+        const name = ast_unit.exprs.get(.Ident, expr_id).name;
+        const raw = name.toRaw();
+        return raw < names.capacity() and names.isSet(raw);
+    }
     var ids = List(ast.ExprId){};
     defer ids.deinit(gpa);
     try collectExprIds(gpa, ast_unit, expr_id, &ids);
@@ -281,6 +286,16 @@ pub fn exprMentionsAnyNameBitset(
         if (raw < names.capacity() and names.isSet(raw)) return true;
     }
     return false;
+}
+
+pub fn findAnyTypeExpr(gpa: std.mem.Allocator, ast_unit: *ast.Ast, expr_id: ast.ExprId) !?ast.ExprId {
+    var ids = List(ast.ExprId){};
+    defer ids.deinit(gpa);
+    try collectExprIds(gpa, ast_unit, expr_id, &ids);
+    for (ids.items) |eid| {
+        if (ast_unit.kind(eid) == .AnyType) return eid;
+    }
+    return null;
 }
 
 pub const PatternChildDesc = union(enum) {
@@ -652,7 +667,7 @@ fn clearExprTypes(ast_unit: *ast.Ast, expr_id: ast.ExprId) void {
 
     const expr_store = &ast_unit.exprs;
     switch (ast_unit.kind(expr_id)) {
-        .Literal, .Ident, .NullLit, .UndefLit, .AnyType, .TypeType, .NoreturnType, .Continue => {},
+        .Literal, .Ident, .Splice, .NullLit, .UndefLit, .AnyType, .TypeType, .NoreturnType, .Continue => {},
         inline .Unary, .Deref, .Defer, .ErrDefer, .ErrUnwrap, .OptionalUnwrap, .Await, .Insert, .TypeOf => |k| clearExprTypes(ast_unit, expr_store.get(k, expr_id).expr),
         .Binary => {
             const row = expr_store.get(.Binary, expr_id);
@@ -903,7 +918,7 @@ pub fn typeAlign(ctx: *const compile.Context, ty_id: types.TypeId) usize {
         .Bool, .I8, .U8 => 1,
         .I16, .U16 => 2,
         .I32, .U32, .F32 => 4,
-        .I64, .U64, .Usize, .F64, .Ptr, .MlirModule, .MlirAttribute, .MlirType, .Function => 8,
+        .I64, .U64, .Usize, .F64, .Ptr, .MlirModule, .MlirAttribute, .MlirType, .Function, .Code => 8,
         .Simd => blk: { // Assume natural vector alignment (at least 16) on 64-bit targets
             const elem_align = typeAlign(ctx, ctx.type_store.get(.Simd, ty_id).elem);
             break :blk if (elem_align < 16) 16 else elem_align;
@@ -957,7 +972,7 @@ pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) usize {
         .I16, .U16 => 2,
         .I32, .U32, .F32 => 4,
         .I64, .U64, .F64, .Usize => 8, // best-effort default for 64-bit targets
-        .Ptr => 8, // best-effort default for 64-bit targets
+        .Ptr, .Code => 8, // best-effort default for 64-bit targets
         .MlirModule, .MlirAttribute, .MlirType => 8,
         .Enum => typeSize(ctx, ctx.type_store.get(.Enum, ty_id).tag_type),
         .Simd => blk: {
@@ -1412,14 +1427,14 @@ pub fn typeFromTypeExprWithBindings(
 
             // 2. Check Primitives (Optimized Lookup)
             const ident_name = ast_unit.exprs.strs.get(name);
-            const PrimitiveTag = enum { bool, i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, usize, char, string, void, any, err, type_type };
+            const PrimitiveTag = enum { bool, i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, usize, char, string, void, any, err, type_type, code };
             const map = std.StaticStringMap(PrimitiveTag).initComptime(.{
                 .{ "bool", .bool }, .{ "i8", .i8 },         .{ "i16", .i16 },
                 .{ "i32", .i32 },   .{ "i64", .i64 },       .{ "u8", .u8 },
                 .{ "u16", .u16 },   .{ "u32", .u32 },       .{ "u64", .u64 },
                 .{ "f32", .f32 },   .{ "f64", .f64 },       .{ "usize", .usize },
                 .{ "char", .char }, .{ "string", .string }, .{ "void", .void },
-                .{ "any", .any },   .{ "Error", .err },     .{ "type", .type_type },
+                .{ "any", .any },   .{ "Error", .err },     .{ "type", .type_type }, .{ "Code", .code },
             });
 
             if (map.get(ident_name)) |tag| {
@@ -1442,6 +1457,7 @@ pub fn typeFromTypeExprWithBindings(
                     .any => ts.tAny(),
                     .err => ts.tTestError(),
                     .type_type => ts.mkTypeType(ts.tAny()),
+                    .code => ts.tCode(),
                 };
                 break :blk_ident .{ true, ty };
             }
@@ -1511,6 +1527,20 @@ pub fn typeFromTypeExprWithBindings(
 
             try self.context.diags.addError(ast_unit.exprs.locs.get(ident.loc), .undefined_identifier, .{ident_name});
             break :blk_ident .{ false, ts.tTypeError() };
+        },
+        .Splice => blk_splice: {
+            if (ast_unit.type_info.getComptimeValue(id)) |cached| {
+                if (cached.* == .Type) break :blk_splice .{ true, cached.Type };
+            }
+            const name = ast_unit.exprs.get(.Splice, id).name;
+            if (ast_unit.type_info.cloneComptimeBindingValue(ast_unit.type_info.gpa, name) catch null) |val| {
+                try ast_unit.type_info.setComptimeValue(id, val);
+                if (val == .Type) break :blk_splice .{ true, val.Type };
+            }
+            const row = ast_unit.exprs.get(.Splice, id);
+            const name_str = ast_unit.exprs.strs.get(row.name);
+            try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .code_splice_requires_type, .{name_str});
+            break :blk_splice .{ false, ts.tTypeError() };
         },
         .TypeOf => blk_typeof: {
             const tr = ast_unit.exprs.get(.TypeOf, id);
