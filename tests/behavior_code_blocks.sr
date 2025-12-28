@@ -1,0 +1,70 @@
+package behavior_code_blocks
+
+testing :: import "std/testing"
+
+build_local :: proc() Code {
+    return code { local :: 41 }
+}
+
+build_extra :: proc() Code {
+    return code { extra :: 5 }
+}
+
+build_more :: proc() Code {
+    return code { more :: 7 }
+}
+
+build_expr :: proc(comptime x: i64) Code {
+    return code { `x` + 2 }
+}
+
+build_pair :: proc() Code {
+    return code {
+        left :: 2
+        right :: 5
+    }
+}
+
+test "behavior: code insert scoped" {
+    comptime { insert build_local() }
+    if !testing.expect_equal_i64(41, local.(i64)) { return Error.Fail }
+
+    {
+        comptime { insert build_extra() }
+        if !testing.expect_equal_i64(5, extra.(i64)) { return Error.Fail }
+    }
+
+    comptime {
+        insert build_more()
+        comptime { insert build_extra() }
+    }
+    if !testing.expect_equal_i64(7, more.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(5, extra.(i64)) { return Error.Fail }
+}
+
+test "behavior: code splice expression" {
+    comptime {
+        expr_code :: build_expr(40)
+        insert code { result :: `expr_code` }
+    }
+    if !testing.expect_equal_i64(42, result.(i64)) { return Error.Fail }
+}
+
+test "behavior: code splice statements" {
+    comptime {
+        block :: build_pair()
+        insert code {
+            `block`
+            sum :: left + right
+        }
+    }
+    if !testing.expect_equal_i64(7, sum.(i64)) { return Error.Fail }
+}
+
+test "behavior: code splice type" {
+    comptime {
+        Ty : type = i32
+        insert code { value: `Ty` = 123 }
+    }
+    if !testing.expect_equal_i64(123, value.(i64)) { return Error.Fail }
+}

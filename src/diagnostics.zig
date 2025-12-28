@@ -685,6 +685,7 @@ pub const Diagnostics = struct {
 
         pub fn next(self: *NoteIter) ?Note {
             if (self.idx == NO_NOTE) return null;
+            if (self.idx >= self.diags.notes.items.len) return null;
             const note = self.diags.notes.items[self.idx];
             self.idx = note.next_note;
             return note;
@@ -889,6 +890,7 @@ pub const Diagnostics = struct {
 
             var nid = m.first_note;
             while (nid != NO_NOTE) {
+                if (nid >= self.notes.items.len) break;
                 const n = self.notes.items[nid];
                 try writer.print(" {s}= \x1b[34mnote[{s}]\x1b[0m: ", .{ num_pad[0..pad], @tagName(n.code) });
                 try writeInterpolated(writer, diagnosticNoteFmt(n.code), n.payload, ctx);

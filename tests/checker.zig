@@ -3068,15 +3068,117 @@ test "mlir splices - non-comptime" {
     , &.{.mlir_splice_not_comptime});
 }
 
-// // Focused: code expressions
-//
-// test "code expressions - success with note" {
-//     // Code block emits a diagnostic note that it is not executed
-//     try checkProgram("c :: code { 1 }", &[_]diag.DiagnosticCode{.checker_code_block_not_executed});
-//
-//     // Inside function, still emits the same note
-//     try checkProgram(
-//         \\
-//         \\ main :: proc() { code { 1 } }
-//     , &[_]diag.DiagnosticCode{.checker_code_block_not_executed});
-// }
+// Focused: code expressions
+
+test "code expressions - success with note" {
+    // Code block emits a diagnostic note that it is not executed
+    try checkProgram("c :: code { 1 }", &[_]diag.DiagnosticCode{.checker_code_block_not_executed});
+
+    // Inside function, still emits the same note
+    try checkProgram(
+        \\
+        \\ main :: proc() { code { 1 } }
+    , &[_]diag.DiagnosticCode{.checker_code_block_not_executed});
+}
+
+test "code insert - success" {
+    try checkProgram(
+        \\
+        \\ build_add :: proc() Code {
+        \\   return code { add :: fn(a: i32, b: i32) i32 { return a + b } }
+        \\ }
+        \\ comptime { insert build_add() }
+        \\ main :: proc() i32 { return add(1, 2) }
+    , &[_]diag.DiagnosticCode{.checker_code_block_not_executed});
+}
+
+test "code insert - scoped into function block" {
+    try checkProgram(
+        \\
+        \\ build_local :: proc() Code {
+        \\   return code { local :: 41 }
+        \\ }
+        \\ main :: proc() i32 {
+        \\   comptime { insert build_local() }
+        \\   return local
+        \\ }
+    , &[_]diag.DiagnosticCode{.checker_code_block_not_executed});
+}
+
+test "code insert - nested block shadowing" {
+    try checkProgram(
+        \\
+        \\ build_local :: proc() Code {
+        \\   return code { local :: 41 }
+        \\ }
+        \\ build_shadow :: proc() Code {
+        \\   return code { local :: 99 }
+        \\ }
+        \\ main :: proc() i32 {
+        \\   comptime { insert build_local() }
+        \\   {
+        \\     comptime { insert build_shadow() }
+        \\     _ = local
+        \\   }
+        \\   return local
+        \\ }
+    , &[_]diag.DiagnosticCode{.checker_code_block_not_executed});
+}
+
+test "code insert - block scope does not leak" {
+    try checkProgram(
+        \\
+        \\ build_local :: proc() Code {
+        \\   return code { inner :: 1 }
+        \\ }
+        \\ main :: proc() i32 {
+        \\   {
+        \\     comptime { insert build_local() }
+        \\     _ = inner
+        \\   }
+        \\   return inner
+        \\ }
+    , &[_]diag.DiagnosticCode{ .checker_code_block_not_executed, .undefined_identifier });
+}
+
+test "code insert - requires Code value" {
+    try checkProgram(
+        \\
+        \\ comptime { insert 1 }
+    , &[_]diag.DiagnosticCode{.insert_requires_code});
+}
+
+test "code insert - requires declarations" {
+    try checkProgram(
+        \\
+        \\ build_bad :: proc() Code { return code { 1 } }
+        \\ comptime { insert build_bad() }
+    , &[_]diag.DiagnosticCode{ .checker_code_block_not_executed, .insert_requires_decl });
+}
+
+test "code splice - statement requires code" {
+    try checkProgram(
+        \\
+        \\ v :: 1
+        \\ comptime { insert code { `v` } }
+    , &[_]diag.DiagnosticCode{ .checker_code_block_not_executed, .code_splice_requires_code });
+}
+
+test "code splice - expression requires single expr" {
+    try checkProgram(
+        \\
+        \\ block :: code {
+        \\   a :: 1
+        \\   b :: 2
+        \\ }
+        \\ comptime { insert code { value :: `block` } }
+    , &[_]diag.DiagnosticCode{ .checker_code_block_not_executed, .code_splice_requires_expr });
+}
+
+test "code splice - type requires type" {
+    try checkProgram(
+        \\
+        \\ X :: 1
+        \\ comptime { insert code { value: `X` = 1 } }
+    , &[_]diag.DiagnosticCode{ .checker_code_block_not_executed, .code_splice_requires_type });
+}

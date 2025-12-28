@@ -192,7 +192,20 @@ pub const Pipeline = struct {
             self.context.compilation_unit.mutex.unlock();
 
             work.thread.join();
-            if (idx > 0) try self.context.diags.messages.appendSlice(self.gpa, try work.diags.messages.toOwnedSlice(self.gpa));
+            if (idx > 0) {
+                const no_note: u32 = 0xFFFF_FFFF;
+                const note_offset: u32 = @intCast(self.context.diags.notes.items.len);
+                for (work.diags.notes.items) |note| {
+                    var n = note;
+                    if (n.next_note != no_note) n.next_note += note_offset;
+                    try self.context.diags.notes.append(self.gpa, n);
+                }
+                for (work.diags.messages.items) |message| {
+                    var m = message;
+                    if (m.first_note != no_note) m.first_note += note_offset;
+                    try self.context.diags.messages.append(self.gpa, m);
+                }
+            }
 
             const failed = work.diags.anyErrors();
             if (!failed and self.context.load_imports) try self.scanImports(work);
@@ -427,6 +440,7 @@ fn printComptimeValue(v: *const comp.ComptimeValue) void {
         .String => |s| std.debug.print("\"{s}\"", .{s}),
         .Sequence => |s| std.debug.print("<sequence len={d}>", .{s.values.items.len}),
         .Struct => |s| std.debug.print("<struct len={d}>", .{s.fields.items.len}),
+        .Variant => std.debug.print("<variant>", .{}),
         .Range => |r| std.debug.print("range({d}..{d}{s})", .{ r.start, r.end, if (r.inclusive) "=" else "" }),
         .Type => |t| std.debug.print("type({d})", .{t.toRaw()}),
         .MlirType => std.debug.print("<mlir-type>", .{}),

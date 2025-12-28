@@ -317,6 +317,7 @@ fn appendMlirSpliceValue(self: *Codegen, buf: *ArrayList(u8), value: comp.Compti
         .String => |s| try buf.appendSlice(s),
         .Sequence => |seq| try buf.writer().print("[sequence len={d}]", .{seq.values.items.len}),
         .Struct => |sv| try buf.writer().print("<struct len={d}>", .{sv.fields.items.len}),
+        .Variant => try buf.appendSlice("<variant>"),
         .Map => |mp| try buf.writer().print("<map len={d}>", .{mp.entries.items.len}),
         .Range => |rg| try buf.writer().print("range({d}..{d}{s})", .{ rg.start, rg.end, if (rg.inclusive) "=" else "" }),
         .Type => |type_val| {
@@ -1328,7 +1329,16 @@ fn emitFunctionBodyWith(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR, sym_overr
     try self.val_types.ensureTotalCapacity(@intCast(n_formals));
     for (params[0..n_formals], 0..) |p_id, i| {
         const p = t.funcs.Param.get(p_id);
-        const v = entry_block.getArgument(i);
+        const arg = entry_block.getArgument(i);
+        var v = arg;
+        const want_ty = try self.llvmTypeOf(p.ty);
+        if (mlir.LLVM.isLLVMPointerType(arg.getType()) and !mlir.LLVM.isLLVMPointerType(want_ty) and isAggregateKind(self.context.type_store.getKind(p.ty))) {
+            v = self.emitOp("llvm.load", EmitOpArgs{
+                .operands = &.{arg},
+                .results = &.{want_ty},
+                .attributes = &.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))},
+            });
+        }
         try self.value_map.put(p.value, v);
         try self.val_types.put(p.value, p.ty);
     }
@@ -1928,6 +1938,9 @@ fn emitConstNull(self: *Codegen, p: tir.Rows.ConstNull) !mlir.Value {
 fn emitConstUndef(self: *Codegen, p: tir.Rows.ConstUndef) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
+    if (self.context.type_store.getKind(p.ty) == .Union) {
+        return self.zeroOf(try self.llvmTypeOf(p.ty));
+    }
     return self.emitOp("llvm.mlir.undef", EmitOpArgs{ .results = &.{try self.llvmTypeOf(p.ty)} });
 }
 
@@ -3362,10 +3375,19 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             const prev_loc = self.pushLocation(p.loc);
             defer self.loc = prev_loc;
 
-            const agg = self.getVal(p.agg);
+            var agg = self.getVal(p.agg);
             const res_ty = try self.llvmTypeOf(p.ty);
             const parent_sr = self.srTypeOfValue(p.agg);
             const parent_kind = self.context.type_store.getKind(parent_sr);
+
+            if (mlir.LLVM.isLLVMPointerType(agg.getType()) and isAggregateKind(parent_kind)) {
+                const agg_ty = try self.llvmTypeOf(parent_sr);
+                agg = self.emitOp("llvm.load", EmitOpArgs{
+                    .operands = &.{agg},
+                    .results = &.{agg_ty},
+                    .attributes = &.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))},
+                });
+            }
 
             // Optimization: Handle Complex fast path
             if (parent_kind == .Complex) {
@@ -3435,7 +3457,7 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             const prev_loc = self.pushLocation(p.loc);
             defer self.loc = prev_loc;
 
-            var acc = self.undefOf(try self.llvmTypeOf(p.ty));
+            var acc = self.zeroOf(try self.llvmTypeOf(p.ty));
             acc = self.insertAt(acc, self.constInt(self.i32_ty, @intCast(p.tag)), &.{0});
 
             if (!p.payload.isNone()) {
@@ -3446,7 +3468,7 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
                 const union_field_id = self.context.type_store.field_pool.slice(struct_ty.fields)[1];
                 const union_ty = self.context.type_store.Field.get(union_field_id).ty;
 
-                var union_acc = self.undefOf(try self.llvmTypeOf(union_ty));
+                var union_acc = self.zeroOf(try self.llvmTypeOf(union_ty));
                 union_acc = self.insertAt(union_acc, payload_val, &.{0});
                 acc = self.insertAt(acc, union_acc, &.{1});
             }

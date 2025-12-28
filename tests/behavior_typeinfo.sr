@@ -1,0 +1,321 @@
+package behavior_typeinfo
+
+meta :: import "std/meta"
+
+testing :: import "std/testing"
+
+sample_fn :: fn(a: i32, b: bool) string {
+    return ""
+}
+
+expect_tag :: proc(comptime T: type, expected: string) bool {
+    info := meta.typeInfo(T)
+    return testing.expect_equal_str(expected, meta.tag(info))
+}
+
+test "behavior: typeinfo primitives" {
+    if !expect_tag(void, "Void") { return Error.Fail }
+    if !expect_tag(bool, "Bool") { return Error.Fail }
+    if !expect_tag(i8, "I8") { return Error.Fail }
+    if !expect_tag(i16, "I16") { return Error.Fail }
+    if !expect_tag(i32, "I32") { return Error.Fail }
+    if !expect_tag(i64, "I64") { return Error.Fail }
+    if !expect_tag(u8, "U8") { return Error.Fail }
+    if !expect_tag(u16, "U16") { return Error.Fail }
+    if !expect_tag(u32, "U32") { return Error.Fail }
+    if !expect_tag(u64, "U64") { return Error.Fail }
+    if !expect_tag(f32, "F32") { return Error.Fail }
+    if !expect_tag(f64, "F64") { return Error.Fail }
+    if !expect_tag(usize, "Usize") { return Error.Fail }
+    if !expect_tag(string, "String") { return Error.Fail }
+    if !expect_tag(Code, "Code") { return Error.Fail }
+    if !expect_tag(noreturn, "Noreturn") { return Error.Fail }
+}
+
+test "behavior: typeinfo pointer and slice" {
+    info := meta.typeInfo(*const i8)
+    match info {
+        meta.TypeInfo.Ptr(p) => {
+            testing.expect(p.is_const.(bool) == true, "ptr const flag")!
+            testing.expect(p.elem.(i64) != 0, "ptr elem type id")!
+        },
+        _ => {
+            return Error.Fail
+        },
+    }
+
+    info2 := meta.typeInfo([]i32)
+    match info2 {
+        meta.TypeInfo.Slice(s) => {
+            testing.expect(s.is_const.(bool) == false, "slice const flag")!
+            testing.expect(s.elem.(i64) != 0, "slice elem type id")!
+        },
+        _ => {
+            return Error.Fail
+        },
+    }
+}
+
+test "behavior: typeinfo arrays and dynarray" {
+    info := meta.typeInfo([3]i32)
+    match info {
+        meta.TypeInfo.Array(a) => {
+            if !testing.expect_equal_i64(3, a.len.(i64)) { return Error.Fail }
+            testing.expect(a.elem.(i64) != 0, "array elem type id")!
+        },
+        _ => {
+            return Error.Fail
+        },
+    }
+
+    info2 := meta.typeInfo([dyn]u8)
+    match info2 {
+        meta.TypeInfo.DynArray(d) => {
+            testing.expect(d.elem.(i64) != 0, "dynarray elem type id")!
+        },
+        _ => {
+            return Error.Fail
+        },
+    }
+}
+
+test "behavior: typeinfo map and optional" {
+    info := meta.typeInfo([string: i32])
+    match info {
+        meta.TypeInfo.Map(m) => {
+            testing.expect(m.key.(i64) != 0, "map key type id")!
+            testing.expect(m.value.(i64) != 0, "map value type id")!
+        },
+        _ => {
+            return Error.Fail
+        },
+    }
+
+    info2 := meta.typeInfo(?i32)
+    match info2 {
+        meta.TypeInfo.Optional(o) => {
+            testing.expect(o.elem.(i64) != 0, "optional elem type id")!
+        },
+        _ => {
+            return Error.Fail
+        },
+    }
+}
+
+test "behavior: typeinfo tuple" {
+    info := meta.typeInfo((i32, bool))
+    match info {
+        meta.TypeInfo.Tuple(t) => {
+            if !testing.expect_equal_i64(2, t.elems.len.(i64)) { return Error.Fail }
+        },
+        _ => {
+            return Error.Fail
+        },
+    }
+}
+
+test "behavior: typeinfo function" {
+    info := meta.typeInfo(typeof(sample_fn))
+    match info {
+        meta.TypeInfo.Function(f) => {
+            if !testing.expect_equal_i64(2, f.params.len.(i64)) { return Error.Fail }
+            testing.expect(f.is_variadic.(bool) == false, "fn variadic flag")!
+            testing.expect(f.is_extern.(bool) == false, "fn extern flag")!
+        },
+        _ => {
+            return Error.Fail
+        },
+    }
+}
+
+// test "behavior: typeinfo struct and union" {
+//     Point :: struct {x: i32, y: i32}
+//     info := meta.typeInfo(Point)
+//     match info {
+//         meta.TypeInfo.Struct(s) => {
+//             if !testing.expect_equal_i64(2, s.fields.len.(i64)) { return Error.Fail }
+//             if !testing.expect_equal_str("x", s.fields[0].name.(string)) { return Error.Fail }
+//             if !testing.expect_equal_str("y", s.fields[1].name.(string)) { return Error.Fail }
+//         },
+//         _ => { return Error.Fail },
+//     }
+//
+//     U :: union {a: i32, b: bool}
+//     info2 := meta.typeInfo(U)
+//     match info2 {
+//         meta.TypeInfo.Union(u) => {
+//             if !testing.expect_equal_i64(2, u.fields.len.(i64)) { return Error.Fail }
+//             if !testing.expect_equal_str("a", u.fields[0].name.(string)) { return Error.Fail }
+//             if !testing.expect_equal_str("b", u.fields[1].name.(string)) { return Error.Fail }
+//         },
+//         _ => { return Error.Fail },
+//     }
+// }
+test "behavior: typeinfo enum" {
+    Color :: enum {Red = 1, Green}
+    info := meta.typeInfo(Color)
+    match info {
+        meta.TypeInfo.Enum(e) => {
+            if !testing.expect_equal_i64(2, e.members.len.(i64)) { return Error.Fail }
+            if !testing.expect_equal_str("Red", e.members[0].name.(string)) { return Error.Fail }
+            if !testing.expect_equal_i64(1, e.members[0].value.(i64)) { return Error.Fail }
+        },
+        _ => {
+            return Error.Fail
+        },
+    }
+}
+
+// test "behavior: typeinfo variant and error" {
+//     Msg :: variant {Ok, Err(i32)}
+//     info := meta.typeInfo(Msg)
+//     match info {
+//         meta.TypeInfo.Variant(v) => {
+//             if !testing.expect_equal_i64(2, v.cases.len.(i64)) { return Error.Fail }
+//             if !testing.expect_equal_str("Ok", v.cases[0].name.(string)) { return Error.Fail }
+//             if !testing.expect_equal_str("Err", v.cases[1].name.(string)) { return Error.Fail }
+//         },
+//         _ => { return Error.Fail },
+//     }
+//
+//     MyErr :: error {NotFound, PermissionDenied}
+//     info2 := meta.typeInfo(MyErr)
+//     match info2 {
+//         meta.TypeInfo.Error(e) => {
+//             if !testing.expect_equal_i64(2, e.cases.len.(i64)) { return Error.Fail }
+//             if !testing.expect_equal_str("NotFound", e.cases[0].name.(string)) { return Error.Fail }
+//             if !testing.expect_equal_str("PermissionDenied", e.cases[1].name.(string)) { return Error.Fail }
+//         },
+//         _ => { return Error.Fail },
+//     }
+// }
+test "behavior: typeinfo errorset" {
+    MyErr :: error {Oops}
+    info := meta.typeInfo(MyErr ! i32)
+    match info {
+        meta.TypeInfo.ErrorSet(e) => {
+            testing.expect(e.value.(i64) != 0, "errorset value type id")!
+            testing.expect(e.err.(i64) != 0, "errorset error type id")!
+        },
+        _ => {
+            return Error.Fail
+        },
+    }
+}
+
+// test "behavior: typeinfo complex, simd, tensor" {
+//     info := meta.typeInfo(complex(f32))
+//     match info {
+//         meta.TypeInfo.Complex(c) => {
+//             testing.expect(c.elem.(i64) != 0, "complex elem type id")!
+//         },
+//         _ => { return Error.Fail },
+//     }
+//
+//     info2 := meta.typeInfo(simd(f32, 4))
+//     match info2 {
+//         meta.TypeInfo.Simd(s) => {
+//             if !testing.expect_equal_i64(4, s.lanes.(i64)) { return Error.Fail }
+//             testing.expect(s.elem.(i64) != 0, "simd elem type id")!
+//         },
+//         _ => { return Error.Fail },
+//     }
+//
+//     info3 := meta.typeInfo(tensor(i32, 2, 3))
+//     match info3 {
+//         meta.TypeInfo.Tensor(t) => {
+//             if !testing.expect_equal_i64(2, t.rank.(i64)) { return Error.Fail }
+//             if !testing.expect_equal_i64(2, t.dims.len.(i64)) { return Error.Fail }
+//             testing.expect(t.elem.(i64) != 0, "tensor elem type id")!
+//         },
+//         _ => { return Error.Fail },
+//     }
+// }
+test "behavior: typeinfo future" {
+    info := meta.typeInfo(typeof(async {
+        1
+    }))
+
+    match info {
+        meta.TypeInfo.Future(f) => {
+            testing.expect(f.elem.(i64) != 0, "future elem type id")!
+        },
+        _ => {
+            return Error.Fail
+        },
+    }
+}
+
+test "behavior: typeinfo type and ast" {
+    info := comptime {
+        meta.typeInfo(type)
+    }
+
+    match info {
+        meta.TypeInfo.TypeType(t) => {
+            testing.expect(t.of.(i64) != 0, "typetype of")!
+        },
+        _ => {
+            return Error.Fail
+        },
+    }
+
+    info2 := comptime {
+        meta.typeInfo(typeof(meta))
+    }
+
+    match info2 {
+        meta.TypeInfo.Ast(a) => {
+            testing.expect(a.pkg.len.(i64) > 0, "ast pkg")!
+            testing.expect(a.filepath.len.(i64) > 0, "ast filepath")!
+        },
+        _ => {
+            return Error.Fail
+        },
+    }
+}
+
+test "behavior: typeinfo mlir types" {
+    info := comptime {
+        meta.typeInfo(mlir {
+            module {
+            func.func @ti_dummy() -> i32 {
+            %c0 = arith.constant 0 : i32
+            func.return %c0 : i32
+            }
+            }
+            })
+    }
+
+    match info {
+        meta.TypeInfo.MlirModule => {
+        },
+        _ => {
+            return Error.Fail
+        },
+    }
+
+    info2 := comptime {
+        meta.typeInfo(mlir type { i32 })
+    }
+    match info2 {
+        meta.TypeInfo.MlirType(t) => {
+            testing.expect(t.src.len.(i64) > 0, "mlir type src")!
+        },
+        _ => {
+            return Error.Fail
+        },
+    }
+
+    info3 := comptime {
+        meta.typeInfo(mlir attribute { 0 : i32 })
+    }
+    match info3 {
+        meta.TypeInfo.MlirAttribute(a) => {
+            testing.expect(a.src.len.(i64) > 0, "mlir attr src")!
+        },
+        _ => {
+            return Error.Fail
+        },
+    }
+}

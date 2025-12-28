@@ -187,7 +187,7 @@ test "chars" {
 
 test "invalid token characters" {
     try testSingle("#", &.{.hash});
-    try testSingle("`", &.{.invalid});
+    try testSingle("`", &.{.backtick});
     try testSingle("'c", &.{.invalid});
     try testSingle("'", &.{.invalid});
     try testSingle("''", &.{.char_literal});
@@ -196,7 +196,7 @@ test "invalid token characters" {
 
 test "invalid literal/comment characters" {
     try testSingle("\"\x00\"", &.{.invalid});
-    try testSingle("`\x00`", &.{.invalid});
+    try testSingle("`\x00`", &.{ .backtick, .invalid });
     try testSingle("//\x00", &.{.invalid});
     try testSingle("//\x1f", &.{.line_comment});
     try testSingle("//\x7f", &.{.line_comment});

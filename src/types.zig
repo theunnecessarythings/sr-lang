@@ -130,6 +130,7 @@ pub const TypeInfo = struct {
 
     specialization_expr_snapshots: std.AutoArrayHashMapUnmanaged(u32, MethodExprSnapshot) = .{},
     specialization_call_snapshots: std.AutoArrayHashMapUnmanaged(u32, CallSpecSnapshot) = .{},
+    specialization_comptime_expr_snapshots: std.AutoArrayHashMapUnmanaged(u32, ComptimeExprSnapshot) = .{},
 
     mlir_splice_info: std.AutoArrayHashMapUnmanaged(u32, MlirSpliceInfo) = .{},
     mlir_splice_values: std.AutoArrayHashMapUnmanaged(u32, comp.ComptimeValue) = .{},
@@ -143,6 +144,7 @@ pub const TypeInfo = struct {
     const MethodExprSnapshot = struct { expr_ids: []u32, expr_types: []TypeId };
     const CallSpecSnapshot = struct { expr_ids: []u32, specs: []CallSpecialization, comptime_snapshot: ?ComptimeBindingSnapshot = null };
     const ComptimeBindingSnapshot = struct { names: []ast.StrId, types: []TypeId, values: []comp.ComptimeValue };
+    const ComptimeExprSnapshot = struct { expr_ids: []u32, values: []comp.ComptimeValue };
 
     pub fn init(gpa: std.mem.Allocator, store: *TypeStore) TypeInfo {
         const arena = gpa.create(std.heap.ArenaAllocator) catch @panic("OOM");
@@ -253,6 +255,13 @@ pub const TypeInfo = struct {
         try self.updateSnapshot(&self.specialization_expr_snapshots, decl_id.toRaw(), val);
     }
 
+    pub fn storeSpecializationComptimeExprSnapshot(self: *TypeInfo, decl_id: ast.DeclId, expr_ids: []const u32, values: []const comp.ComptimeValue) !void {
+        const ids = try self.cloneSlice(u32, expr_ids);
+        const val_copy = try self.arena.allocator().alloc(comp.ComptimeValue, values.len);
+        for (values, 0..) |v, i| val_copy[i] = try comp.cloneComptimeValue(self.arena.allocator(), v);
+        try self.updateSnapshot(&self.specialization_comptime_expr_snapshots, decl_id.toRaw(), ComptimeExprSnapshot{ .expr_ids = ids, .values = val_copy });
+    }
+
     pub fn storeSpecializationCallSnapshot(self: *TypeInfo, decl_id: ast.DeclId, expr_ids: []const u32, specs: []const CallSpecialization) !void {
         const gop = try self.specialization_call_snapshots.getOrPut(self.arena.allocator(), decl_id.toRaw());
         const existing_comptime = if (gop.found_existing) gop.value_ptr.comptime_snapshot else null;
@@ -262,6 +271,10 @@ pub const TypeInfo = struct {
 
     pub fn getSpecializationExprSnapshot(self: *const TypeInfo, decl_id: ast.DeclId) ?MethodExprSnapshot {
         return self.specialization_expr_snapshots.get(decl_id.toRaw());
+    }
+
+    pub fn getSpecializationComptimeExprSnapshot(self: *const TypeInfo, decl_id: ast.DeclId) ?ComptimeExprSnapshot {
+        return self.specialization_comptime_expr_snapshots.get(decl_id.toRaw());
     }
 
     pub fn getSpecializationCallSnapshot(self: *const TypeInfo, decl_id: ast.DeclId) ?CallSpecSnapshot {
@@ -513,6 +526,35 @@ pub const TypeStore = struct {
     t_type_error: ?TypeId = null,
     t_test_error: ?TypeId = null,
 
+    pub const TypeInfoKeys = struct {
+        name: StrId,
+        ty: StrId,
+        value: StrId,
+        elem: StrId,
+        is_const: StrId,
+        len: StrId,
+        params: StrId,
+        result: StrId,
+        fields: StrId,
+        cases: StrId,
+        members: StrId,
+        tag: StrId,
+        provenance: StrId,
+        key: StrId,
+        of: StrId,
+        err: StrId,
+        rank: StrId,
+        dims: StrId,
+        lanes: StrId,
+        src: StrId,
+        pkg: StrId,
+        filepath: StrId,
+        is_variadic: StrId,
+        is_pure: StrId,
+        is_extern: StrId,
+        elems: StrId,
+    };
+
     pub fn init(gpa: std.mem.Allocator, strs: *StringInterner) TypeStore {
         const arena = gpa.create(std.heap.ArenaAllocator) catch @panic("OOM");
         arena.* = std.heap.ArenaAllocator.init(gpa);
@@ -527,6 +569,37 @@ pub const TypeStore = struct {
     pub fn deinit(self: *TypeStore) void {
         self.arena.deinit();
         self.backing_gpa.destroy(self.arena);
+    }
+
+    pub fn typeInfoKeys(self: *TypeStore) TypeInfoKeys {
+        return .{
+            .name = self.strs.intern("name"),
+            .ty = self.strs.intern("ty"),
+            .value = self.strs.intern("value"),
+            .elem = self.strs.intern("elem"),
+            .is_const = self.strs.intern("is_const"),
+            .len = self.strs.intern("len"),
+            .params = self.strs.intern("params"),
+            .result = self.strs.intern("result"),
+            .fields = self.strs.intern("fields"),
+            .cases = self.strs.intern("cases"),
+            .members = self.strs.intern("members"),
+            .tag = self.strs.intern("tag"),
+            .provenance = self.strs.intern("provenance"),
+            .key = self.strs.intern("key"),
+            .of = self.strs.intern("of"),
+            .err = self.strs.intern("err"),
+            .rank = self.strs.intern("rank"),
+            .dims = self.strs.intern("dims"),
+            .lanes = self.strs.intern("lanes"),
+            .src = self.strs.intern("src"),
+            .pkg = self.strs.intern("pkg"),
+            .filepath = self.strs.intern("filepath"),
+            .is_variadic = self.strs.intern("is_variadic"),
+            .is_pure = self.strs.intern("is_pure"),
+            .is_extern = self.strs.intern("is_extern"),
+            .elems = self.strs.intern("elems"),
+        };
     }
 
     pub fn getKind(self: *const TypeStore, id: TypeId) TypeKind {
@@ -653,6 +726,7 @@ pub const TypeStore = struct {
         if (self.t_type) |id| return id;
         const id = self.addLocked(.TypeType, .{ .of = self.tAny() });
         self.t_type = id;
+        self.TypeType.col("of")[self.index.rows.items[id.toRaw()]] = id;
         return id;
     }
 
@@ -717,6 +791,14 @@ pub const TypeStore = struct {
         return self.mkInterned(.Simd, .{ .elem = elem, .lanes = lanes }, struct {
             fn eq(_: *const TypeStore, r: Rows.Simd, k: anytype) bool {
                 return r.elem.eq(k.elem) and r.lanes == k.lanes;
+            }
+        });
+    }
+
+    pub fn mkComplex(self: *TypeStore, elem: TypeId) TypeId {
+        return self.mkInterned(.Complex, .{ .elem = elem }, struct {
+            fn eq(_: *const TypeStore, r: Rows.Complex, k: anytype) bool {
+                return r.elem.eq(k.elem);
             }
         });
     }
@@ -1043,9 +1125,14 @@ pub const TypeStore = struct {
                 try w.print(")", .{});
             },
             .TypeType => {
-                try w.print("type(", .{});
-                try self.fmt(self.get(.TypeType, id).of, w);
-                try w.print(")", .{});
+                const of = self.get(.TypeType, id).of;
+                if (of.eq(id)) {
+                    try w.print("type", .{});
+                } else {
+                    try w.print("type(", .{});
+                    try self.fmt(of, w);
+                    try w.print(")", .{});
+                }
             },
             .Ast => {
                 const r = self.get(.Ast, id);

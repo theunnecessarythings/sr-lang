@@ -1,9 +1,9 @@
-
 # Language Construct Test Plan
 
 This document outlines the language constructs to be covered by behavioral tests, based on the existing examples.
 
 ## Declarations
+
 - [x] Variable declaration (inferred `:=`, typed `:`)
 - [x] Constant declaration (`::`)
 - [x] Function declaration (`fn`)
@@ -18,6 +18,7 @@ This document outlines the language constructs to be covered by behavioral tests
   - [x] Nested destructuring
 
 ## Types & Literals
+
 - [ ] **Primitives**
   - [x] Integer literals (decimal, hex, octal, binary, with `_` separators)
   - [x] Float literals (standard, scientific notation)
@@ -48,6 +49,7 @@ This document outlines the language constructs to be covered by behavioral tests
   - [x] Error union types (`T!E`)
 
 ## Control Flow
+
 - [x] `if-else` statements and expressions
 - [x] `while` loops (boolean condition)
 - [x] `while is` loops (pattern matching)
@@ -59,6 +61,7 @@ This document outlines the language constructs to be covered by behavioral tests
 - [x] `unreachable` statement
 
 ## Expressions & Operators
+
 - [x] **Arithmetic**: `+`, `-`, `*`, `/`, `%`
 - [x] **Comparison**: `==`, `!=`, `<`, `>`, `<=`, `>=`
 - [x] **Logical**: `and`, `or`, `!`
@@ -85,6 +88,7 @@ This document outlines the language constructs to be covered by behavioral tests
   - [x] Range expressions (`..`, `..=`)
 
 ## Patterns
+
 - [x] Literal patterns (numbers, strings)
 - [x] Wildcard pattern (`_`)
 - [x] Or-patterns (`|`)
@@ -97,6 +101,7 @@ This document outlines the language constructs to be covered by behavioral tests
 - [x] Patterns with `if` guards
 
 ## Functions & Closures
+
 - [x] Default arguments
 - [x] Variadic functions
 - [ ] Closures (`|x| ...`)
@@ -104,21 +109,23 @@ This document outlines the language constructs to be covered by behavioral tests
 - [ ] Function pointers (assignment and calls)
 
 ## Defer & Error Handling
+
 - [x] `defer` statement
 - [x] `errdefer` statement
 
 ## Modules & Imports
+
 - [ ] `package` declarations
 - [ ] `import "path"` statements
 - [ ] Module member access (`module.member`)
 - [ ] Public visibility (`pub`)
 
 ## Metaprogramming & Low-Level
+
 - [ ] `comptime` blocks
-- [ ] `code` blocks (capture and `insert`)
+- [x] `code` blocks (capture and `insert`)
 - [ ] `asm` blocks and functions
 - [ ] `mlir` blocks (`module`, `op`, `type`, `attribute`)
 - [ ] Attributes (`@[...]`) on functions, params, structs, fields, etc.
 - [ ] Compile-time reflection (`typeof`, hypothetical `comptime_*` functions)
 - [ ] Runtime reflection (using `any` and hypothetical `runtime_*` functions)
-

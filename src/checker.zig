@@ -32,6 +32,7 @@ pipeline: *Pipeline,
 checker_ctx: List(?*CheckerContext), // Indexed by file_id
 expr_id_scratch: List(ast.ExprId) = .{},
 expr_id_scratch_marks: List(usize) = .{},
+cached_typeinfo_ty: ?types.TypeId = null,
 
 /// Per-AST context that tracks symbol tables, loops, matches, and diagnostic state.
 pub const CheckerContext = struct {
@@ -130,7 +131,7 @@ const LoopCtx = struct {
 // --- Checker Lifecycle ---
 
 pub fn init(gpa: std.mem.Allocator, context: *Context, pipeline: *Pipeline) Checker {
-    return .{ .gpa = gpa, .context = context, .pipeline = pipeline, .checker_ctx = .{}, .expr_id_scratch = .empty, .expr_id_scratch_marks = .empty };
+    return .{ .gpa = gpa, .context = context, .pipeline = pipeline, .checker_ctx = .{}, .expr_id_scratch = .empty, .expr_id_scratch_marks = .empty, .cached_typeinfo_ty = null };
 }
 
 pub fn deinit(self: *Checker) void {
@@ -771,7 +772,8 @@ pub fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_
 
                 // Narrow `const T: type = int`
                 if (self.typeKind(binding_ty) == .TypeType and computed == .Type) {
-                    if (self.typeKind(self.context.type_store.get(.TypeType, binding_ty).of) == .Any) {
+                    const of = self.context.type_store.get(.TypeType, binding_ty).of;
+                    if (self.typeKind(of) == .Any or of.eq(binding_ty)) {
                         binding_ty = self.context.type_store.mkTypeType(computed.Type);
                         rhs_ty = binding_ty;
                         ast_unit.type_info.decl_types.items[decl_id.toRaw()] = binding_ty;
@@ -1065,7 +1067,7 @@ pub fn checkSpecializedFunction(
 
     // 6. Store Snapshot
     if (snapshot_decl) |tgt| {
-        try check_types.storeSpecializationExprTypes(self, ast_unit, expr_ids, tgt);
+        try check_types.storeSpecializationSnapshots(self, ast_unit, expr_ids, tgt);
 
         var cids = List(u32){};
         var cspecs = List(types.CallSpecialization){};
@@ -2011,7 +2013,7 @@ fn tryTypeCoercion(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, dec
     if (res == .success and self.typeKind(target) == .TypeType and self.typeKind(cur) == .TypeType) {
         const target_of = self.context.type_store.get(.TypeType, target).of;
         const got_of = self.context.type_store.get(.TypeType, cur).of;
-        if (self.typeKind(target_of) == .Any and self.typeKind(got_of) != .Any) {
+        if ((self.typeKind(target_of) == .Any or target_of.eq(target)) and self.typeKind(got_of) != .Any) {
             ast_unit.type_info.decl_types.items[decl_id.toRaw()] = cur;
             ast_unit.type_info.expr_types.items[val_id.toRaw()] = cur;
             return;
@@ -2323,7 +2325,7 @@ fn checkLiteral(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeI
                     }
                 }
             }
-            return self.context.type_store.add(.Complex, .{ .elem = if (is_int) self.context.type_store.tI64() else self.context.type_store.tF64() });
+            return self.context.type_store.mkComplex(if (is_int) self.context.type_store.tI64() else self.context.type_store.tF64());
         },
         .float => {
             const info = lit.data.float;
@@ -2378,7 +2380,7 @@ fn resolveDeclType(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, nam
     // Narrowing: `const x: type = T` -> TypeType(T)
     if (!drow.pattern.isNone() and ast_unit.kind(drow.pattern.unwrap()) == .Binding and self.typeKind(rhs_ty) == .TypeType) {
         const tt = self.context.type_store.get(.TypeType, rhs_ty);
-        if (self.typeKind(tt.of) == .Any) {
+        if (self.typeKind(tt.of) == .Any or tt.of.eq(rhs_ty)) {
             const tr = try check_types.typeFromTypeExpr(self, ctx, ast_unit, drow.value);
             if (tr[0] and self.typeKind(tr[1]) != .TypeError) {
                 rhs_ty = self.context.type_store.mkTypeType(tr[1]);
@@ -4211,8 +4213,169 @@ fn checkSpecialForms(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, i
 
             return ts.tU64();
         }
+        if (std.mem.eql(u8, getStr(ast_unit, idr.name), "typeinfo")) {
+            if (args.len != 1) {
+                try self.context.diags.addError(exprLoc(ast_unit, call_expr), .argument_count_mismatch, .{ 1, @as(i64, @intCast(args.len)) });
+                return ts.tTypeError();
+            }
+            const res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, args[0]);
+            ast_unit.type_info.expr_types.items[args[0].toRaw()] = ts.mkTypeType(res[1]);
+            if (!res[0]) return ts.tTypeError();
+            try ast_unit.type_info.ensureExpr(self.gpa, id);
+            const info_ty = self.typeInfoResultType();
+            ast_unit.type_info.expr_types.items[id.toRaw()] = info_ty;
+
+            const any_type_ty = ts.mkTypeType(ts.tAny());
+            const fn_ty = ts.mkFunction(&.{any_type_ty}, info_ty, false, true, false);
+            try ast_unit.type_info.ensureExpr(self.gpa, call_expr.callee);
+            ast_unit.type_info.expr_types.items[call_expr.callee.toRaw()] = fn_ty;
+
+            _ = self.evalComptimeExprBorrowed(ctx, ast_unit, id, &.{}) catch {};
+            return info_ty;
+        }
     }
     return null;
+}
+
+fn typeInfoResultType(self: *Checker) types.TypeId {
+    if (self.cached_typeinfo_ty) |ty| return ty;
+    const ts = self.context.type_store;
+    const keys = ts.typeInfoKeys();
+
+    const field_info_ty = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = keys.name, .ty = ts.tString() },
+        .{ .name = keys.ty, .ty = ts.tU32() },
+    }, 0);
+    const enum_member_ty = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = keys.name, .ty = ts.tString() },
+        .{ .name = keys.value, .ty = ts.tI64() },
+    }, 0);
+    const u32_slice = ts.mkSlice(ts.tU32(), false);
+    const usize_slice = ts.mkSlice(ts.tUsize(), false);
+    const field_slice = ts.mkSlice(field_info_ty, false);
+    const enum_member_slice = ts.mkSlice(enum_member_ty, false);
+
+    const ptr_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = keys.elem, .ty = ts.tU32() },
+        .{ .name = keys.is_const, .ty = ts.tBool() },
+    }, 0);
+    const array_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = keys.elem, .ty = ts.tU32() },
+        .{ .name = keys.len, .ty = ts.tUsize() },
+    }, 0);
+    const elem_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = keys.elem, .ty = ts.tU32() },
+    }, 0);
+    const map_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = keys.key, .ty = ts.tU32() },
+        .{ .name = keys.value, .ty = ts.tU32() },
+    }, 0);
+    const tuple_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = keys.elems, .ty = u32_slice },
+    }, 0);
+    const fn_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = keys.params, .ty = u32_slice },
+        .{ .name = keys.result, .ty = ts.tU32() },
+        .{ .name = keys.is_variadic, .ty = ts.tBool() },
+        .{ .name = keys.is_pure, .ty = ts.tBool() },
+        .{ .name = keys.is_extern, .ty = ts.tBool() },
+    }, 0);
+    const struct_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = keys.fields, .ty = field_slice },
+        .{ .name = keys.provenance, .ty = ts.tU64() },
+    }, 0);
+    const fields_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = keys.fields, .ty = field_slice },
+    }, 0);
+    const cases_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = keys.cases, .ty = field_slice },
+    }, 0);
+    const enum_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = keys.members, .ty = enum_member_slice },
+        .{ .name = keys.tag, .ty = ts.tU32() },
+    }, 0);
+    const errorset_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = keys.value, .ty = ts.tU32() },
+        .{ .name = keys.err, .ty = ts.tU32() },
+    }, 0);
+    const type_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = keys.of, .ty = ts.tU32() },
+    }, 0);
+    const tensor_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = keys.elem, .ty = ts.tU32() },
+        .{ .name = keys.rank, .ty = ts.tU8() },
+        .{ .name = keys.dims, .ty = usize_slice },
+    }, 0);
+    const simd_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = keys.elem, .ty = ts.tU32() },
+        .{ .name = keys.lanes, .ty = ts.tU16() },
+    }, 0);
+    const mlir_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = keys.src, .ty = ts.tString() },
+    }, 0);
+    const ast_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = keys.pkg, .ty = ts.tString() },
+        .{ .name = keys.filepath, .ty = ts.tString() },
+    }, 0);
+
+    const void_payload = ts.tVoid();
+    const case_count: usize = 42;
+    const cases = ts.arena.allocator().alloc(types.TypeStore.StructFieldArg, case_count) catch @panic("OOM");
+    var idx: usize = 0;
+    const addCase = struct {
+        fn add(cases_buf: []types.TypeStore.StructFieldArg, i: *usize, name: []const u8, ty: types.TypeId, strs: *types.StringInterner) void {
+            cases_buf[i.*] = .{ .name = strs.intern(name), .ty = ty };
+            i.* += 1;
+        }
+    }.add;
+
+    addCase(cases, &idx, "Void", void_payload, ts.strs);
+    addCase(cases, &idx, "Bool", void_payload, ts.strs);
+    addCase(cases, &idx, "I8", void_payload, ts.strs);
+    addCase(cases, &idx, "I16", void_payload, ts.strs);
+    addCase(cases, &idx, "I32", void_payload, ts.strs);
+    addCase(cases, &idx, "I64", void_payload, ts.strs);
+    addCase(cases, &idx, "U8", void_payload, ts.strs);
+    addCase(cases, &idx, "U16", void_payload, ts.strs);
+    addCase(cases, &idx, "U32", void_payload, ts.strs);
+    addCase(cases, &idx, "U64", void_payload, ts.strs);
+    addCase(cases, &idx, "F32", void_payload, ts.strs);
+    addCase(cases, &idx, "F64", void_payload, ts.strs);
+    addCase(cases, &idx, "Usize", void_payload, ts.strs);
+    addCase(cases, &idx, "Complex", elem_payload, ts.strs);
+    addCase(cases, &idx, "Tensor", tensor_payload, ts.strs);
+    addCase(cases, &idx, "Simd", simd_payload, ts.strs);
+    addCase(cases, &idx, "String", void_payload, ts.strs);
+    addCase(cases, &idx, "Any", void_payload, ts.strs);
+    addCase(cases, &idx, "Code", void_payload, ts.strs);
+    addCase(cases, &idx, "Undef", void_payload, ts.strs);
+    addCase(cases, &idx, "Ptr", ptr_payload, ts.strs);
+    addCase(cases, &idx, "Slice", ptr_payload, ts.strs);
+    addCase(cases, &idx, "Array", array_payload, ts.strs);
+    addCase(cases, &idx, "DynArray", elem_payload, ts.strs);
+    addCase(cases, &idx, "Map", map_payload, ts.strs);
+    addCase(cases, &idx, "Optional", elem_payload, ts.strs);
+    addCase(cases, &idx, "Tuple", tuple_payload, ts.strs);
+    addCase(cases, &idx, "Function", fn_payload, ts.strs);
+    addCase(cases, &idx, "Struct", struct_payload, ts.strs);
+    addCase(cases, &idx, "Union", fields_payload, ts.strs);
+    addCase(cases, &idx, "Enum", enum_payload, ts.strs);
+    addCase(cases, &idx, "Variant", cases_payload, ts.strs);
+    addCase(cases, &idx, "Error", cases_payload, ts.strs);
+    addCase(cases, &idx, "ErrorSet", errorset_payload, ts.strs);
+    addCase(cases, &idx, "MlirModule", void_payload, ts.strs);
+    addCase(cases, &idx, "MlirAttribute", mlir_payload, ts.strs);
+    addCase(cases, &idx, "MlirType", mlir_payload, ts.strs);
+    addCase(cases, &idx, "TypeType", type_payload, ts.strs);
+    addCase(cases, &idx, "Future", elem_payload, ts.strs);
+    addCase(cases, &idx, "Noreturn", void_payload, ts.strs);
+    addCase(cases, &idx, "Ast", ast_payload, ts.strs);
+    addCase(cases, &idx, "TypeError", void_payload, ts.strs);
+    std.debug.assert(idx == case_count);
+
+    const info_ty = ts.mkVariant(cases);
+    self.cached_typeinfo_ty = info_ty;
+    return info_ty;
 }
 
 /// Helper: Resolves callee type and attempts method lookup for FieldAccess.

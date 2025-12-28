@@ -66,6 +66,11 @@ pub const StructValue = struct {
     owner: ?ast.StrId,
 };
 
+pub const VariantValue = struct {
+    tag: ast.StrId,
+    payload: ?*ComptimeValue = null,
+};
+
 pub const RangeValue = struct {
     start: i128,
     end: i128,
@@ -80,6 +85,7 @@ pub const ComptimeValue = union(enum) {
     String: []const u8,
     Sequence: Sequence,
     Struct: StructValue,
+    Variant: VariantValue,
     Map: MapValue,
     Pointer: *ComptimeValue,
     Range: RangeValue,
@@ -100,6 +106,13 @@ pub const ComptimeValue = union(enum) {
             .Struct => |*sv| {
                 for (sv.fields.items) |*field| field.value.destroy(gpa);
                 sv.fields.deinit(gpa);
+            },
+            .Variant => |*vv| {
+                if (vv.payload) |p| {
+                    p.destroy(gpa);
+                    gpa.destroy(p);
+                    vv.payload = null;
+                }
             },
             .Map => |*map| {
                 for (map.entries.items) |*entry| {
@@ -424,9 +437,139 @@ pub fn constValueFromComptime(self: *LowerTir, blk: *tir.Builder.BlockFrame, ty:
         .Bool => |val| blk.builder.tirValue(.ConstBool, blk, ty, .none(), .{ .value = val }),
         .Void => blk.builder.tirValue(.ConstUndef, blk, ty, .none(), .{}),
         .String => |s| blk.builder.tirValue(.ConstString, blk, ty, .none(), .{ .text = blk.builder.intern(s) }),
+        .Sequence => |seq| blk: {
+            const ts = self.context.type_store;
+            const kind = ts.getKind(ty);
+            switch (kind) {
+                .Tuple => {
+                    const tr = ts.get(.Tuple, ty);
+                    const elem_tys = ts.type_pool.slice(tr.elems);
+                    if (elem_tys.len != seq.values.items.len) return error.UnsupportedComptimeType;
+                    var elems = try self.gpa.alloc(tir.ValueId, elem_tys.len);
+                    defer self.gpa.free(elems);
+                    for (elem_tys, 0..) |ety, i| {
+                        elems[i] = try constValueFromComptime(self, blk, ety, seq.values.items[i]);
+                    }
+                    break :blk blk.builder.tupleMake(blk, ty, elems, .none());
+                },
+                .Array => {
+                    const ar = ts.get(.Array, ty);
+                    if (ar.len != seq.values.items.len) return error.UnsupportedComptimeType;
+                    var elems = try self.gpa.alloc(tir.ValueId, ar.len);
+                    defer self.gpa.free(elems);
+                    for (seq.values.items, 0..) |item, i| {
+                        elems[i] = try constValueFromComptime(self, blk, ar.elem, item);
+                    }
+                    break :blk blk.builder.arrayMake(blk, ty, elems, .none());
+                },
+                .Slice => {
+                    const slice = ts.get(.Slice, ty);
+                    const array_ty = ts.mkArray(slice.elem, seq.values.items.len);
+                    var elems = try self.gpa.alloc(tir.ValueId, seq.values.items.len);
+                    defer self.gpa.free(elems);
+                    for (seq.values.items, 0..) |item, i| {
+                        elems[i] = try constValueFromComptime(self, blk, slice.elem, item);
+                    }
+                    const array_val = blk.builder.arrayMake(blk, array_ty, elems, .none());
+                    break :blk coerceArrayToSliceConst(self, blk, array_val, array_ty, ty);
+                },
+                else => return error.UnsupportedComptimeType,
+            }
+        },
+        .Struct => |sv| blk: {
+            if (self.context.type_store.getKind(ty) != .Struct) return error.UnsupportedComptimeType;
+            const struct_row = self.context.type_store.get(.Struct, ty);
+            const type_fields = self.context.type_store.field_pool.slice(struct_row.fields);
+            var inits = try self.gpa.alloc(tir.Rows.StructFieldInit, type_fields.len);
+            defer self.gpa.free(inits);
+
+            for (type_fields, 0..) |fid, i| {
+                const fdef = self.context.type_store.Field.get(fid);
+                var val: ?ComptimeValue = null;
+                for (sv.fields.items) |item| {
+                    if (item.name.eq(fdef.name)) {
+                        val = item.value;
+                        break;
+                    }
+                }
+                const field_val = if (val) |v| try constValueFromComptime(self, blk, fdef.ty, v) else blk.builder.tirValue(.ConstUndef, blk, fdef.ty, .none(), .{});
+                inits[i] = .{ .index = @intCast(i), .name = .some(fdef.name), .value = field_val };
+            }
+            break :blk blk.builder.structMake(blk, ty, inits, .none());
+        },
+        .Variant => |vv| blk: {
+            const ts = self.context.type_store;
+            const kind = ts.getKind(ty);
+            if (kind != .Variant and kind != .Error) return error.UnsupportedComptimeType;
+            const fields = if (kind == .Variant) ts.field_pool.slice(ts.get(.Variant, ty).variants) else ts.field_pool.slice(ts.get(.Error, ty).variants);
+            var tag_idx: u32 = 0;
+            var payload_ty: types.TypeId = ts.tVoid();
+            var found = false;
+
+            var fields_buf: [64]types.TypeStore.StructFieldArg = undefined;
+            var fields_slice: []types.TypeStore.StructFieldArg = &.{};
+            var heap_fields: ?[]types.TypeStore.StructFieldArg = null;
+            defer if (heap_fields) |ptr| self.gpa.free(ptr);
+
+            if (fields.len <= fields_buf.len) {
+                fields_slice = fields_buf[0..fields.len];
+            } else {
+                heap_fields = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
+                fields_slice = heap_fields.?;
+            }
+
+            for (fields, 0..) |fid, i| {
+                const f = ts.Field.get(fid);
+                fields_slice[i] = .{ .name = f.name, .ty = f.ty };
+                if (f.name.eq(vv.tag)) {
+                    tag_idx = @intCast(i);
+                    payload_ty = f.ty;
+                    found = true;
+                }
+            }
+            if (!found) return error.UnsupportedComptimeType;
+
+            const payload_val: ?tir.ValueId = blk_payload: {
+                if (ts.getKind(payload_ty) == .Void) break :blk_payload null;
+                const payload = vv.payload orelse return error.UnsupportedComptimeType;
+                break :blk_payload try constValueFromComptime(self, blk, payload_ty, payload.*);
+            };
+
+            const tag_val = blk.builder.tirValue(.ConstInt, blk, ts.tI32(), .none(), .{ .value = tag_idx });
+            const union_ty = ts.mkUnion(fields_slice);
+            const union_val: tir.ValueId = if (payload_val) |pv|
+                blk.builder.tirValue(.UnionMake, blk, union_ty, .none(), .{ .field_index = tag_idx, .value = pv })
+            else
+                blk.builder.tirValue(.ConstUndef, blk, union_ty, .none(), .{});
+
+            break :blk blk.builder.structMake(blk, ty, &[_]tir.Rows.StructFieldInit{
+                .{ .index = 0, .name = .none(), .value = tag_val },
+                .{ .index = 1, .name = .none(), .value = union_val },
+            }, .none());
+        },
         .MlirType, .MlirAttribute, .MlirModule => blk.builder.tirValue(.ConstUndef, blk, ty, .none(), .{}),
         else => error.UnsupportedComptimeType,
     };
+}
+
+fn coerceArrayToSliceConst(self: *LowerTir, blk: *tir.Builder.BlockFrame, array_value: tir.ValueId, array_ty: types.TypeId, slice_ty: types.TypeId) tir.ValueId {
+    const ts = self.context.type_store;
+    const arr = ts.get(.Array, array_ty);
+    const slice = ts.get(.Slice, slice_ty);
+    const ptr_array_ty = ts.mkPtr(array_ty, false);
+
+    var name_buf: [64]u8 = undefined;
+    const name = std.fmt.bufPrint(&name_buf, "__sr_const_slice_{d}", .{self.const_slice_counter}) catch unreachable;
+    self.const_slice_counter += 1;
+    const name_id = blk.builder.intern(name);
+    _ = blk.builder.addGlobalWithInit(name_id, array_ty, .none);
+    const slot = blk.builder.tirValue(.GlobalAddr, blk, ptr_array_ty, .none(), .{ .name = name_id });
+    _ = blk.builder.tirValue(.Store, blk, array_ty, .none(), .{ .ptr = slot, .value = array_value, .@"align" = 0 });
+
+    return blk.builder.structMake(blk, slice_ty, &[_]tir.Rows.StructFieldInit{
+        .{ .index = 0, .name = .none(), .value = blk.builder.tirValue(.CastBit, blk, ts.mkPtr(slice.elem, slice.is_const), .none(), .{ .value = slot }) },
+        .{ .index = 1, .name = .none(), .value = blk.builder.tirValue(.ConstInt, blk, ts.tUsize(), .none(), .{ .value = @as(u64, @intCast(arr.len)) }) },
+    }, .none());
 }
 
 pub fn cloneComptimeValue(gpa: std.mem.Allocator, value: ComptimeValue) !ComptimeValue {
@@ -449,6 +592,14 @@ pub fn cloneComptimeValue(gpa: std.mem.Allocator, value: ComptimeValue) !Comptim
                 fields.appendAssumeCapacity(.{ .name = item.name, .value = try cloneComptimeValue(gpa, item.value) });
             }
             break :blk .{ .Struct = .{ .fields = fields, .owner = sv.owner } };
+        },
+        .Variant => |vv| blk: {
+            const payload = if (vv.payload) |p| blk_p: {
+                const clone = try gpa.create(ComptimeValue);
+                clone.* = try cloneComptimeValue(gpa, p.*);
+                break :blk_p clone;
+            } else null;
+            break :blk .{ .Variant = .{ .tag = vv.tag, .payload = payload } };
         },
         .Map => |map| blk: {
             var entries = try std.ArrayList(MapEntry).initCapacity(gpa, map.entries.items.len);
@@ -515,6 +666,13 @@ pub fn hashComptimeValue(value: ComptimeValue) u64 {
                 hasher.update(std.mem.asBytes(&hashComptimeValue(f.value)));
             }
             if (s.owner) |o| hasher.update(std.mem.asBytes(&o));
+        },
+        .Variant => |v| {
+            hasher.update(std.mem.asBytes(&v.tag));
+            if (v.payload) |p| {
+                const h = hashComptimeValue(p.*);
+                hasher.update(std.mem.asBytes(&h));
+            }
         },
         .Map => |m| {
             hasher.update(std.mem.asBytes(&m.entries.items.len));

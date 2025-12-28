@@ -56,6 +56,7 @@ test_funcs: std.ArrayList(TestFunc) = .{},
 harness_emitted: bool = false,
 entry_pkg_name: StrId,
 entry_pkg_locked: bool = false,
+const_slice_counter: u32 = 0,
 
 const TestFunc = struct { sym: StrId, ty: types.TypeId, name: ?ast.StrId };
 
@@ -1012,6 +1013,123 @@ fn lowerSyntheticDecls(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Bui
     }
 }
 
+const CallSpecSnapshotGuard = struct {
+    backups: List(struct { raw: u32, prev: ?types.CallSpecialization }) = .{},
+    applied: bool = false,
+
+    fn init(self: *CallSpecSnapshotGuard, gpa: std.mem.Allocator, a: *ast.Ast, syn_did: ast.DeclId) !void {
+        if (a.type_info.getSpecializationCallSnapshot(syn_did)) |call_snapshot| {
+            self.applied = true;
+            try self.backups.ensureTotalCapacity(gpa, call_snapshot.expr_ids.len);
+            for (call_snapshot.expr_ids, 0..) |raw, idx| {
+                const spec = call_snapshot.specs[idx];
+                if (a.type_info.call_specializations.getEntry(raw)) |entry| {
+                    self.backups.appendAssumeCapacity(.{ .raw = raw, .prev = entry.value_ptr.* });
+                    entry.value_ptr.* = spec;
+                } else {
+                    self.backups.appendAssumeCapacity(.{ .raw = raw, .prev = null });
+                    try a.type_info.call_specializations.put(gpa, raw, spec);
+                }
+            }
+        }
+    }
+
+    fn deinit(self: *CallSpecSnapshotGuard, gpa: std.mem.Allocator, a: *ast.Ast) void {
+        if (!self.applied) return;
+        for (self.backups.items) |backup| {
+            if (backup.prev) |prev_spec| {
+                if (a.type_info.call_specializations.getEntry(backup.raw)) |entry| {
+                    entry.value_ptr.* = prev_spec;
+                }
+            } else {
+                _ = a.type_info.call_specializations.swapRemove(backup.raw);
+            }
+        }
+        self.backups.deinit(gpa);
+    }
+};
+
+const ComptimeExprSnapshotGuard = struct {
+    backups: List(struct { raw: u32, prev: ?comp.ComptimeValue }) = .{},
+    applied: bool = false,
+
+    fn init(self: *ComptimeExprSnapshotGuard, gpa: std.mem.Allocator, a: *ast.Ast, syn_did: ast.DeclId) !void {
+        if (a.type_info.getSpecializationComptimeExprSnapshot(syn_did)) |snapshot| {
+            self.applied = true;
+            try self.backups.ensureTotalCapacity(gpa, snapshot.expr_ids.len);
+            for (snapshot.expr_ids, 0..) |raw, idx| {
+                const expr_id = ast.ExprId.fromRaw(raw);
+                const prev = if (a.type_info.getComptimeValue(expr_id)) |val| val.* else null;
+                self.backups.appendAssumeCapacity(.{ .raw = raw, .prev = prev });
+
+                const cloned = try comp.cloneComptimeValue(a.type_info.gpa, snapshot.values[idx]);
+                if (a.type_info.comptime_values.getEntry(expr_id)) |entry| {
+                    entry.value_ptr.* = cloned;
+                } else {
+                    try a.type_info.setComptimeValue(expr_id, cloned);
+                }
+            }
+        }
+    }
+
+    fn deinit(self: *ComptimeExprSnapshotGuard, gpa: std.mem.Allocator, a: *ast.Ast) void {
+        if (!self.applied) return;
+        for (self.backups.items) |backup| {
+            const expr_id = ast.ExprId.fromRaw(backup.raw);
+            if (backup.prev) |prev_val| {
+                if (a.type_info.comptime_values.getEntry(expr_id)) |entry| {
+                    entry.value_ptr.* = prev_val;
+                } else {
+                    a.type_info.setComptimeValue(expr_id, prev_val) catch @panic("OOM");
+                }
+            } else {
+                _ = a.type_info.comptime_values.swapRemove(expr_id);
+            }
+        }
+        self.backups.deinit(gpa);
+    }
+};
+
+const ComptimeBindingSnapshotGuard = struct {
+    backups: List(struct { name: StrId, prev_ty: ?types.TypeId, prev_val: ?comp.ComptimeValue }) = .{},
+    applied: bool = false,
+
+    fn init(self: *ComptimeBindingSnapshotGuard, gpa: std.mem.Allocator, a: *ast.Ast, syn_did: ast.DeclId) !void {
+        if (a.type_info.getSpecializationComptimeSnapshot(syn_did)) |snapshot| {
+            self.applied = true;
+            const names = snapshot.names;
+            try self.backups.ensureTotalCapacity(gpa, names.len);
+
+            for (names, 0..) |name, idx| {
+                const prev_ty = a.type_info.lookupComptimeBindingType(name);
+                const prev_val = a.type_info.cloneComptimeBindingValue(gpa, name) catch null;
+                self.backups.appendAssumeCapacity(.{ .name = name, .prev_ty = prev_ty, .prev_val = prev_val });
+
+                const cloned_val = try comp.cloneComptimeValue(gpa, snapshot.values[idx]);
+                try a.type_info.setComptimeBinding(name, snapshot.types[idx], cloned_val);
+            }
+        }
+    }
+
+    fn deinit(self: *ComptimeBindingSnapshotGuard, gpa: std.mem.Allocator, a: *ast.Ast) void {
+        if (!self.applied) return;
+        for (self.backups.items) |backup| {
+            a.type_info.removeComptimeBinding(backup.name);
+            if (backup.prev_ty) |pty| {
+                if (backup.prev_val) |*pval| {
+                    const cloned = comp.cloneComptimeValue(gpa, pval.*) catch @panic("OOM");
+                    a.type_info.setComptimeBinding(backup.name, pty, cloned) catch @panic("OOM");
+                }
+            }
+            if (backup.prev_val) |pval| {
+                var val = pval;
+                val.destroy(gpa);
+            }
+        }
+        self.backups.deinit(gpa);
+    }
+};
+
 fn lowerSingleSyntheticDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, raw_id: u32) !void {
     const syn_did = ast.DeclId.fromRaw(raw_id);
     const orig_did = self.findOriginalDeclForSynthetic(a, syn_did) orelse return;
@@ -1047,71 +1165,19 @@ fn lowerSingleSyntheticDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b:
     defer if (pushed_override) self.popExprTypeOverrideFrame(ctx);
 
     // 2. Apply Call Specialization Snapshot
-    var applied_call_snapshot = false;
-    var call_spec_backups: List(struct { raw: u32, prev: ?types.CallSpecialization }) = .{};
+    var call_spec_guard = CallSpecSnapshotGuard{};
+    try call_spec_guard.init(self.gpa, a, syn_did);
+    defer call_spec_guard.deinit(self.gpa, a);
 
-    if (a.type_info.getSpecializationCallSnapshot(syn_did)) |call_snapshot| {
-        applied_call_snapshot = true;
-        try call_spec_backups.ensureTotalCapacity(self.gpa, call_snapshot.expr_ids.len);
+    // 3. Apply Comptime Expr Snapshot
+    var comptime_expr_guard = ComptimeExprSnapshotGuard{};
+    try comptime_expr_guard.init(self.gpa, a, syn_did);
+    defer comptime_expr_guard.deinit(self.gpa, a);
 
-        for (call_snapshot.expr_ids, 0..) |raw, idx| {
-            const spec = call_snapshot.specs[idx];
-            if (a.type_info.call_specializations.getEntry(raw)) |entry| {
-                call_spec_backups.appendAssumeCapacity(.{ .raw = raw, .prev = entry.value_ptr.* });
-                entry.value_ptr.* = spec;
-            } else {
-                call_spec_backups.appendAssumeCapacity(.{ .raw = raw, .prev = null });
-                try a.type_info.call_specializations.put(self.gpa, raw, spec);
-            }
-        }
-    }
-    defer if (applied_call_snapshot) {
-        for (call_spec_backups.items) |backup| {
-            if (backup.prev) |prev_spec| {
-                if (a.type_info.call_specializations.getEntry(backup.raw)) |entry| {
-                    entry.value_ptr.* = prev_spec;
-                }
-            } else {
-                _ = a.type_info.call_specializations.swapRemove(backup.raw);
-            }
-        }
-        call_spec_backups.deinit(self.gpa);
-    };
-
-    // 3. Apply Comptime Binding Snapshot
-    var applied_comptime_snapshot = false;
-    var comptime_backups: List(struct { name: StrId, prev_ty: ?types.TypeId, prev_val: ?comp.ComptimeValue }) = .{};
-
-    if (a.type_info.getSpecializationComptimeSnapshot(syn_did)) |snapshot| {
-        applied_comptime_snapshot = true;
-        const names = snapshot.names;
-        try comptime_backups.ensureTotalCapacity(self.gpa, names.len);
-
-        for (names, 0..) |name, idx| {
-            const prev_ty = a.type_info.lookupComptimeBindingType(name);
-            const prev_val = a.type_info.cloneComptimeBindingValue(self.gpa, name) catch null;
-            comptime_backups.appendAssumeCapacity(.{ .name = name, .prev_ty = prev_ty, .prev_val = prev_val });
-
-            const cloned_val = try comp.cloneComptimeValue(self.gpa, snapshot.values[idx]);
-            try a.type_info.setComptimeBinding(name, snapshot.types[idx], cloned_val);
-        }
-    }
-    defer if (applied_comptime_snapshot) {
-        for (comptime_backups.items) |backup| {
-            a.type_info.removeComptimeBinding(backup.name);
-            if (backup.prev_ty) |pty| {
-                if (backup.prev_val) |*pval| {
-                    const cloned = comp.cloneComptimeValue(self.gpa, pval.*) catch @panic("OOM");
-                    a.type_info.setComptimeBinding(backup.name, pty, cloned) catch @panic("OOM");
-                }
-            }
-            if (backup.prev_val) |pval| {
-                var val = pval;
-                val.destroy(self.gpa);
-            }
-        }
-        comptime_backups.deinit(self.gpa);
-    };
+    // 4. Apply Comptime Binding Snapshot
+    var comptime_guard = ComptimeBindingSnapshotGuard{};
+    try comptime_guard.init(self.gpa, a, syn_did);
+    defer comptime_guard.deinit(self.gpa, a);
 
     try self.lowerFunction(ctx, a, b, qualified_name, decl.value, spec_sig);
 }
@@ -2107,6 +2173,15 @@ fn tryComptimeCall(
         const want = self.getExprType(ctx, a, id);
         return blk.builder.tirValue(.ConstInt, blk, want, loc, .{ .value = sz });
     }
+    if (len == 8 and std.mem.eql(u8, callee_name, "typeinfo")) {
+        if (arg_ids.len != 1) return null;
+        if (try self.getCachedComptimeValue(a, id)) |cval| {
+            var tmp = cval;
+            defer tmp.destroy(self.gpa);
+            return try comp.constValueFromComptime(self, blk, self.getExprType(ctx, a, id), cval);
+        }
+        return null;
+    }
 
     const is_print = len == 14 and std.mem.eql(u8, callee_name, "comptime_print");
     const is_get_type = len == 16 and std.mem.eql(u8, callee_name, "get_type_by_name");
@@ -2183,7 +2258,13 @@ fn lowerCall(
     if (expected) |ety| {
         const k = self.context.type_store.getKind(ety);
         if ((k == .Variant or k == .Error) and a.kind(row.callee) == .FieldAccess) {
-            return try self.buildVariantItem(ctx, a, env, f, blk, row, ety, k, loc);
+            const fr = a.exprs.get(.FieldAccess, row.callee);
+            const parent_ty = self.getExprType(ctx, a, fr.parent);
+            if (self.context.type_store.getKind(parent_ty) == .TypeType and
+                self.context.type_store.get(.TypeType, parent_ty).of.eq(ety))
+            {
+                return try self.buildVariantItem(ctx, a, env, f, blk, row, ety, k, loc);
+            }
         }
     }
 
@@ -3179,6 +3260,11 @@ fn lowerTupleLit(
     var ty0 = self.getExprType(ctx, a, id);
     const loc = optLoc(a, id);
     const ids = a.exprs.expr_pool.slice(row.elems);
+
+    if (self.context.type_store.getKind(ty0) == .TypeType) {
+        const inner = self.context.type_store.get(.TypeType, ty0).of;
+        return blk.builder.tirValue(.ConstInt, blk, ty0, loc, .{ .value = @as(u64, @intCast(inner.toRaw())) });
+    }
 
     var vals_buf: [32]tir.ValueId = undefined;
     var vals: []tir.ValueId = if (ids.len <= 32) vals_buf[0..ids.len] else try self.gpa.alloc(tir.ValueId, ids.len);
@@ -4545,6 +4631,9 @@ pub fn lowerExpr(
     mode: LowerMode,
 ) anyerror!tir.ValueId {
     const kind = a.kind(id);
+    if (isTypeExprKind(kind)) {
+        return self.lowerTypeExprOpaque(ctx, a, blk, id, expected_ty);
+    }
     if (kind == .CodeBlock) {
         const idx = id.toRaw();
         const has_type = idx < a.type_info.expr_types.items.len and a.type_info.expr_types.items[idx] != null;
@@ -4628,14 +4717,12 @@ pub fn lowerExpr(
             break :blk_await if (expected_ty) |want| if (!res_ty.eq(want)) self.emitCoerce(blk, val, res_ty, want, loc) else val else val;
         },
         .ErrUnwrap => cf.lowerErrUnwrap(self, ctx, a, env, f, blk, id, expected_ty),
-        .UnionType => self.lowerTypeExprOpaque(ctx, a, blk, id, expected_ty),
         .TypeOf => self.lowerTypeOf(ctx, a, blk, id),
         .Match => cf.lowerMatch(self, ctx, a, env, f, blk, id, expected_ty),
         .While => cf.lowerWhile(self, ctx, a, env, f, blk, id, expected_ty),
         .For => cf.lowerFor(self, ctx, a, env, f, blk, id, expected_ty),
         .MlirBlock => if (mode == .lvalue_addr) error.LoweringBug else try self.lowerMlirBlock(ctx, a, env, f, blk, id, expected_ty, optLoc(a, id)),
         .Import => blk.builder.tirValue(.ConstUndef, blk, self.getExprType(ctx, a, id), optLoc(a, id), .{}),
-        .VariantType, .EnumType, .StructType, .SimdType => self.lowerTypeExprOpaque(ctx, a, blk, id, expected_ty),
         .CodeBlock => self.safeUndef(blk, self.getExprType(ctx, a, id), optLoc(a, id)),
         .ComptimeBlock => blk_comp: {
             const cb = a.exprs.get(.ComptimeBlock, id);
@@ -4650,6 +4737,32 @@ pub fn lowerExpr(
             std.debug.print("lowerExpr: unhandled expr kind {}\n", .{a.kind(id)});
             return error.LoweringBug;
         },
+    };
+}
+
+fn isTypeExprKind(kind: ast.ExprKind) bool {
+    return switch (kind) {
+        .TupleType,
+        .ArrayType,
+        .DynArrayType,
+        .SliceType,
+        .MapType,
+        .OptionalType,
+        .ErrorSetType,
+        .ErrorType,
+        .StructType,
+        .EnumType,
+        .VariantType,
+        .UnionType,
+        .PointerType,
+        .SimdType,
+        .ComplexType,
+        .TensorType,
+        .TypeType,
+        .AnyType,
+        .NoreturnType,
+        => true,
+        else => false,
     };
 }
 

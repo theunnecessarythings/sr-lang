@@ -1,6 +1,7 @@
 const std = @import("std");
 const ast = @import("ast.zig");
 const comptime_mod = @import("comptime.zig");
+const mlir = @import("mlir_bindings.zig");
 const types = @import("types.zig");
 
 const Value = comptime_mod.ComptimeValue;
@@ -119,7 +120,16 @@ pub const Interpreter = struct {
             .If => return self.evalIf(self.ast.exprs.get(.If, expr)),
             .FunctionLit => return Value{ .Function = .{ .expr = expr, .ast = self.ast } },
             .ArrayLit => return self.evalSequence(self.ast.exprs.get(.ArrayLit, expr).elems),
-            .TupleLit => return self.evalSequence(self.ast.exprs.get(.TupleLit, expr).elems),
+            .TupleLit => {
+                const idx = expr.toRaw();
+                const tys = self.ast.type_info.expr_types.items;
+                if (idx < tys.len) if (tys[idx]) |t| {
+                    if (self.ast.type_info.store.getKind(t) == .TypeType) {
+                        return Value{ .Type = self.ast.type_info.store.get(.TypeType, t).of };
+                    }
+                };
+                return self.evalSequence(self.ast.exprs.get(.TupleLit, expr).elems);
+            },
             .MapLit => return self.evalMapLit(self.ast.exprs.get(.MapLit, expr)),
             .Call => return self.evalCall(self.ast.exprs.get(.Call, expr)),
             .FieldAccess => return self.evalFieldAccess(self.ast.exprs.get(.FieldAccess, expr)),
@@ -148,7 +158,7 @@ pub const Interpreter = struct {
             .StructType => return self.evalStructType(self.ast.exprs.get(.StructType, expr)),
             .UnionType => return self.evalUnionType(self.ast.exprs.get(.UnionType, expr)),
             .VariantType => return self.evalVariantType(self.ast.exprs.get(.VariantType, expr)),
-            .ArrayType, .DynArrayType, .SliceType, .MapType, .OptionalType, .ErrorSetType, .PointerType, .SimdType, .TensorType, .TypeType, .AnyType, .NoreturnType, .ErrorType => return self.evalTypeExpr(k, expr),
+            .ArrayType, .DynArrayType, .SliceType, .MapType, .OptionalType, .ErrorSetType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType, .ErrorType => return self.evalTypeExpr(k, expr),
             else => return Error.UnsupportedExpr,
         }
     }
@@ -270,6 +280,10 @@ pub const Interpreter = struct {
                 const r = self.ast.exprs.get(.SimdType, expr);
                 const l = try self.expectInt(try self.evalExpr(r.lanes));
                 break :blk ts.mkSimd(try self.typeIdFromTypeExpr(r.elem), @intCast(l));
+            },
+            .ComplexType => blk: {
+                const r = self.ast.exprs.get(.ComplexType, expr);
+                break :blk ts.mkComplex(try self.typeIdFromTypeExpr(r.elem));
             },
             .TypeType => ts.tType(),
             .AnyType => ts.tAny(),
@@ -529,8 +543,14 @@ pub const Interpreter = struct {
     }
 
     fn typeIdFromTypeExpr(self: *Interpreter, expr: ast.ExprId) !types.TypeId {
-        const idx = expr.toRaw();
         const ts = self.ast.type_info.store;
+        if (self.ast.kind(expr) == .Ident) {
+            const name = self.ast.exprs.get(.Ident, expr).name;
+            if (try self.lookup(name)) |val| {
+                return if (val == .Type) val.Type else Error.InvalidType;
+            }
+        }
+        const idx = expr.toRaw();
         if (idx < self.ast.type_info.expr_types.items.len) {
             if (self.ast.type_info.expr_types.items[idx]) |t| {
                 if (ts.getKind(t) == .TypeType) return ts.get(.TypeType, t).of;
@@ -542,6 +562,15 @@ pub const Interpreter = struct {
     }
 
     fn evalCall(self: *Interpreter, row: ast.Rows.Call) !Value {
+        if (self.ast.kind(row.callee) == .Ident) {
+            const name = self.ast.exprs.get(.Ident, row.callee).name;
+            if (std.mem.eql(u8, self.ast.exprs.strs.get(name), "typeinfo")) {
+                const args = self.ast.exprs.expr_pool.slice(row.args);
+                if (args.len != 1) return Error.InvalidCall;
+                const ty = try self.typeIdFromTypeExpr(args[0]);
+                return self.evalTypeInfo(ty);
+            }
+        }
         var callee: Value = undefined;
         var rcv: ?Value = null;
         if (self.ast.kind(row.callee) == .FieldAccess) {
@@ -580,6 +609,278 @@ pub const Interpreter = struct {
         }
         for (exprs) |e| list.appendAssumeCapacity(try self.evalExpr(e));
         return list;
+    }
+
+    fn evalTypeInfo(self: *Interpreter, ty: types.TypeId) !Value {
+        const ts = self.ast.type_info.store;
+        const kind = ts.getKind(ty);
+        const keys = ts.typeInfoKeys();
+
+        var payload: ?*Value = null;
+        errdefer if (payload) |p| {
+            p.destroy(self.allocator);
+            self.allocator.destroy(p);
+        };
+
+        switch (kind) {
+            .Ptr => {
+                const row = ts.get(.Ptr, ty);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.elem, .value = .{ .Int = row.elem.toRaw() } },
+                    .{ .name = keys.is_const, .value = .{ .Bool = row.is_const } },
+                }));
+            },
+            .Slice => {
+                const row = ts.get(.Slice, ty);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.elem, .value = .{ .Int = row.elem.toRaw() } },
+                    .{ .name = keys.is_const, .value = .{ .Bool = row.is_const } },
+                }));
+            },
+            .Array => {
+                const row = ts.get(.Array, ty);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.elem, .value = .{ .Int = row.elem.toRaw() } },
+                    .{ .name = keys.len, .value = .{ .Int = @intCast(row.len) } },
+                }));
+            },
+            .DynArray => {
+                const row = ts.get(.DynArray, ty);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.elem, .value = .{ .Int = row.elem.toRaw() } },
+                }));
+            },
+            .Map => {
+                const row = ts.get(.Map, ty);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.key, .value = .{ .Int = row.key.toRaw() } },
+                    .{ .name = keys.value, .value = .{ .Int = row.value.toRaw() } },
+                }));
+            },
+            .Optional => {
+                const row = ts.get(.Optional, ty);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.elem, .value = .{ .Int = row.elem.toRaw() } },
+                }));
+            },
+            .Future => {
+                const row = ts.get(.Future, ty);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.elem, .value = .{ .Int = row.elem.toRaw() } },
+                }));
+            },
+            .Complex => {
+                const row = ts.get(.Complex, ty);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.elem, .value = .{ .Int = row.elem.toRaw() } },
+                }));
+            },
+            .Simd => {
+                const row = ts.get(.Simd, ty);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.elem, .value = .{ .Int = row.elem.toRaw() } },
+                    .{ .name = keys.lanes, .value = .{ .Int = @intCast(row.lanes) } },
+                }));
+            },
+            .Tensor => {
+                const row = ts.get(.Tensor, ty);
+                const rank: usize = @intCast(row.rank);
+                var dims_val = try self.makeUsizeSequence(row.dims[0..rank]);
+                errdefer dims_val.destroy(self.allocator);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.elem, .value = .{ .Int = row.elem.toRaw() } },
+                    .{ .name = keys.rank, .value = .{ .Int = @intCast(row.rank) } },
+                    .{ .name = keys.dims, .value = dims_val },
+                }));
+            },
+            .Tuple => {
+                const row = ts.get(.Tuple, ty);
+                const elems = ts.type_pool.slice(row.elems);
+                var elems_val = try self.makeTypeIdSequence(elems);
+                errdefer elems_val.destroy(self.allocator);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.elems, .value = elems_val },
+                }));
+            },
+            .Function => {
+                const row = ts.get(.Function, ty);
+                const params = ts.type_pool.slice(row.params);
+                var params_val = try self.makeTypeIdSequence(params);
+                errdefer params_val.destroy(self.allocator);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.params, .value = params_val },
+                    .{ .name = keys.result, .value = .{ .Int = row.result.toRaw() } },
+                    .{ .name = keys.is_variadic, .value = .{ .Bool = row.is_variadic } },
+                    .{ .name = keys.is_pure, .value = .{ .Bool = row.is_pure } },
+                    .{ .name = keys.is_extern, .value = .{ .Bool = row.is_extern } },
+                }));
+            },
+            .Struct => {
+                const row = ts.get(.Struct, ty);
+                const fields = ts.field_pool.slice(row.fields);
+                var fields_val = try self.makeFieldInfoSequence(fields, keys);
+                errdefer fields_val.destroy(self.allocator);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.fields, .value = fields_val },
+                    .{ .name = keys.provenance, .value = .{ .Int = @intCast(row.provenance) } },
+                }));
+            },
+            .Union => {
+                const row = ts.get(.Union, ty);
+                const fields = ts.field_pool.slice(row.fields);
+                var fields_val = try self.makeFieldInfoSequence(fields, keys);
+                errdefer fields_val.destroy(self.allocator);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.fields, .value = fields_val },
+                }));
+            },
+            .Enum => {
+                const row = ts.get(.Enum, ty);
+                const members = ts.enum_member_pool.slice(row.members);
+                var members_val = try self.makeEnumMemberSequence(members, keys);
+                errdefer members_val.destroy(self.allocator);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.members, .value = members_val },
+                    .{ .name = keys.tag, .value = .{ .Int = row.tag_type.toRaw() } },
+                }));
+            },
+            .Variant => {
+                const row = ts.get(.Variant, ty);
+                const fields = ts.field_pool.slice(row.variants);
+                var fields_val = try self.makeFieldInfoSequence(fields, keys);
+                errdefer fields_val.destroy(self.allocator);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.cases, .value = fields_val },
+                }));
+            },
+            .Error => {
+                const row = ts.get(.Error, ty);
+                const fields = ts.field_pool.slice(row.variants);
+                var fields_val = try self.makeFieldInfoSequence(fields, keys);
+                errdefer fields_val.destroy(self.allocator);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.cases, .value = fields_val },
+                }));
+            },
+            .ErrorSet => {
+                const row = ts.get(.ErrorSet, ty);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.value, .value = .{ .Int = row.value_ty.toRaw() } },
+                    .{ .name = keys.err, .value = .{ .Int = row.error_ty.toRaw() } },
+                }));
+            },
+            .TypeType => {
+                const row = ts.get(.TypeType, ty);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.of, .value = .{ .Int = row.of.toRaw() } },
+                }));
+            },
+            .MlirType => {
+                const row = ts.get(.MlirType, ty);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.src, .value = try self.makeString(ts.strs.get(row.src)) },
+                }));
+            },
+            .MlirAttribute => {
+                const row = ts.get(.MlirAttribute, ty);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.src, .value = try self.makeString(ts.strs.get(row.src)) },
+                }));
+            },
+            .Ast => {
+                const row = ts.get(.Ast, ty);
+                payload = try self.boxValue(try self.typeInfoStruct(&.{
+                    .{ .name = keys.pkg, .value = try self.makeString(self.ast.exprs.strs.get(row.pkg_name)) },
+                    .{ .name = keys.filepath, .value = try self.makeString(self.ast.exprs.strs.get(row.filepath)) },
+                }));
+            },
+            else => {},
+        }
+
+        return Value{ .Variant = .{ .tag = ts.strs.intern(@tagName(kind)), .payload = payload } };
+    }
+
+    fn boxValue(self: *Interpreter, value: Value) !*Value {
+        const ptr = try self.allocator.create(Value);
+        ptr.* = value;
+        return ptr;
+    }
+
+    fn makeTypeIdSequence(self: *Interpreter, ids: []const types.TypeId) !Value {
+        var list = std.ArrayListUnmanaged(Value){};
+        errdefer {
+            for (list.items) |*v| v.destroy(self.allocator);
+            list.deinit(self.allocator);
+        }
+        try list.ensureTotalCapacity(self.allocator, ids.len);
+        for (ids) |id| list.appendAssumeCapacity(.{ .Int = id.toRaw() });
+        return Value{ .Sequence = .{ .values = list } };
+    }
+
+    fn makeUsizeSequence(self: *Interpreter, dims: []const usize) !Value {
+        var list = std.ArrayListUnmanaged(Value){};
+        errdefer {
+            for (list.items) |*v| v.destroy(self.allocator);
+            list.deinit(self.allocator);
+        }
+        try list.ensureTotalCapacity(self.allocator, dims.len);
+        for (dims) |dim| list.appendAssumeCapacity(.{ .Int = @intCast(dim) });
+        return Value{ .Sequence = .{ .values = list } };
+    }
+
+    fn makeFieldInfoSequence(self: *Interpreter, fields: []const types.FieldId, keys: types.TypeStore.TypeInfoKeys) !Value {
+        var list = std.ArrayListUnmanaged(Value){};
+        errdefer {
+            for (list.items) |*v| v.destroy(self.allocator);
+            list.deinit(self.allocator);
+        }
+        try list.ensureTotalCapacity(self.allocator, fields.len);
+        for (fields) |fid| {
+            const f = self.ast.type_info.store.Field.get(fid);
+            const field_val = try self.typeInfoStruct(&.{
+                .{ .name = keys.name, .value = try self.makeString(self.ast.type_info.store.strs.get(f.name)) },
+                .{ .name = keys.ty, .value = .{ .Int = f.ty.toRaw() } },
+            });
+            list.appendAssumeCapacity(field_val);
+        }
+        return Value{ .Sequence = .{ .values = list } };
+    }
+
+    fn makeEnumMemberSequence(self: *Interpreter, members: []const types.EnumMemberId, keys: types.TypeStore.TypeInfoKeys) !Value {
+        var list = std.ArrayListUnmanaged(Value){};
+        errdefer {
+            for (list.items) |*v| v.destroy(self.allocator);
+            list.deinit(self.allocator);
+        }
+        try list.ensureTotalCapacity(self.allocator, members.len);
+        for (members) |mid| {
+            const m = self.ast.type_info.store.EnumMember.get(mid);
+            const member_val = try self.typeInfoStruct(&.{
+                .{ .name = keys.name, .value = try self.makeString(self.ast.type_info.store.strs.get(m.name)) },
+                .{ .name = keys.value, .value = .{ .Int = m.value } },
+            });
+            list.appendAssumeCapacity(member_val);
+        }
+        return Value{ .Sequence = .{ .values = list } };
+    }
+
+    fn typeInfoStruct(self: *Interpreter, fields: []const struct { name: types.StrId, value: Value }) !Value {
+        var list = try std.ArrayListUnmanaged(StructField).initCapacity(self.allocator, fields.len);
+        errdefer {
+            for (list.items) |*f| f.value.destroy(self.allocator);
+            list.deinit(self.allocator);
+        }
+        for (fields) |field| {
+            try list.append(self.allocator, .{
+                .name = field.name,
+                .value = field.value,
+            });
+        }
+        return Value{ .Struct = .{ .fields = list, .owner = null } };
+    }
+
+    fn makeString(self: *Interpreter, text: []const u8) !Value {
+        return Value{ .String = try self.allocator.dupe(u8, text) };
     }
 
     fn callFunction(self: *Interpreter, func: FunctionValue, args: *std.ArrayListUnmanaged(Value)) !Value {
@@ -1131,7 +1432,16 @@ pub const Interpreter = struct {
                 n.* = try self.cloneValue(p.*);
                 return Value{ .Pointer = n };
             },
+            .Variant => |val| {
+                const payload = if (val.payload) |p| blk: {
+                    const n = try self.allocator.create(Value);
+                    n.* = try self.cloneValue(p.*);
+                    break :blk n;
+                } else null;
+                return Value{ .Variant = .{ .tag = val.tag, .payload = payload } };
+            },
             .Function => Value{ .Function = v.Function },
+            .MlirModule => |mod| Value{ .MlirModule = mlir.Module.fromOperation(mlir.Operation.clone(mod.getOperation())) },
             .Code => |code| blk: {
                 var captures = try std.ArrayList(comptime_mod.CodeBinding).initCapacity(self.allocator, code.captures.items.len);
                 errdefer {

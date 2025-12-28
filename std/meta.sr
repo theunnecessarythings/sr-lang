@@ -1,0 +1,60 @@
+package meta
+
+str :: import "std/str"
+
+TypeInfo :: typeof(typeinfo(void))
+
+typeInfo :: proc(comptime T: type) TypeInfo {
+    return typeinfo(T)
+}
+
+tag :: proc(comptime info: TypeInfo) string {
+    return match info {
+        TypeInfo.Void => "Void",
+        TypeInfo.Bool => "Bool",
+        TypeInfo.I8 => "I8",
+        TypeInfo.I16 => "I16",
+        TypeInfo.I32 => "I32",
+        TypeInfo.I64 => "I64",
+        TypeInfo.U8 => "U8",
+        TypeInfo.U16 => "U16",
+        TypeInfo.U32 => "U32",
+        TypeInfo.U64 => "U64",
+        TypeInfo.F32 => "F32",
+        TypeInfo.F64 => "F64",
+        TypeInfo.Usize => "Usize",
+        TypeInfo.Complex(_) => "Complex",
+        TypeInfo.Tensor(_) => "Tensor",
+        TypeInfo.Simd(_) => "Simd",
+        TypeInfo.String => "String",
+        TypeInfo.Any => "Any",
+        TypeInfo.Code => "Code",
+        TypeInfo.Undef => "Undef",
+        TypeInfo.Ptr(_) => "Ptr",
+        TypeInfo.Slice(_) => "Slice",
+        TypeInfo.Array(_) => "Array",
+        TypeInfo.DynArray(_) => "DynArray",
+        TypeInfo.Map(_) => "Map",
+        TypeInfo.Optional(_) => "Optional",
+        TypeInfo.Tuple(_) => "Tuple",
+        TypeInfo.Function(_) => "Function",
+        TypeInfo.Struct(_) => "Struct",
+        TypeInfo.Union(_) => "Union",
+        TypeInfo.Enum(_) => "Enum",
+        TypeInfo.Variant(_) => "Variant",
+        TypeInfo.Error(_) => "Error",
+        TypeInfo.ErrorSet(_) => "ErrorSet",
+        TypeInfo.MlirModule => "MlirModule",
+        TypeInfo.MlirAttribute(_) => "MlirAttribute",
+        TypeInfo.MlirType(_) => "MlirType",
+        TypeInfo.TypeType(_) => "TypeType",
+        TypeInfo.Future(_) => "Future",
+        TypeInfo.Noreturn => "Noreturn",
+        TypeInfo.Ast(_) => "Ast",
+        TypeInfo.TypeError => "TypeError",
+    }
+}
+
+isKind :: proc(comptime info: TypeInfo, kind: string) bool {
+    return str.eq(tag(info), kind)
+}
