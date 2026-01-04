@@ -324,7 +324,7 @@ pub fn ensureDIType(self: *Codegen, ty: types.TypeId) !mlir.Attribute {
             break :blk try diComposite(self, "DW_TAG_structure_type", if (is_str) "string" else if (is_dyn) "dyn[]" else "[]", id_attr, try ensureDINullTypeAttr(self), size, 64, "", elems_txt);
         },
 
-        .Struct, .Tuple, .Complex, .Union, .Variant, .Error, .ErrorSet => blk: {
+        .Struct, .Tuple, .Complex, .Union, .Variant, .Error, .ErrorSet, .Closure => blk: {
             if (self.di_recursive_ids.get(ty)) |recId| break :blk mlir.LLVMAttributes.getLLVMDICompositeTypeAttrRecSelf(recId);
 
             const scratch = self.debug_arena.allocator();
@@ -416,6 +416,24 @@ pub fn ensureDIType(self: *Codegen, ty: types.TypeId) !mlir.Attribute {
                         offset = if (kind == .Union) std.mem.alignForward(u64, max_size, payload_align) else std.mem.alignForward(u64, offset + max_size, payload_align);
                         max_align = payload_align;
                     }
+                },
+                .Closure => {
+                    name = "closure";
+                    const cl = self.context.type_store.get(.Closure, ty);
+                    const fn_ptr_ty = self.context.type_store.mkPtr(cl.func, false);
+                    const env_ptr_ty = self.context.type_store.mkPtr(cl.env, false);
+                    const fields = [_]types.TypeId{ fn_ptr_ty, env_ptr_ty };
+                    const field_names = [_][]const u8{ "fn", "env" };
+
+                    for (fields, 0..) |fty, i| {
+                        const sa = abi.abiSizeAlign(self, fty);
+                        offset = std.mem.alignForward(u64, offset, sa.alignment);
+                        if (sa.alignment > max_align) max_align = @intCast(sa.alignment);
+                        if (i > 0) try elems_list.appendSlice(scratch, ", ");
+                        try elems_list.appendSlice(scratch, try diDerived(self, "DW_TAG_member", field_names[i], try ensureDIType(self, fty), sa.size * 8, sa.alignment * 8, offset * 8));
+                        offset += sa.size;
+                    }
+                    offset = std.mem.alignForward(u64, offset, max_align);
                 },
                 else => unreachable,
             }

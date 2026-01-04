@@ -2660,6 +2660,25 @@ test "unreachable after break - failures" {
 //     , &[_]diag.DiagnosticCode{.return_type_mismatch});
 // }
 
+test "closures - escape failures" {
+    // Returning a captured closure
+    try checkProgram(
+        \\
+        \\ make :: proc(base: i32) fn(i32) i32 {
+        \\   return |x: i32| x + base
+        \\ }
+    , &[_]diag.DiagnosticCode{.closure_escape_not_supported});
+
+    // Passing a captured closure as an argument
+    try checkProgram(
+        \\
+        \\ apply :: fn(f: fn(i32) i32, x: i32) i32 { return f(x) }
+        \\ caller :: proc(base: i32) i32 {
+        \\   return apply(|x: i32| x + base, 1)
+        \\ }
+    , &[_]diag.DiagnosticCode{.closure_escape_not_supported});
+}
+
 // Focused: Cast expressions
 
 test "cast expressions - success" {

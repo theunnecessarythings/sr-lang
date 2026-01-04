@@ -7,7 +7,6 @@ add_fn :: fn(a: i32, b: i32) i32 {
     return a + b
 }
 
-/*
 test "functions: function pointer assignment and call" {
     // Basic assignment
     my_add := add_fn
@@ -23,10 +22,7 @@ test "functions: higher order function (function param)" {
     r := apply_fn(add_fn, 5, 7)
     if !testing.expect_equal_i64(12, r.(i64)) { return Error.Fail }
 }
-*/
 
-// Closures are currently only implemented for parsing.
-/*
 test "functions: closure expression body" {
     add_one := |x: i32| x + 1
     r := add_one(10)
@@ -35,20 +31,25 @@ test "functions: closure expression body" {
 
 test "functions: closure block body" {
     add_two := |x: i32| i32 {
-        y := 2
+        y: i32 = 2
         return x + y
     }
+
     r := add_two(10)
     if !testing.expect_equal_i64(12, r.(i64)) { return Error.Fail }
 }
 
-test "functions: closure capture" {
-    y := 10
-    add_y := |x: i32| x + y
-    r := add_y(5)
-    if !testing.expect_equal_i64(15, r.(i64)) { return Error.Fail }
+test "functions: captured closure local" {
+    base: i32 = 3
+    add_base := |x: i32| x + base
+    r := add_base(4)
+    if !testing.expect_equal_i64(7, r.(i64)) { return Error.Fail }
 }
-*/
+
+test "functions: higher order function (closure param)" {
+    r := apply_fn(|a: i32, b: i32| a + b, 3, 4)
+    if !testing.expect_equal_i64(7, r.(i64)) { return Error.Fail }
+}
 
 test "functions: variadic with any" {
     variadic_helper(1, 2, 3)

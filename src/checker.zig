@@ -49,6 +49,7 @@ pub const CheckerContext = struct {
     allow_insert_target: List(bool) = .{},
     insert_target_stack: List(InsertTarget) = .{},
     insert_site_stack: List(InsertSite) = .{},
+    closure_frames: List(ClosureFrame) = .{},
     // Binding Scopes
     loop_binding_stack: List(LoopBindingCtx) = .{},
     catch_binding_stack: List(CatchBindingCtx) = .{},
@@ -86,6 +87,7 @@ pub const CheckerContext = struct {
         self.allow_insert_target.deinit(gpa);
         self.insert_target_stack.deinit(gpa);
         self.insert_site_stack.deinit(gpa);
+        self.closure_frames.deinit(gpa);
         self.loop_binding_stack.deinit(gpa);
         self.catch_binding_stack.deinit(gpa);
         self.match_binding_stack.deinit(gpa);
@@ -113,6 +115,18 @@ const InsertTarget = union(enum) {
     block: struct { block_id: ast.ExprId, scope_id: symbols.ScopeId },
 };
 const InsertSite = struct { block_id: ast.ExprId, index: u32 };
+
+const CaptureInfo = struct { name: ast.StrId, ty: types.TypeId };
+const ClosureFrame = struct {
+    symtab_depth: usize,
+    loop_depth: usize,
+    catch_depth: usize,
+    match_depth: usize,
+    captures: std.ArrayListUnmanaged(CaptureInfo) = .{},
+    fn deinit(self: *ClosureFrame, gpa: std.mem.Allocator) void {
+        self.captures.deinit(gpa);
+    }
+};
 
 const FunctionCtx = struct {
     result: types.TypeId,
@@ -340,6 +354,51 @@ fn currentFunc(_: *const Checker, ctx: *CheckerContext) ?*FunctionCtx {
     return if (ctx.func_stack.items.len > 0) &ctx.func_stack.items[ctx.func_stack.items.len - 1] else null;
 }
 
+fn currentClosureFrame(ctx: *CheckerContext) ?ClosureFrame {
+    if (ctx.closure_frames.items.len == 0) return null;
+    return ctx.closure_frames.items[ctx.closure_frames.items.len - 1];
+}
+fn pushClosureFrame(self: *Checker, ctx: *CheckerContext) !void {
+    const depth = if (ctx.symtab.stack.items.len == 0) 0 else ctx.symtab.stack.items.len - 1;
+    try ctx.closure_frames.append(self.gpa, .{
+        .symtab_depth = depth,
+        .loop_depth = ctx.loop_binding_stack.items.len,
+        .catch_depth = ctx.catch_binding_stack.items.len,
+        .match_depth = ctx.match_binding_stack.items.len,
+    });
+}
+fn popClosureFrame(_: *Checker, ctx: *CheckerContext) void {
+    if (ctx.closure_frames.items.len == 0) return;
+    var frame = ctx.closure_frames.pop().?;
+    frame.deinit(ctx.symtab.gpa);
+}
+
+fn symbolFrameIndex(ctx: *CheckerContext, sym_id: symbols.SymbolId) ?usize {
+    for (ctx.symtab.stack.items, 0..) |frame, idx| {
+        for (frame.list.items) |id| {
+            if (id.eq(sym_id)) return idx;
+        }
+    }
+    return null;
+}
+
+fn isCapturedClosureSymbol(ctx: *CheckerContext, sym_id: symbols.SymbolId) bool {
+    const frame = currentClosureFrame(ctx) orelse return false;
+    if (ctx.symtab.stack.items.len == 0) return false;
+    if (symbolFrameIndex(ctx, sym_id)) |idx| {
+        if (idx == 0) return false;
+        return idx < frame.symtab_depth;
+    }
+    return true;
+}
+
+fn recordClosureCapture(self: *Checker, ctx: *CheckerContext, name: ast.StrId, ty: types.TypeId) !void {
+    if (ctx.closure_frames.items.len == 0) return;
+    var frame = &ctx.closure_frames.items[ctx.closure_frames.items.len - 1];
+    for (frame.captures.items) |c| if (c.name.eq(name)) return;
+    try frame.captures.append(self.gpa, .{ .name = name, .ty = ty });
+}
+
 fn pushLoop(self: *Checker, ctx: *CheckerContext, label: ast.OptStrId) !void {
     try ctx.loop_stack.append(self.gpa, .{ .label = label });
 }
@@ -420,16 +479,18 @@ inline fn popCatchBinding(_: *Checker, ctx: *CheckerContext) void {
 }
 
 inline fn bindingTypeFromActiveCatches(_: *Checker, ctx: *CheckerContext, name: ast.StrId) ?types.TypeId {
+    const start = if (currentClosureFrame(ctx)) |f| f.catch_depth else 0;
     var i = @as(isize, @intCast(ctx.catch_binding_stack.items.len)) - 1;
-    while (i >= 0) : (i -= 1) {
+    while (i >= @as(isize, @intCast(start))) : (i -= 1) {
         if (ctx.catch_binding_stack.items[@intCast(i)].name.eq(name)) return ctx.catch_binding_stack.items[@intCast(i)].ty;
     }
     return null;
 }
 
 inline fn bindingTypeFromActiveMatches(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, name: ast.StrId) ?types.TypeId {
+    const start = if (currentClosureFrame(ctx)) |f| f.match_depth else 0;
     var i = @as(isize, @intCast(ctx.match_binding_stack.items.len)) - 1;
-    while (i >= 0) : (i -= 1) {
+    while (i >= @as(isize, @intCast(start))) : (i -= 1) {
         const c = ctx.match_binding_stack.items[@intCast(i)];
         if (pattern_matching.bindingTypeInPattern(self, ast_unit, c.pat, name, c.subject_ty)) |t| return t;
     }
@@ -437,8 +498,9 @@ inline fn bindingTypeFromActiveMatches(self: *Checker, ctx: *CheckerContext, ast
 }
 
 inline fn bindingTypeFromActiveLoops(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, name: ast.StrId) ?types.TypeId {
+    const start = if (currentClosureFrame(ctx)) |f| f.loop_depth else 0;
     var i = @as(isize, @intCast(ctx.loop_binding_stack.items.len)) - 1;
-    while (i >= 0) : (i -= 1) {
+    while (i >= @as(isize, @intCast(start))) : (i -= 1) {
         const c = ctx.loop_binding_stack.items[@intCast(i)];
         if (!c.pat.isNone()) if (pattern_matching.bindingTypeInPattern(self, ast_unit, c.pat.unwrap(), name, c.subject_ty)) |t| return t;
     }
@@ -789,6 +851,11 @@ pub fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_
     if (push_nested) self.popAllowNestedFn(ctx);
 
     if (self.typeKind(rhs_ty) == .TypeError) return;
+
+    if (!in_func and self.typeKind(rhs_ty) == .Closure) {
+        try self.context.diags.addError(exprLoc(ast_unit, decl), .closure_escape_not_supported, .{});
+        return;
+    }
 
     if (push_nested) {
         _ = try self.registerMethodDecl(ctx, ast_unit, decl_id, decl, rhs_ty);
@@ -2399,8 +2466,16 @@ fn checkIdent(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
     // 2. Symbol Table (Declarations, Params)
     if (self.lookup(ctx, name)) |sid| {
         const srow = ctx.symtab.syms.get(sid);
-        if (!srow.origin_decl.isNone()) return try self.resolveDeclType(ctx, ast_unit, name, srow.origin_decl.unwrap());
-        if (!srow.origin_param.isNone()) return try self.resolveParamType(ctx, ast_unit, name, srow.origin_param.unwrap());
+        if (!srow.origin_decl.isNone()) {
+            const ty = try self.resolveDeclType(ctx, ast_unit, name, srow.origin_decl.unwrap());
+            if (isCapturedClosureSymbol(ctx, sid)) try self.recordClosureCapture(ctx, name, ty);
+            return ty;
+        }
+        if (!srow.origin_param.isNone()) {
+            const ty = try self.resolveParamType(ctx, ast_unit, name, srow.origin_param.unwrap());
+            if (isCapturedClosureSymbol(ctx, sid)) try self.recordClosureCapture(ctx, name, ty);
+            return ty;
+        }
         return self.resolveDynamicBinding(ctx, ast_unit, name) orelse self.context.type_store.tTypeError();
     }
 
@@ -4182,24 +4257,30 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
     const func_kind = self.typeKind(func_ty);
     if (func_kind == .Any) return ts.tTypeError();
 
+    var callee_func_ty = func_ty;
+    if (func_kind == .Closure) {
+        const cl = ts.get(.Closure, func_ty);
+        callee_func_ty = cl.func;
+    }
+
     // Phase 3: Tuple Constructors
     if (func_kind == .Tuple) return self.checkTupleCall(ctx, ast_unit, call_expr, func_ty);
 
-    if (func_kind != .Function) {
+    if (func_kind != .Function and func_kind != .Closure) {
         try self.context.diags.addError(exprLoc(ast_unit, call_expr), .call_non_callable, .{func_ty});
         return ts.tTypeError();
     }
 
     // Phase 4: Standard Function Checks (Purity, Arity, Arguments)
-    const fnrow = ts.get(.Function, func_ty);
+    const fnrow = ts.get(.Function, callee_func_ty);
     try self.checkPurity(ctx, ast_unit, call_expr, fnrow);
 
-    if (try self.checkCallArguments(ctx, ast_unit, call_expr, func_ty, fnrow)) |arg_ctx| {
+    if (try self.checkCallArguments(ctx, ast_unit, call_expr, callee_func_ty, fnrow)) |arg_ctx| {
         var mutable_arg_ctx = arg_ctx;
         defer mutable_arg_ctx.types.deinit(self.gpa);
 
         // Phase 5: Specialization & Finalization
-        return self.finalizeCallSpecialization(ctx, ast_unit, id, call_expr, func_ty, fnrow, &mutable_arg_ctx);
+        return self.finalizeCallSpecialization(ctx, ast_unit, id, call_expr, callee_func_ty, fnrow, &mutable_arg_ctx);
     } else {
         return ts.tTypeError();
     }
@@ -4375,6 +4456,11 @@ fn typeInfoResultType(self: *Checker) types.TypeId {
         .{ .name = keys.is_pure, .ty = ts.tBool() },
         .{ .name = keys.is_extern, .ty = ts.tBool() },
     }, 0);
+    const closure_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = keys.params, .ty = u32_slice },
+        .{ .name = keys.result, .ty = ts.tU32() },
+        .{ .name = keys.env, .ty = ts.tU32() },
+    }, 0);
     const struct_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
         .{ .name = keys.fields, .ty = field_slice },
         .{ .name = keys.provenance, .ty = ts.tU64() },
@@ -4414,7 +4500,7 @@ fn typeInfoResultType(self: *Checker) types.TypeId {
     }, 0);
 
     const void_payload = ts.tVoid();
-    const case_count: usize = 42;
+    const case_count: usize = 43;
     const cases = ts.arena.allocator().alloc(types.TypeStore.StructFieldArg, case_count) catch @panic("OOM");
     var idx: usize = 0;
     const addCase = struct {
@@ -4452,6 +4538,7 @@ fn typeInfoResultType(self: *Checker) types.TypeId {
     addCase(cases, &idx, "Optional", elem_payload, ts.strs);
     addCase(cases, &idx, "Tuple", tuple_payload, ts.strs);
     addCase(cases, &idx, "Function", fn_payload, ts.strs);
+    addCase(cases, &idx, "Closure", closure_payload, ts.strs);
     addCase(cases, &idx, "Struct", struct_payload, ts.strs);
     addCase(cases, &idx, "Union", fields_payload, ts.strs);
     addCase(cases, &idx, "Enum", enum_payload, ts.strs);
@@ -4773,6 +4860,12 @@ fn checkCallArguments(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, 
             ast_unit.type_info.expr_types.items[arg.toRaw()] = pt;
             at = pt;
             at_kind = self.typeKind(at);
+        }
+
+        if (at_kind == .Closure) {
+            try diags.addError(exprLocFromId(ast_unit, arg), .closure_escape_not_supported, .{});
+            arg_types.deinit(self.gpa);
+            return null;
         }
 
         if (is_any_variadic and i >= params.len - 1) {
@@ -5968,6 +6061,11 @@ fn checkReturn(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, rr: ast
         }
     }
 
+    if (has_value and self.typeKind(ret_ty) == .Closure) {
+        try self.context.diags.addError(exprLoc(ast_unit, rr), .closure_escape_not_supported, .{});
+        return ts.tTypeError();
+    }
+
     // Opportunistic Result Inference for `any` or `type`
     if (func_ctx.inferred_result == null) {
         const expect_kind = self.typeKind(expect_ty);
@@ -6381,33 +6479,128 @@ fn checkClosure(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: as
     const cr = getExpr(ast_unit, .Closure, id);
     const params = ast_unit.exprs.param_pool.slice(cr.params);
 
-    const param_tys = try ts.gpa.alloc(types.TypeId, params.len);
-    defer ts.gpa.free(param_tys);
+    var param_tys = try self.gpa.alloc(types.TypeId, params.len);
+    defer self.gpa.free(param_tys);
 
-    for (params, 0..) |p_idx, i| {
-        const p = ast_unit.exprs.Param.get(p_idx);
-        if (p.ty.isNone()) {
-            try self.context.diags.addError(exprLoc(ast_unit, p), .type_annotation_mismatch, .{});
-            return ts.tTypeError();
-        }
-        const ty_expr = p.ty.unwrap();
-        if (ast_unit.kind(ty_expr) == .AnyType) {
-            param_tys[i] = ts.tAny();
-        } else if (try check_types.findAnyTypeExpr(self.gpa, ast_unit, ty_expr)) |any_id| {
-            try self.context.diags.addError(exprLocFromId(ast_unit, any_id), .invalid_any_type_annotation, .{});
-            return ts.tTypeError();
-        } else {
-            const res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, ty_expr);
-            if (!res[0]) return ts.tTypeError();
-            param_tys[i] = res[1];
+    _ = try ctx.symtab.push(ctx.symtab.currentId());
+    defer ctx.symtab.pop();
+
+    var value_bindings = List(check_types.Binding){};
+    defer {
+        self.destroyComptimeBindings(value_bindings.items);
+        value_bindings.deinit(self.gpa);
+    }
+    {
+        var iter = ast_unit.type_info.comptime_bindings.iterator();
+        while (iter.next()) |entry| {
+            try value_bindings.append(self.gpa, .{ .Value = .{ .name = entry.key_ptr.*, .value = entry.value_ptr.value, .ty = entry.value_ptr.ty } });
         }
     }
 
-    const body_ty = try self.checkExpr(ctx, ast_unit, cr.body);
-    if (self.typeKind(body_ty) == .TypeError) return ts.tTypeError();
+    var is_generic_template = false;
+    var unspecialized_comptime_names = std.DynamicBitSetUnmanaged{};
+    defer unspecialized_comptime_names.deinit(self.gpa);
 
-    // Closures are always pure function *types* (no side-effect tracking here).
-    return ts.mkFunction(param_tys, body_ty, false, true, false);
+    var had_param_error = false;
+    for (params, 0..) |pid, i| {
+        const p = ast_unit.exprs.Param.get(pid);
+        if (p.ty.isNone()) {
+            try self.context.diags.addError(exprLoc(ast_unit, p), .type_annotation_mismatch, .{});
+            param_tys[i] = ts.tTypeError();
+            had_param_error = true;
+            continue;
+        }
+        param_tys[i] = try self.checkParam(ctx, ast_unit, pid, &value_bindings, &unspecialized_comptime_names, &is_generic_template);
+        if (self.typeKind(param_tys[i]) == .TypeError) had_param_error = true;
+    }
+    if (had_param_error) return ts.tTypeError();
+
+    const body_is_block = ast_unit.kind(cr.body) == .Block;
+    var res_ty: types.TypeId = ts.tVoid();
+
+    if (!cr.result_ty.isNone()) {
+        const ty_expr = cr.result_ty.unwrap();
+        if (try check_types.findAnyTypeExpr(self.gpa, ast_unit, ty_expr)) |any_id| {
+            try self.context.diags.addError(exprLocFromId(ast_unit, any_id), .invalid_any_type_annotation, .{});
+            return ts.tTypeError();
+        }
+        const r = try check_types.typeFromTypeExprWithBindings(self, ctx, ast_unit, ty_expr, value_bindings.items);
+        if (!r[0]) return ts.tTypeError();
+        res_ty = r[1];
+    } else if (!body_is_block) {
+        res_ty = ts.tAny();
+    }
+
+    const res_kind = self.typeKind(res_ty);
+    const has_res = res_kind != .Void and res_kind != .Noreturn;
+
+    try self.pushFunc(ctx, res_ty, has_res, true);
+    defer self.popFunc(ctx);
+    try self.pushClosureFrame(ctx);
+    defer self.popClosureFrame(ctx);
+
+    if (body_is_block) {
+        try self.pushValueReq(ctx, false);
+        defer self.popValueReq(ctx);
+        _ = try self.checkExpr(ctx, ast_unit, cr.body);
+    } else {
+        try self.pushValueReq(ctx, true);
+        if (!cr.result_ty.isNone()) try self.pushExpectedType(ctx, res_ty);
+        const body_ty = try self.checkExpr(ctx, ast_unit, cr.body);
+        if (!cr.result_ty.isNone()) self.popExpectedType(ctx);
+        self.popValueReq(ctx);
+
+        if (self.typeKind(body_ty) == .TypeError) return ts.tTypeError();
+        if (cr.result_ty.isNone()) {
+            res_ty = body_ty;
+        } else if (self.assignable(body_ty, res_ty) != .success) {
+            if (check_types.isNumericKind(self, self.typeKind(res_ty))) {
+                var coerced = body_ty;
+                var coerced_kind = self.typeKind(coerced);
+                if (try self.updateCoercedLiteral(ast_unit, cr.body, res_ty, &coerced, &coerced_kind) and
+                    self.assignable(coerced, res_ty) == .success)
+                {
+                    res_ty = coerced;
+                } else {
+                    try self.context.diags.addError(exprLoc(ast_unit, cr), .return_type_mismatch, .{ res_ty, body_ty });
+                    return ts.tTypeError();
+                }
+            } else {
+                try self.context.diags.addError(exprLoc(ast_unit, cr), .return_type_mismatch, .{ res_ty, body_ty });
+                return ts.tTypeError();
+            }
+        }
+    }
+
+    const func_ty = ts.mkFunction(param_tys, res_ty, false, true, false);
+
+    const frame = &ctx.closure_frames.items[ctx.closure_frames.items.len - 1];
+    const captures = frame.captures.items;
+
+    if (captures.len == 0) {
+        ast_unit.type_info.expr_types.items[id.toRaw()] = func_ty;
+        return func_ty;
+    }
+
+    var env_fields = try self.gpa.alloc(types.TypeStore.StructFieldArg, captures.len);
+    defer self.gpa.free(env_fields);
+    var cap_names = try self.gpa.alloc(ast.StrId, captures.len);
+    defer self.gpa.free(cap_names);
+    var cap_types = try self.gpa.alloc(types.TypeId, captures.len);
+    defer self.gpa.free(cap_types);
+
+    for (captures, 0..) |cap, i| {
+        env_fields[i] = .{ .name = cap.name, .ty = cap.ty };
+        cap_names[i] = cap.name;
+        cap_types[i] = cap.ty;
+    }
+
+    const env_ty = ts.mkStruct(env_fields, 0);
+    const closure_ty = ts.mkClosure(func_ty, env_ty);
+    try ast_unit.type_info.setClosureCaptures(id, cap_names, cap_types);
+
+    ast_unit.type_info.expr_types.items[id.toRaw()] = closure_ty;
+    return closure_ty;
 }
 
 /// Handle different cast/kind modifiers, validating safety and recording results.

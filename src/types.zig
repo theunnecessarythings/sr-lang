@@ -141,12 +141,14 @@ pub const TypeInfo = struct {
     spread_ranges: std.AutoArrayHashMapUnmanaged(u32, void) = .{},
     call_specializations: std.AutoArrayHashMapUnmanaged(u32, CallSpecialization) = .{},
     synthetic_decls: std.ArrayListUnmanaged(u32) = .{},
+    closure_captures: std.AutoArrayHashMapUnmanaged(u32, ClosureCaptureList) = .{},
 
     pub const ExportEntry = struct { ty: TypeId, decl_id: ast.DeclId };
     const MethodExprSnapshot = struct { expr_ids: []u32, expr_types: []TypeId };
     const CallSpecSnapshot = struct { expr_ids: []u32, specs: []CallSpecialization, comptime_snapshot: ?ComptimeBindingSnapshot = null };
     const ComptimeBindingSnapshot = struct { names: []ast.StrId, types: []TypeId, values: []comp.ValueId };
     const ComptimeExprSnapshot = struct { expr_ids: []u32, values: []comp.ValueId };
+    pub const ClosureCaptureList = struct { names: []ast.StrId, types: []TypeId };
 
     pub fn init(gpa: std.mem.Allocator, store: *TypeStore) TypeInfo {
         const arena = gpa.create(std.heap.ArenaAllocator) catch @panic("OOM");
@@ -164,6 +166,18 @@ pub const TypeInfo = struct {
         self.val_store.deinit();
         self.arena.deinit();
         self.backing_gpa.destroy(self.arena);
+    }
+
+    pub fn setClosureCaptures(self: *TypeInfo, expr_id: ast.ExprId, names: []const ast.StrId, types: []const TypeId) !void {
+        const n = names.len;
+        if (n != types.len) return error.InvalidArgument;
+        const name_copy = try self.arena.allocator().dupe(ast.StrId, names);
+        const type_copy = try self.arena.allocator().dupe(TypeId, types);
+        try self.closure_captures.put(self.arena.allocator(), expr_id.toRaw(), .{ .names = name_copy, .types = type_copy });
+    }
+
+    pub fn getClosureCaptures(self: *const TypeInfo, expr_id: ast.ExprId) ?ClosureCaptureList {
+        return self.closure_captures.get(expr_id.toRaw());
     }
 
     pub fn print(self: *TypeInfo) void {
@@ -399,7 +413,7 @@ pub const TypeInfo = struct {
     }
 };
 
-pub const TypeKind = enum(u8) { Void, Bool, I8, I16, I32, I64, U8, U16, U32, U64, F32, F64, Usize, Complex, Tensor, Simd, String, Any, Code, Undef, Ptr, Slice, Array, DynArray, Map, Optional, Tuple, Function, Struct, Union, Enum, Variant, Error, ErrorSet, MlirModule, MlirAttribute, MlirType, TypeType, Future, Noreturn, Ast, TypeError };
+pub const TypeKind = enum(u8) { Void, Bool, I8, I16, I32, I64, U8, U16, U32, U64, F32, F64, Usize, Complex, Tensor, Simd, String, Any, Code, Undef, Ptr, Slice, Array, DynArray, Map, Optional, Tuple, Function, Closure, Struct, Union, Enum, Variant, Error, ErrorSet, MlirModule, MlirAttribute, MlirType, TypeType, Future, Noreturn, Ast, TypeError };
 
 pub const Rows = struct {
     pub const Void = struct {};
@@ -434,6 +448,7 @@ pub const Rows = struct {
     pub const Future = struct { elem: TypeId };
     pub const Tuple = struct { elems: RangeType };
     pub const Function = struct { params: RangeType, result: TypeId, is_variadic: bool, is_pure: bool, is_extern: bool };
+    pub const Closure = struct { func: TypeId, env: TypeId };
     pub const Field = struct { name: StrId, ty: TypeId };
     pub const EnumMember = struct { name: StrId, value: i64 };
     pub const Struct = struct { fields: RangeField, provenance: u64 };
@@ -506,6 +521,7 @@ pub const TypeStore = struct {
     Future: Table(Rows.Future) = .{},
     Tuple: Table(Rows.Tuple) = .{},
     Function: Table(Rows.Function) = .{},
+    Closure: Table(Rows.Closure) = .{},
     Field: Table(Rows.Field) = .{},
     Struct: Table(Rows.Struct) = .{},
     Union: Table(Rows.Union) = .{},
@@ -557,6 +573,7 @@ pub const TypeStore = struct {
         len: StrId,
         params: StrId,
         result: StrId,
+        env: StrId,
         fields: StrId,
         cases: StrId,
         members: StrId,
@@ -603,6 +620,7 @@ pub const TypeStore = struct {
             .len = self.strs.intern("len"),
             .params = self.strs.intern("params"),
             .result = self.strs.intern("result"),
+            .env = self.strs.intern("env"),
             .fields = self.strs.intern("fields"),
             .cases = self.strs.intern("cases"),
             .members = self.strs.intern("members"),
@@ -920,6 +938,15 @@ pub const TypeStore = struct {
         };
     }
 
+    pub fn mkClosure(self: *TypeStore, func: TypeId, env: TypeId) TypeId {
+        const key = .{ .func = func, .env = env };
+        return self.findMatch(.Closure, key, struct {
+            fn eq(_: *const TypeStore, r: Rows.Closure, k: anytype) bool {
+                return r.func.eq(k.func) and r.env.eq(k.env);
+            }
+        }) orelse self.addLocked(.Closure, .{ .func = func, .env = env });
+    }
+
     pub const StructFieldArg = struct { name: StrId, ty: TypeId };
     pub const EnumMemberArg = struct { name: StrId, value: i64 };
 
@@ -1093,6 +1120,18 @@ pub const TypeStore = struct {
                 try self.fmt(r.result, w);
                 if (r.is_variadic) try w.print(" variadic", .{});
             },
+            .Closure => {
+                const r = self.get(.Closure, id);
+                const fnr = self.get(.Function, r.func);
+                try w.print("closure(", .{});
+                const ids = self.type_pool.slice(fnr.params);
+                for (ids, 0..) |p, i| {
+                    if (i != 0) try w.print(", ", .{});
+                    try self.fmt(p, w);
+                }
+                try w.print(") ", .{});
+                try self.fmt(fnr.result, w);
+            },
             .Struct => {
                 try w.print("struct {{ ", .{});
                 const ids = self.field_pool.slice(self.get(.Struct, id).fields);
@@ -1253,6 +1292,20 @@ pub const TypeStore = struct {
                 try writer.print(") ", .{});
                 try self.fmtDiagnostic(r.result, writer, options, depth + 1);
                 if (r.is_variadic) try writer.print(" variadic", .{});
+            },
+            .Closure => {
+                const r = self.get(.Closure, type_id);
+                const fnr = self.get(.Function, r.func);
+                try writer.print("closure(", .{});
+                const params = self.type_pool.slice(fnr.params);
+                const limit = @min(params.len, options.max_params);
+                for (params[0..limit], 0..) |p, i| {
+                    if (i > 0) try writer.print(", ", .{});
+                    try self.fmtDiagnostic(p, writer, options, depth + 1);
+                }
+                if (params.len > limit) try writer.print(", ... ({d} more)", .{params.len - limit});
+                try writer.print(") ", .{});
+                try self.fmtDiagnostic(fnr.result, writer, options, depth + 1);
             },
             .Struct => {
                 try writer.print("struct {{ ", .{});

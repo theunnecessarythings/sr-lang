@@ -470,29 +470,6 @@ test "behavior: variadic function call" {
     print_variadic("Numbers:", 10, 3.14)
 }
 
-// test "behavior: closure basic usage" {
-//     const src =
-//         \\ add_one := fn(x: i32) i32 { return x + 1 }
-//         \\ r := add_one(5)
-//         \\ printf("Closure result=%d\n", r)
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Closure result=6\n");
-// }
-//
-// test "behavior: closure with captured environment" {
-//     const src =
-//         \\ make_adder :: proc(amount: i32) fn(i32) i32 {
-//         \\   add_amount := fn(x: i32) i32 { return x + amount }
-//         \\   return add_amount
-//         \\ }
-//         \\ add_5 := make_adder(5)
-//         \\ r := add_5(7)
-//         \\ printf("Captured closure result=%d\n", r)
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Captured closure result=12\n");
-// }
 test "behavior: typeof expression" {
     t_int := typeof(1)
     t_bool := typeof(true)

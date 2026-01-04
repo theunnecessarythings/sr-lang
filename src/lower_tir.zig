@@ -57,6 +57,7 @@ harness_emitted: bool = false,
 entry_pkg_name: StrId,
 entry_pkg_locked: bool = false,
 const_slice_counter: u32 = 0,
+closure_fn_syms: std.AutoArrayHashMapUnmanaged(u32, StrId) = .{},
 
 const TestFunc = struct { sym: StrId, ty: types.TypeId, name: ?ast.StrId };
 
@@ -129,6 +130,7 @@ pub fn init(gpa: std.mem.Allocator, context: *Context, pipeline: *Pipeline, chk:
 
 pub fn deinit(self: *LowerTir) void {
     self.test_funcs.deinit(self.gpa);
+    self.closure_fn_syms.deinit(self.gpa);
 }
 
 fn throwErr(self: *LowerTir, loc: Loc) anyerror {
@@ -1384,6 +1386,197 @@ pub fn lowerFunction(
     try b.endFunction(f);
 }
 
+fn closureSymbolName(self: *LowerTir, a: *ast.Ast, id: ast.ExprId) !StrId {
+    const raw_name = try std.fmt.allocPrint(self.gpa, "__closure_{d}_{d}", .{ a.file_id, id.toRaw() });
+    defer self.gpa.free(raw_name);
+    const interned = self.context.type_store.strs.intern(raw_name);
+    return try self.qualifySymbolName(a, interned);
+}
+
+fn lowerClosureFunction(
+    self: *LowerTir,
+    lower_ctx: *LowerContext,
+    a: *ast.Ast,
+    b: *Builder,
+    name: StrId,
+    closure_id: ast.ExprId,
+) !void {
+    const fid = self.getExprType(lower_ctx, a, closure_id);
+    const ts = self.context.type_store;
+    var func_ty = fid;
+    var env_ty: ?types.TypeId = null;
+    if (ts.getKind(fid) == .Closure) {
+        const cl = ts.get(.Closure, fid);
+        func_ty = cl.func;
+        env_ty = cl.env;
+    }
+    if (ts.getKind(func_ty) != .Function) return;
+    const fnty = ts.get(.Function, func_ty);
+
+    const cr = a.exprs.get(.Closure, closure_id);
+    const fn_loc = tir.OptLocId.some(cr.loc);
+
+    var f = try b.beginFunction(
+        self.context,
+        name,
+        fnty.result,
+        false,
+        false,
+        .empty(),
+        false,
+        false,
+        .none(),
+    );
+
+    const params = a.exprs.param_pool.slice(cr.params);
+    const runtime_param_tys = ts.type_pool.slice(fnty.params);
+
+    var param_offset: usize = 0;
+    var env_param: ?tir.ValueId = null;
+    if (env_ty) |ety| {
+        const env_ptr_ty = ts.mkPtr(ety, false);
+        const env_name = ts.strs.intern("__env");
+        env_param = try b.addParam(&f, env_name, env_ptr_ty);
+        param_offset = 1;
+    }
+    try self.setupFunctionParams(a, b, &f, params, runtime_param_tys);
+
+    var blk = try b.beginBlock(&f);
+    var env = cf.Env{};
+    defer env.deinit(self.gpa);
+
+    if (env_ty != null) {
+        if (a.type_info.getClosureCaptures(closure_id)) |caps| {
+            const env_ptr = env_param.?;
+            for (caps.names, 0..) |cap_name, i| {
+                const cap_ty = caps.types[i];
+                const field_ptr_ty = ts.mkPtr(cap_ty, false);
+                const field_ptr = blk.builder.gep(&blk, field_ptr_ty, env_ptr, &.{ blk.builder.gepConst(0), blk.builder.gepConst(@intCast(i)) }, fn_loc);
+                const field_val = blk.builder.tirValue(.Load, &blk, cap_ty, fn_loc, .{ .ptr = field_ptr, .@"align" = 0 });
+                try env.bind(self.gpa, cap_name, .{ .value = field_val, .ty = cap_ty, .is_slot = false }, b, &blk, fn_loc);
+            }
+        }
+    }
+
+    try self.bindFunctionParamsWithOffset(a, b, &env, &f, &blk, params, runtime_param_tys, param_offset);
+
+    if (a.kind(cr.body) == .Block) {
+        try env.pushScope(self.gpa);
+        defer _ = env.popScope(self.gpa);
+        try self.lowerExprAsStmtList(lower_ctx, a, &env, &f, &blk, cr.body);
+    } else {
+        const want = fnty.result;
+        const expr_val = try self.lowerExpr(lower_ctx, a, &env, &f, &blk, cr.body, want, .rvalue);
+        if (self.isVoid(want)) {
+            try b.setReturn(&blk, .none(), fn_loc);
+        } else {
+            const got_ty = self.getExprType(lower_ctx, a, cr.body);
+            const coerced = if (!got_ty.eq(want)) self.emitCoerce(&blk, expr_val, got_ty, want, optLoc(a, cr.body)) else expr_val;
+            try b.setReturn(&blk, .some(coerced), fn_loc);
+        }
+    }
+
+    if (blk.term.isNone()) {
+        try b.setReturn(&blk, .none(), fn_loc);
+    }
+
+    try b.endBlock(&f, blk);
+    try b.endFunction(f);
+}
+
+fn ensureClosureFunction(
+    self: *LowerTir,
+    lower_ctx: *LowerContext,
+    a: *ast.Ast,
+    b: *Builder,
+    id: ast.ExprId,
+) !StrId {
+    const raw_id = id.toRaw();
+    if (self.closure_fn_syms.get(raw_id)) |sym| return sym;
+    const sym = try self.closureSymbolName(a, id);
+    try self.closure_fn_syms.put(self.gpa, raw_id, sym);
+    try self.lowerClosureFunction(lower_ctx, a, b, sym, id);
+    return sym;
+}
+
+const ClosureRuntimeSig = struct {
+    fn_ty: types.TypeId,
+    env_ptr_ty: types.TypeId,
+};
+
+fn closureRuntimeSig(self: *LowerTir, cl: types.Rows.Closure) !ClosureRuntimeSig {
+    const ts = self.context.type_store;
+    const fnrow = ts.get(.Function, cl.func);
+    const env_ptr_ty = ts.mkPtr(cl.env, false);
+    var runtime_params = try self.gpa.alloc(types.TypeId, fnrow.params.len + 1);
+    defer self.gpa.free(runtime_params);
+    runtime_params[0] = env_ptr_ty;
+    @memcpy(runtime_params[1..], ts.type_pool.slice(fnrow.params));
+    const fn_ty = ts.mkFunction(runtime_params, fnrow.result, fnrow.is_variadic, fnrow.is_pure, fnrow.is_extern);
+    return .{ .fn_ty = fn_ty, .env_ptr_ty = env_ptr_ty };
+}
+
+fn lowerClosureExpr(
+    self: *LowerTir,
+    ctx: *LowerContext,
+    a: *ast.Ast,
+    env: *cf.Env,
+    f: *Builder.FunctionFrame,
+    blk: *Builder.BlockFrame,
+    id: ast.ExprId,
+    expected_ty: ?types.TypeId,
+) !tir.ValueId {
+    const sym = try self.ensureClosureFunction(ctx, a, f.builder, id);
+    const loc = optLoc(a, id);
+    const expr_ty = self.getExprType(ctx, a, id);
+    const ts = self.context.type_store;
+    if (ts.getKind(expr_ty) == .Closure) {
+        const cl = ts.get(.Closure, expr_ty);
+        const sig = try self.closureRuntimeSig(cl);
+        const fn_ptr_ty = ts.mkPtr(sig.fn_ty, false);
+        const fn_ptr = blk.builder.tirValue(.GlobalAddr, blk, fn_ptr_ty, loc, .{ .name = sym });
+
+        const caps = a.type_info.getClosureCaptures(id) orelse return error.LoweringBug;
+        var env_fields = try self.gpa.alloc(tir.Rows.StructFieldInit, caps.names.len);
+        defer self.gpa.free(env_fields);
+
+        for (caps.names, 0..) |cap_name, i| {
+            const cap_ty = caps.types[i];
+            const binding = env.lookup(cap_name) orelse return error.LoweringBug;
+            var cap_val = binding.value;
+            var cap_src_ty = binding.ty;
+            if (binding.is_slot) {
+                cap_val = blk.builder.tirValue(.Load, blk, binding.ty, loc, .{ .ptr = binding.value, .@"align" = 0 });
+            }
+            if (!cap_src_ty.eq(cap_ty)) {
+                cap_val = self.emitCoerce(blk, cap_val, cap_src_ty, cap_ty, loc);
+                cap_src_ty = cap_ty;
+            }
+            env_fields[i] = .{ .index = @intCast(i), .name = .none(), .value = cap_val };
+        }
+
+        const env_val = blk.builder.structMake(blk, cl.env, env_fields, loc);
+        const env_slot = blk.builder.tirValue(.Alloca, blk, sig.env_ptr_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
+        _ = blk.builder.tirValue(.Store, blk, cl.env, loc, .{ .ptr = env_slot, .value = env_val, .@"align" = 0 });
+
+        const closure_val = blk.builder.structMake(blk, expr_ty, &[_]tir.Rows.StructFieldInit{
+            .{ .index = 0, .name = .none(), .value = fn_ptr },
+            .{ .index = 1, .name = .none(), .value = env_slot },
+        }, loc);
+
+        return if (expected_ty) |want| self.emitCoerce(blk, closure_val, expr_ty, want, loc) else closure_val;
+    }
+
+    const ptr_ty = ts.mkPtr(expr_ty, false);
+    const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = sym });
+    return if (expected_ty) |want| self.emitCoerce(blk, addr, expr_ty, want, loc) else addr;
+}
+
+fn calleeSignatureType(self: *LowerTir, fty: types.TypeId) types.TypeId {
+    const ts = self.context.type_store;
+    return if (ts.getKind(fty) == .Closure) ts.get(.Closure, fty).func else fty;
+}
+
 const FnFlags = struct { is_triton: bool, is_mlir_fn: bool };
 
 fn parseFunctionAttributes(_: *LowerTir, a: *ast.Ast, attrs_opt: ast.OptRangeAttr) FnFlags {
@@ -1427,6 +1620,30 @@ fn bindFunctionParams(self: *LowerTir, a: *ast.Ast, b: *Builder, env: *cf.Env, f
         if (!p.pat.isNone()) {
             if (bindingNameOfPattern(a, p.pat.unwrap())) |pname| {
                 try env.bind(self.gpa, pname, .{ .value = param_vals[i], .ty = runtime_tys[i], .is_slot = false }, b, blk, optLoc(a, p.pat.unwrap()));
+            }
+        }
+    }
+}
+
+fn bindFunctionParamsWithOffset(
+    self: *LowerTir,
+    a: *ast.Ast,
+    b: *Builder,
+    env: *cf.Env,
+    f: *Builder.FunctionFrame,
+    blk: *Builder.BlockFrame,
+    params: []const ast.ParamId,
+    runtime_tys: []const types.TypeId,
+    param_offset: usize,
+) !void {
+    const param_vals = f.param_vals.items;
+    for (params, 0..) |pid, i| {
+        const p = a.exprs.Param.get(pid);
+        if (!p.pat.isNone()) {
+            if (bindingNameOfPattern(a, p.pat.unwrap())) |pname| {
+                const idx = i + param_offset;
+                std.debug.assert(idx < param_vals.len);
+                try env.bind(self.gpa, pname, .{ .value = param_vals[idx], .ty = runtime_tys[i], .is_slot = false }, b, blk, optLoc(a, p.pat.unwrap()));
             }
         }
     }
@@ -2502,7 +2719,8 @@ fn lowerCall(
     var trailing_any_tuple_ty: ?types.TypeId = null;
 
     if (callee.fty) |fty| {
-        if (self.hasTrailingAnyRuntimeParam(fty)) treat_trailing_any = true;
+        const fn_sig_ty = self.calleeSignatureType(fty);
+        if (self.hasTrailingAnyRuntimeParam(fn_sig_ty)) treat_trailing_any = true;
     }
 
     if (callee.qualified_name == null and method_decl_id == null) {
@@ -2518,8 +2736,9 @@ fn lowerCall(
     var fixed_params_count: usize = 0;
     var is_variadic_extern = false;
     if (callee.fty) |fty| {
-        if (self.context.type_store.getKind(fty) == .Function) {
-            const fnrow = self.context.type_store.get(.Function, fty);
+        const fn_sig_ty = self.calleeSignatureType(fty);
+        if (self.context.type_store.getKind(fn_sig_ty) == .Function) {
+            const fnrow = self.context.type_store.get(.Function, fn_sig_ty);
             param_tys = self.context.type_store.type_pool.slice(fnrow.params);
             is_variadic_extern = fnrow.is_variadic and fnrow.is_extern;
             fixed_params_count = if (specialization_pack_args) specialization_pack_start else param_tys.len;
@@ -2777,6 +2996,42 @@ fn isImportMemberExpr(a: *ast.Ast, expr: ast.ExprId) bool {
 }
 
 /// Emit the actual call instruction (direct or indirect) and adjust for `.lvalue_addr` mode.
+fn finalizeCallValue(
+    self: *LowerTir,
+    f: *Builder.FunctionFrame,
+    blk: *Builder.BlockFrame,
+    ret_ty: types.TypeId,
+    expected: ?types.TypeId,
+    mode: LowerMode,
+    call_val: tir.ValueId,
+    loc: tir.OptLocId,
+) !tir.ValueId {
+    if (mode == .lvalue_addr) {
+        const want_ptr_ty_opt = if (expected) |want|
+            if (self.context.type_store.getKind(want) == .Ptr) want else null
+        else
+            null;
+
+        const elem_ty = if (want_ptr_ty_opt) |want_ptr_ty|
+            self.context.type_store.get(.Ptr, want_ptr_ty).elem
+        else
+            ret_ty;
+
+        const slot_ty = self.context.type_store.mkPtr(elem_ty, false);
+        const slot = f.builder.tirValue(.Alloca, blk, slot_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
+
+        const stored = if (!elem_ty.eq(ret_ty)) self.emitCoerce(blk, call_val, ret_ty, elem_ty, loc) else call_val;
+        _ = f.builder.tirValue(.Store, blk, elem_ty, loc, .{ .ptr = slot, .value = stored, .@"align" = 0 });
+
+        if (want_ptr_ty_opt) |want_ptr_ty| {
+            if (!want_ptr_ty.eq(slot_ty)) return self.emitCoerce(blk, slot, slot_ty, want_ptr_ty, loc);
+        }
+        return slot;
+    }
+
+    return call_val;
+}
+
 fn emitCallValue(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -2795,8 +3050,9 @@ fn emitCallValue(
 ) !tir.ValueId {
     const ret_ty = blk: {
         if (callee.fty) |fty| {
-            if (self.context.type_store.getKind(fty) == .Function) {
-                const rt = self.context.type_store.get(.Function, fty).result;
+            const fn_sig_ty = self.calleeSignatureType(fty);
+            if (self.context.type_store.getKind(fn_sig_ty) == .Function) {
+                const rt = self.context.type_store.get(.Function, fn_sig_ty).result;
                 if (!self.isVoid(rt) and !self.isType(rt, .Any)) break :blk rt;
             }
         }
@@ -2811,6 +3067,24 @@ fn emitCallValue(
 
     const callee_ty = self.getExprType(ctx, a, row.callee);
     var call_val: tir.ValueId = undefined;
+    const callee_kind = self.context.type_store.getKind(callee_ty);
+
+    if (callee_kind == .Closure) {
+        const cl = self.context.type_store.get(.Closure, callee_ty);
+        const closure_val = try self.lowerExpr(ctx, a, env, f, blk, row.callee, callee_ty, .rvalue);
+        const sig = try self.closureRuntimeSig(cl);
+        const fn_ptr_ty = self.context.type_store.mkPtr(sig.fn_ty, false);
+        const fn_ptr = blk.builder.extractField(blk, fn_ptr_ty, closure_val, 0, loc);
+        const env_ptr = blk.builder.extractField(blk, sig.env_ptr_ty, closure_val, 1, loc);
+
+        var call_args = try self.gpa.alloc(tir.ValueId, vals.len + 1);
+        defer self.gpa.free(call_args);
+        call_args[0] = env_ptr;
+        std.mem.copyForwards(tir.ValueId, call_args[1..], vals);
+
+        call_val = blk.builder.indirectCall(blk, ret_ty, fn_ptr, call_args, loc);
+        return self.finalizeCallValue(f, blk, ret_ty, expected, mode, call_val, loc);
+    }
 
     // Determine if indirect call is forced
     const should_force_indirect = switch (a.kind(callee_expr)) {
@@ -2846,30 +3120,7 @@ fn emitCallValue(
         call_val = blk.builder.call(blk, ret_ty, callee_sym, vals, loc);
     }
 
-    if (mode == .lvalue_addr) {
-        const want_ptr_ty_opt = if (expected) |want|
-            if (self.context.type_store.getKind(want) == .Ptr) want else null
-        else
-            null;
-
-        const elem_ty = if (want_ptr_ty_opt) |want_ptr_ty|
-            self.context.type_store.get(.Ptr, want_ptr_ty).elem
-        else
-            ret_ty;
-
-        const slot_ty = self.context.type_store.mkPtr(elem_ty, false);
-        const slot = f.builder.tirValue(.Alloca, blk, slot_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
-
-        const stored = if (!elem_ty.eq(ret_ty)) self.emitCoerce(blk, call_val, ret_ty, elem_ty, loc) else call_val;
-        _ = f.builder.tirValue(.Store, blk, elem_ty, loc, .{ .ptr = slot, .value = stored, .@"align" = 0 });
-
-        if (want_ptr_ty_opt) |want_ptr_ty| {
-            if (!want_ptr_ty.eq(slot_ty)) return self.emitCoerce(blk, slot, slot_ty, want_ptr_ty, loc);
-        }
-        return slot;
-    }
-
-    return call_val;
+    return self.finalizeCallValue(f, blk, ret_ty, expected, mode, call_val, loc);
 }
 
 fn handleExternVariadicArgs(
@@ -4860,6 +5111,7 @@ pub fn lowerExpr(
         },
         .If => cf.lowerIf(self, ctx, a, env, f, blk, id, expected_ty),
         .Call => self.lowerCall(ctx, a, env, f, blk, id, expected_ty, mode),
+        .Closure => if (mode == .lvalue_addr) error.LoweringBug else try self.lowerClosureExpr(ctx, a, env, f, blk, id, expected_ty),
         .Cast => self.lowerCast(ctx, a, env, f, blk, id, expected_ty),
         .OptionalUnwrap => cf.lowerOptionalUnwrap(self, ctx, a, env, f, blk, id, expected_ty),
         .Await => blk_await: {

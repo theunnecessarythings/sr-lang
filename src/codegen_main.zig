@@ -4770,7 +4770,7 @@ const AggregateElemCoercer = fn (
 /// Return true if `kind` represents an aggregate (tuple/struct/array etc.) type.
 inline fn isAggregateKind(kind: types.TypeKind) bool {
     return switch (kind) {
-        .Struct, .Tuple, .Array, .Optional, .Union, .ErrorSet, .Error => true,
+        .Struct, .Tuple, .Array, .Optional, .Union, .ErrorSet, .Error, .Closure => true,
         else => false,
     };
 }
@@ -5368,6 +5368,10 @@ pub fn llvmTypeOf(self: *Codegen, ty: types.TypeId) !mlir.Type {
         .F64 => return self.f64_ty,
 
         .Function, .Ptr, .MlirModule, .MlirAttribute, .Code => return self.llvm_ptr_ty,
+        .Closure => {
+            const fields = [_]mlir.Type{ self.llvm_ptr_ty, self.llvm_ptr_ty };
+            return mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields, false);
+        },
 
         .MlirType => {
             const mt = self.context.type_store.get(.MlirType, ty);
