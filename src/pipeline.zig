@@ -51,7 +51,7 @@ pub const Pipeline = struct {
     /// Represents compile-time bindings injected into the interpreter.
     pub const ComptimeBinding = union(enum) {
         type_param: struct { name: ast_mod.StrId, ty: types.TypeId },
-        value_param: struct { name: ast_mod.StrId, ty: types.TypeId, value: comp.ComptimeValue },
+        value_param: struct { name: ast_mod.StrId, ty: types.TypeId, value: comp.ValueId, store: *const comp.ValueStore },
     };
 
     pub fn init(allocator: std.mem.Allocator, context: *compile.Context) Pipeline {
@@ -417,38 +417,49 @@ fn interpretAstUnit(self: *Pipeline, ast: *ast_mod.Ast) !bool {
     var found = false;
     for (ast.exprs.decl_pool.slice(ast.unit.decls)) |did| {
         const decl = ast.exprs.Decl.get(did);
-        var res = interp.evalExpr(decl.value) catch |e| switch (e) {
+        const res = interp.evalExpr(decl.value) catch |e| switch (e) {
             error.UnsupportedExpr, error.InvalidStatement => continue,
             else => return e,
         };
         found = true;
         if (!decl.pattern.isNone()) if (ast.kind(decl.pattern.unwrap()) == .Binding) try interp.setBinding(ast.pats.get(.Binding, decl.pattern.unwrap()).name, try interp.cloneValue(res));
         std.debug.print("Interpreter: decl {d} -> ", .{did.toRaw()});
-        printComptimeValue(&res);
+        printComptimeValue(interp.store(), res);
         std.debug.print("\n", .{});
-        res.destroy(self.gpa);
     }
     return found;
 }
 
-fn printComptimeValue(v: *const comp.ComptimeValue) void {
-    switch (v.*) {
+fn printComptimeValue(s: *comp.ValueStore, v: comp.ValueId) void {
+    switch (s.kind(v)) {
         .Void => std.debug.print("<void>", .{}),
-        .Int => |i| std.debug.print("{d}", .{i}),
-        .Float => |f| std.debug.print("{}", .{f}),
-        .Bool => |b| std.debug.print("{s}", .{if (b) "true" else "false"}),
-        .String => |s| std.debug.print("\"{s}\"", .{s}),
-        .Sequence => |s| std.debug.print("<sequence len={d}>", .{s.values.items.len}),
-        .Struct => |s| std.debug.print("<struct len={d}>", .{s.fields.items.len}),
+        .Int => std.debug.print("{d}", .{s.get(.Int, v).value}),
+        .Float => std.debug.print("{}", .{s.get(.Float, v).value}),
+        .Bool => std.debug.print("{s}", .{if (s.get(.Bool, v).value) "true" else "false"}),
+        .String => std.debug.print("\"{s}\"", .{s.get(.String, v).value}),
+        .Sequence => {
+            const seq = s.get(.Sequence, v);
+            std.debug.print("<sequence len={d}>", .{s.val_pool.slice(seq.elems).len});
+        },
+        .Struct => {
+            const st = s.get(.Struct, v);
+            std.debug.print("<struct len={d}>", .{s.struct_field_pool.slice(st.fields).len});
+        },
         .Variant => std.debug.print("<variant>", .{}),
-        .Range => |r| std.debug.print("range({d}..{d}{s})", .{ r.start, r.end, if (r.inclusive) "=" else "" }),
-        .Type => |t| std.debug.print("type({d})", .{t.toRaw()}),
+        .Range => {
+            const r = s.get(.Range, v);
+            std.debug.print("range({d}..{d}{s})", .{ r.start, r.end, if (r.inclusive) "=" else "" });
+        },
+        .Type => std.debug.print("type({d})", .{s.get(.Type, v).ty.toRaw()}),
         .MlirType => std.debug.print("<mlir-type>", .{}),
         .MlirAttribute => std.debug.print("<mlir-attribute>", .{}),
         .MlirModule => std.debug.print("<mlir-module>", .{}),
         .Function => std.debug.print("<function>", .{}),
         .Code => std.debug.print("<code>", .{}),
         .Pointer => std.debug.print("<pointer>", .{}),
-        .Map => |m| std.debug.print("<map len={d}>", .{m.entries.items.len}),
+        .Map => {
+            const m = s.get(.Map, v);
+            std.debug.print("<map len={d}>", .{s.map_entry_pool.slice(m.entries).len});
+        },
     }
 }

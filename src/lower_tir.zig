@@ -86,7 +86,7 @@ pub const LowerContext = struct {
     }
 };
 
-pub fn qualifySymbolName(self: *LowerTir, a: *ast.Ast, base: StrId) !StrId {
+fn qualifySymbolName(self: *LowerTir, a: *ast.Ast, base: StrId) !StrId {
     if (a.unit.package_name.isNone()) return base;
 
     const ts = self.context.type_store;
@@ -551,12 +551,11 @@ fn constInitFromExpr(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, expr_id: 
     switch (self.context.type_store.getKind(ty)) {
         .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64, .Bool => {
             if (try self.getCachedComptimeValue(a, expr_id)) |val| {
-                var vl = val;
-                defer vl.destroy(self.gpa);
-                return switch (val) {
-                    .Int => |v| tir.ConstInit{ .int = @intCast(v) },
-                    .Float => |v| tir.ConstInit{ .float = v },
-                    .Bool => |v| tir.ConstInit{ .bool = v },
+                const s = &a.type_info.val_store;
+                return switch (s.kind(val)) {
+                    .Int => tir.ConstInit{ .int = @intCast(s.get(.Int, val).value) },
+                    .Float => tir.ConstInit{ .float = s.get(.Float, val).value },
+                    .Bool => tir.ConstInit{ .bool = s.get(.Bool, val).value },
                     else => null,
                 };
             }
@@ -633,9 +632,11 @@ fn lowerMlirBlock(
     }
 
     ctx.mlir_scratch_pieces.clearRetainingCapacity();
+    const s = &a.type_info.val_store;
+    const void_val = s.add(.Void, .{});
     for (a.exprs.mlir_piece_pool.slice(row.pieces)) |pid| {
         const piece = a.exprs.MlirPiece.get(pid);
-        var splice_value: comp.ComptimeValue = .Void;
+        var splice_value: comp.ValueId = void_val;
         var splice_ty: ?types.TypeId = null;
 
         if (piece.kind == .splice) {
@@ -674,16 +675,17 @@ fn lowerMlirBlock(
     return result_id;
 }
 
-fn resolveMlirSpliceOrCached(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, pid: ast.MlirPieceId, text: StrId, loc: ast.LocId) !comp.ComptimeValue {
+fn resolveMlirSpliceOrCached(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, pid: ast.MlirPieceId, text: StrId, loc: ast.LocId) !comp.ValueId {
     if (ctx.expr_type_override_stack.items.len == 0) {
-        if (a.type_info.getMlirSpliceValue(pid)) |cached| return try comp.cloneComptimeValue(self.gpa, cached.*);
+        if (a.type_info.getMlirSpliceValue(pid)) |cached| return cached.*;
     }
     return self.resolveMlirSpliceValue(ctx, a, pid, text, loc);
 }
 
-fn resolveMlirSpliceValue(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, piece_id: ast.MlirPieceId, name: StrId, loc_id: ast.LocId) !comp.ComptimeValue {
+fn resolveMlirSpliceValue(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, piece_id: ast.MlirPieceId, name: StrId, loc_id: ast.LocId) !comp.ValueId {
     const info = a.type_info.getMlirSpliceInfo(piece_id) orelse unreachable;
     const diag_loc = a.exprs.locs.get(loc_id);
+    const s = &a.type_info.val_store;
 
     switch (info) {
         .decl => |decl_info| {
@@ -692,7 +694,7 @@ fn resolveMlirSpliceValue(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, piec
             const ts = self.context.type_store;
 
             if (ts.getKind(decl_value_ty) == .TypeType) {
-                return comp.ComptimeValue{ .Type = ts.get(.TypeType, decl_value_ty).of };
+                return s.add(.Type, .{ .ty = ts.get(.TypeType, decl_value_ty).of });
             }
             if (try self.getCachedComptimeValue(a, decl.value)) |value| return value;
             try self.context.diags.addError(diag_loc, .mlir_splice_not_comptime, .{a.exprs.strs.get(name)});
@@ -704,15 +706,16 @@ fn resolveMlirSpliceValue(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, piec
             return error.LoweringBug;
         },
         .type_param => |param_info| {
-            if (self.lookupComptimeAliasType(a, param_info.name)) |ty| return comp.ComptimeValue{ .Type = ty };
+            if (self.lookupComptimeAliasType(a, param_info.name)) |ty| return s.add(.Type, .{ .ty = ty });
             try self.context.diags.addError(diag_loc, .mlir_splice_unbound, .{a.exprs.strs.get(name)});
             return error.LoweringBug;
         },
     }
 }
 
-fn getCachedComptimeValue(self: *LowerTir, a: *ast.Ast, expr: ast.ExprId) !?comp.ComptimeValue {
-    if (a.type_info.getComptimeValue(expr)) |cached| return try comp.cloneComptimeValue(self.gpa, cached.*);
+fn getCachedComptimeValue(self: *LowerTir, a: *ast.Ast, expr: ast.ExprId) !?comp.ValueId {
+    _ = self;
+    if (a.type_info.getComptimeValue(expr)) |cached| return cached.*;
     return null;
 }
 
@@ -1050,7 +1053,7 @@ const CallSpecSnapshotGuard = struct {
 };
 
 const ComptimeExprSnapshotGuard = struct {
-    backups: List(struct { raw: u32, prev: ?comp.ComptimeValue }) = .{},
+    backups: List(struct { raw: u32, prev: ?comp.ValueId }) = .{},
     applied: bool = false,
 
     fn init(self: *ComptimeExprSnapshotGuard, gpa: std.mem.Allocator, a: *ast.Ast, syn_did: ast.DeclId) !void {
@@ -1062,11 +1065,10 @@ const ComptimeExprSnapshotGuard = struct {
                 const prev = if (a.type_info.getComptimeValue(expr_id)) |val| val.* else null;
                 self.backups.appendAssumeCapacity(.{ .raw = raw, .prev = prev });
 
-                const cloned = try comp.cloneComptimeValue(a.type_info.gpa, snapshot.values[idx]);
                 if (a.type_info.comptime_values.getEntry(expr_id)) |entry| {
-                    entry.value_ptr.* = cloned;
+                    entry.value_ptr.* = snapshot.values[idx];
                 } else {
-                    try a.type_info.setComptimeValue(expr_id, cloned);
+                    try a.type_info.setComptimeValue(expr_id, snapshot.values[idx]);
                 }
             }
         }
@@ -1091,7 +1093,7 @@ const ComptimeExprSnapshotGuard = struct {
 };
 
 const ComptimeBindingSnapshotGuard = struct {
-    backups: List(struct { name: StrId, prev_ty: ?types.TypeId, prev_val: ?comp.ComptimeValue }) = .{},
+    backups: List(struct { name: StrId, prev_ty: ?types.TypeId, prev_val: ?comp.ValueId }) = .{},
     applied: bool = false,
 
     fn init(self: *ComptimeBindingSnapshotGuard, gpa: std.mem.Allocator, a: *ast.Ast, syn_did: ast.DeclId) !void {
@@ -1102,11 +1104,10 @@ const ComptimeBindingSnapshotGuard = struct {
 
             for (names, 0..) |name, idx| {
                 const prev_ty = a.type_info.lookupComptimeBindingType(name);
-                const prev_val = a.type_info.cloneComptimeBindingValue(gpa, name) catch null;
+                const prev_val = a.type_info.cloneComptimeBindingValue(&a.type_info.val_store, name) catch null;
                 self.backups.appendAssumeCapacity(.{ .name = name, .prev_ty = prev_ty, .prev_val = prev_val });
 
-                const cloned_val = try comp.cloneComptimeValue(gpa, snapshot.values[idx]);
-                try a.type_info.setComptimeBinding(name, snapshot.types[idx], cloned_val);
+                try a.type_info.setComptimeBinding(name, snapshot.types[idx], snapshot.values[idx]);
             }
         }
     }
@@ -1116,14 +1117,9 @@ const ComptimeBindingSnapshotGuard = struct {
         for (self.backups.items) |backup| {
             a.type_info.removeComptimeBinding(backup.name);
             if (backup.prev_ty) |pty| {
-                if (backup.prev_val) |*pval| {
-                    const cloned = comp.cloneComptimeValue(gpa, pval.*) catch @panic("OOM");
-                    a.type_info.setComptimeBinding(backup.name, pty, cloned) catch @panic("OOM");
+                if (backup.prev_val) |pval| {
+                    a.type_info.setComptimeBinding(backup.name, pty, pval) catch @panic("OOM");
                 }
-            }
-            if (backup.prev_val) |pval| {
-                var val = pval;
-                val.destroy(gpa);
             }
         }
         self.backups.deinit(gpa);
@@ -1296,16 +1292,14 @@ fn lowerAttrs(self: *LowerTir, a: *ast.Ast, b: *Builder, range: ast.OptRangeAttr
 
 fn lowerAttributeValue(self: *LowerTir, a: *ast.Ast, b: *Builder, val_expr: ast.ExprId) !tir.OptValueId {
     if (try self.getCachedComptimeValue(a, val_expr)) |cv| {
-        var owned_cv = cv;
-        defer owned_cv.destroy(self.gpa);
-
         const vid = b.freshValue();
         const ts = self.context.type_store;
-        const iid: tir.InstrId = switch (owned_cv) {
-            .Int => |v| b.t.instrs.add(.ConstInt, .{ .result = vid, .ty = ts.tI64(), .value = v, .loc = .none() }),
-            .Float => |v| b.t.instrs.add(.ConstFloat, .{ .result = vid, .ty = ts.tF64(), .value = v, .loc = .none() }),
-            .Bool => |v| b.t.instrs.add(.ConstBool, .{ .result = vid, .ty = ts.tBool(), .value = v, .loc = .none() }),
-            .String => |s| b.t.instrs.add(.ConstString, .{ .result = vid, .ty = ts.tString(), .text = b.intern(s), .loc = .none() }),
+        const s = &a.type_info.val_store;
+        const iid: tir.InstrId = switch (s.kind(cv)) {
+            .Int => b.t.instrs.add(.ConstInt, .{ .result = vid, .ty = ts.tI64(), .value = @intCast(s.get(.Int, cv).value), .loc = .none() }),
+            .Float => b.t.instrs.add(.ConstFloat, .{ .result = vid, .ty = ts.tF64(), .value = s.get(.Float, cv).value, .loc = .none() }),
+            .Bool => b.t.instrs.add(.ConstBool, .{ .result = vid, .ty = ts.tBool(), .value = s.get(.Bool, cv).value, .loc = .none() }),
+            .String => b.t.instrs.add(.ConstString, .{ .result = vid, .ty = ts.tString(), .text = b.intern(s.get(.String, cv).value), .loc = .none() }),
             else => return .none(),
         };
 
@@ -1592,11 +1586,46 @@ pub fn sliceRestValue(
     loc: tir.OptLocId,
 ) struct { val: tir.ValueId, ty: types.TypeId } {
     const ts = self.context.type_store;
+    const is_array = ts.getKind(vty) == .Array;
     const slice_ty = ts.mkSlice(elem_ty, if (ts.getKind(vty) == .Slice) ts.get(.Slice, vty).is_const else false);
-    const len_val = if (ts.getKind(vty) == .Array)
-        blk.builder.tirValue(.ConstInt, blk, ts.tUsize(), loc, .{ .value = ts.get(.Array, vty).len })
-    else
-        blk.builder.extractFieldNamed(blk, ts.tUsize(), value, f.builder.intern("len"), loc);
+
+    if (is_array) {
+        const arr_len: u32 = @intCast(ts.get(.Array, vty).len);
+        if (rest_index >= arr_len) {
+            const null_ptr = blk.builder.constNull(blk, ts.mkPtr(elem_ty, false), loc);
+            const zero = blk.builder.tirValue(.ConstInt, blk, ts.tUsize(), loc, .{ .value = 0 });
+            return .{ .val = blk.builder.structMake(blk, slice_ty, &[_]tir.Rows.StructFieldInit{
+                .{ .index = 0, .name = .none(), .value = null_ptr },
+                .{ .index = 1, .name = .none(), .value = zero },
+            }, loc), .ty = slice_ty };
+        }
+
+        const rest_len: u32 = arr_len - rest_index;
+        const elem_size = check_types.typeSize(self.context, elem_ty);
+        const usize_ty = ts.tUsize();
+        const total_bytes = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = @as(u64, @intCast(elem_size * rest_len)) });
+        const raw_ptr = self.callRuntimeAllocPtr(blk, total_bytes, loc);
+        const ptr_ty = ts.mkPtr(elem_ty, false);
+        const data_ptr = blk.builder.tirValue(.CastBit, blk, ptr_ty, loc, .{ .value = raw_ptr });
+
+        var i: u32 = 0;
+        while (i < rest_len) : (i += 1) {
+            const src_idx: u32 = rest_index + i;
+            const idx_val = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = @as(u64, @intCast(src_idx)) });
+            const elem_val = blk.builder.indexOp(blk, elem_ty, value, idx_val, loc);
+            const off = blk.builder.gepConst(@intCast(i));
+            const ep = blk.builder.gep(blk, ptr_ty, data_ptr, &.{off}, loc);
+            _ = blk.builder.tirValue(.Store, blk, elem_ty, loc, .{ .ptr = ep, .value = elem_val, .@"align" = 0 });
+        }
+
+        const len_val = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = @as(u64, @intCast(rest_len)) });
+        return .{ .val = blk.builder.structMake(blk, slice_ty, &[_]tir.Rows.StructFieldInit{
+            .{ .index = 0, .name = .none(), .value = data_ptr },
+            .{ .index = 1, .name = .none(), .value = len_val },
+        }, loc), .ty = slice_ty };
+    }
+
+    const len_val = blk.builder.extractFieldNamed(blk, ts.tUsize(), value, f.builder.intern("len"), loc);
     const range_val = blk.builder.rangeMake(
         blk,
         ts.mkSlice(ts.tUsize(), false),
@@ -1606,6 +1635,56 @@ pub fn sliceRestValue(
         loc,
     );
     return .{ .val = blk.builder.indexOp(blk, slice_ty, value, range_val, loc), .ty = slice_ty };
+}
+
+fn sliceRestValueCoerceArray(
+    self: *LowerTir,
+    blk: *Builder.BlockFrame,
+    value: tir.ValueId,
+    vty: types.TypeId,
+    src_elem_ty: types.TypeId,
+    dst_elem_ty: types.TypeId,
+    rest_index: u32,
+    is_const: bool,
+    loc: tir.OptLocId,
+) struct { val: tir.ValueId, ty: types.TypeId } {
+    const ts = self.context.type_store;
+    const arr_len: u32 = @intCast(ts.get(.Array, vty).len);
+    const slice_ty = ts.mkSlice(dst_elem_ty, is_const);
+
+    if (rest_index >= arr_len) {
+        const null_ptr = blk.builder.constNull(blk, ts.mkPtr(dst_elem_ty, false), loc);
+        const zero = blk.builder.tirValue(.ConstInt, blk, ts.tUsize(), loc, .{ .value = 0 });
+        return .{ .val = blk.builder.structMake(blk, slice_ty, &[_]tir.Rows.StructFieldInit{
+            .{ .index = 0, .name = .none(), .value = null_ptr },
+            .{ .index = 1, .name = .none(), .value = zero },
+        }, loc), .ty = slice_ty };
+    }
+
+    const rest_len: u32 = arr_len - rest_index;
+    const elem_size = check_types.typeSize(self.context, dst_elem_ty);
+    const usize_ty = ts.tUsize();
+    const total_bytes = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = @as(u64, @intCast(elem_size * rest_len)) });
+    const raw_ptr = self.callRuntimeAllocPtr(blk, total_bytes, loc);
+    const ptr_ty = ts.mkPtr(dst_elem_ty, false);
+    const data_ptr = blk.builder.tirValue(.CastBit, blk, ptr_ty, loc, .{ .value = raw_ptr });
+
+    var i: u32 = 0;
+    while (i < rest_len) : (i += 1) {
+        const src_idx: u32 = rest_index + i;
+        const idx_val = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = @as(u64, @intCast(src_idx)) });
+        const src_val = blk.builder.indexOp(blk, src_elem_ty, value, idx_val, loc);
+        const coerced = if (src_elem_ty.eq(dst_elem_ty)) src_val else self.emitCoerce(blk, src_val, src_elem_ty, dst_elem_ty, loc);
+        const off = blk.builder.gepConst(@intCast(i));
+        const ep = blk.builder.gep(blk, ptr_ty, data_ptr, &.{off}, loc);
+        _ = blk.builder.tirValue(.Store, blk, dst_elem_ty, loc, .{ .ptr = ep, .value = coerced, .@"align" = 0 });
+    }
+
+    const len_val = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = @as(u64, @intCast(rest_len)) });
+    return .{ .val = blk.builder.structMake(blk, slice_ty, &[_]tir.Rows.StructFieldInit{
+        .{ .index = 0, .name = .none(), .value = data_ptr },
+        .{ .index = 1, .name = .none(), .value = len_val },
+    }, loc), .ty = slice_ty };
 }
 
 fn lowerAssignPattern(
@@ -1623,8 +1702,16 @@ fn lowerAssignPattern(
         .Binding => {
             const name = a.pats.get(.Binding, pid).name;
             const loc = optLoc(a, pid);
-            const ptr = try self.lowerIdentAddrByName(a, env, f, blk, name, vty, vty, loc);
-            _ = f.builder.tirValue(.Store, blk, vty, loc, .{ .ptr = ptr, .value = value, .@"align" = 0 });
+            var store_ty = vty;
+            var store_val = value;
+            if (env.lookup(name)) |bnd| {
+                if (!bnd.ty.eq(vty)) {
+                    store_ty = bnd.ty;
+                    store_val = self.emitCoerce(blk, value, vty, store_ty, loc);
+                }
+            }
+            const ptr = try self.lowerIdentAddrByName(a, env, f, blk, name, store_ty, store_ty, loc);
+            _ = f.builder.tirValue(.Store, blk, store_ty, loc, .{ .ptr = ptr, .value = store_val, .@"align" = 0 });
         },
         .Tuple => {
             const elems = a.pats.pat_pool.slice(a.pats.get(.Tuple, pid).elems);
@@ -1655,6 +1742,8 @@ fn lowerAssignPattern(
                 .DynArray => ts.get(.DynArray, vty).elem,
                 else => ts.tAny(),
             };
+            var rest_elem_ty = elem_ty;
+            var rest_is_const = if (ts.getKind(vty) == .Slice) ts.get(.Slice, vty).is_const else false;
             const sl = a.pats.get(.Slice, pid);
             const elems = a.pats.pat_pool.slice(sl.elems);
             for (elems, 0..) |e, i| {
@@ -1666,8 +1755,28 @@ fn lowerAssignPattern(
             }
             if (sl.has_rest and !sl.rest_binding.isNone()) {
                 const loc = optLoc(a, pid);
-                const rest = self.sliceRestValue(f, blk, value, vty, elem_ty, sl.rest_index, loc);
-                try self.lowerAssignPattern(a, env, f, blk, sl.rest_binding.unwrap(), rest.val, rest.ty);
+                const rest_pid = sl.rest_binding.unwrap();
+                if (ts.getKind(vty) == .Array and a.kind(rest_pid) == .Binding) {
+                    const rest_name = a.pats.get(.Binding, rest_pid).name;
+                    if (env.lookup(rest_name)) |bnd| {
+                        if (ts.getKind(bnd.ty) == .Slice) {
+                            rest_elem_ty = ts.get(.Slice, bnd.ty).elem;
+                            rest_is_const = ts.get(.Slice, bnd.ty).is_const;
+                        }
+                    }
+                }
+                var rest_val: tir.ValueId = undefined;
+                var rest_ty: types.TypeId = undefined;
+                if (ts.getKind(vty) == .Array and !rest_elem_ty.eq(elem_ty)) {
+                    const rest = self.sliceRestValueCoerceArray(blk, value, vty, elem_ty, rest_elem_ty, sl.rest_index, rest_is_const, loc);
+                    rest_val = rest.val;
+                    rest_ty = rest.ty;
+                } else {
+                    const rest = self.sliceRestValue(f, blk, value, vty, elem_ty, sl.rest_index, loc);
+                    rest_val = rest.val;
+                    rest_ty = rest.ty;
+                }
+                try self.lowerAssignPattern(a, env, f, blk, sl.rest_binding.unwrap(), rest_val, rest_ty);
             }
         },
         else => return error.LoweringBug,
@@ -1733,7 +1842,14 @@ fn lowerStmt(
     sid: ast.StmtId,
 ) !void {
     switch (a.kind(sid)) {
-        .Expr => _ = try self.lowerExpr(ctx, a, env, f, blk, a.stmts.get(.Expr, sid).expr, null, .rvalue),
+        .Expr => {
+            const expr_id = a.stmts.get(.Expr, sid).expr;
+            if (a.kind(expr_id) == .ComptimeBlock) {
+                try self.lowerComptimeBlockStmt(ctx, a, env, f, blk, expr_id);
+                return;
+            }
+            _ = try self.lowerExpr(ctx, a, env, f, blk, expr_id, null, .rvalue);
+        },
         .Defer => try env.defers.append(self.gpa, .{ .expr = a.stmts.get(.Defer, sid).expr, .is_err = false }),
         .ErrDefer => try env.defers.append(self.gpa, .{ .expr = a.stmts.get(.ErrDefer, sid).expr, .is_err = true }),
         .Break => try cf.lowerBreak(self, ctx, a, env, f, blk, sid),
@@ -1743,6 +1859,34 @@ fn lowerStmt(
         .Return => try self.lowerReturn(ctx, a, env, f, blk, sid),
         .Unreachable => try f.builder.setUnreachable(blk, optLoc(a, sid)),
         else => @panic("unhandled stmt kind"),
+    }
+}
+
+fn lowerComptimeBlockStmt(
+    self: *LowerTir,
+    ctx: *LowerContext,
+    a: *ast.Ast,
+    env: *cf.Env,
+    f: *Builder.FunctionFrame,
+    blk: *Builder.BlockFrame,
+    expr_id: ast.ExprId,
+) !void {
+    _ = ctx;
+    const snapshot = a.type_info.getComptimeBlockSnapshot(expr_id) orelse return;
+    if (snapshot.names.len == 0) return;
+    const loc = optLoc(a, expr_id);
+    const store = &a.type_info.val_store;
+
+    for (snapshot.names, 0..) |name, idx| {
+        const bnd = env.lookup(name) orelse continue;
+        if (!bnd.is_slot) continue;
+        const binding_ty = snapshot.types[idx];
+        var val = try comp.constValueFromComptime(self, store, blk, binding_ty, snapshot.values[idx]);
+        const slot_ty = bnd.ty;
+        if (!binding_ty.eq(slot_ty)) {
+            val = self.emitCoerce(blk, val, binding_ty, slot_ty, loc);
+        }
+        _ = f.builder.tirValue(.Store, blk, slot_ty, loc, .{ .ptr = bnd.value, .value = val, .@"align" = 0 });
     }
 }
 
@@ -2123,20 +2267,22 @@ fn buildVariantItem(
     }, loc);
 }
 
-/// Convert a literal AST node into a `ComptimeValue` when possible.
-fn constValueFromLiteral(self: *LowerTir, a: *ast.Ast, expr: ast.ExprId) !?comp.ComptimeValue {
+/// Convert a literal AST node into a comptime `ValueId` when possible.
+fn constValueFromLiteral(self: *LowerTir, a: *ast.Ast, expr: ast.ExprId) !?comp.ValueId {
+    _ = self;
     if (a.kind(expr) != .Literal) return null;
     const lit = a.exprs.get(.Literal, expr);
+    const s = &a.type_info.val_store;
 
     return switch (lit.kind) {
-        .int => if (lit.data == .int and lit.data.int.valid) comp.ComptimeValue{ .Int = @as(i128, @intCast(lit.data.int.value)) } else null,
-        .float => if (lit.data == .float and lit.data.float.valid) comp.ComptimeValue{ .Float = lit.data.float.value } else null,
-        .bool => if (lit.data == .bool) comp.ComptimeValue{ .Bool = lit.data.bool } else null,
+        .int => if (lit.data == .int and lit.data.int.valid) s.add(.Int, .{ .value = @as(i128, @intCast(lit.data.int.value)) }) else null,
+        .float => if (lit.data == .float and lit.data.float.valid) s.add(.Float, .{ .value = lit.data.float.value }) else null,
+        .bool => if (lit.data == .bool) s.add(.Bool, .{ .value = lit.data.bool }) else null,
         .string => blk: {
             if (lit.data != .string) return null;
-            const s = a.exprs.strs.get(lit.data.string);
-            const owned_s = try self.gpa.dupe(u8, s);
-            break :blk comp.ComptimeValue{ .String = owned_s };
+            const lit_str = a.exprs.strs.get(lit.data.string);
+            const owned_s = try a.type_info.val_store.arena.allocator().dupe(u8, lit_str);
+            break :blk a.type_info.val_store.add(.String, .{ .value = owned_s });
         },
         else => null,
     };
@@ -2176,9 +2322,7 @@ fn tryComptimeCall(
     if (len == 8 and std.mem.eql(u8, callee_name, "typeinfo")) {
         if (arg_ids.len != 1) return null;
         if (try self.getCachedComptimeValue(a, id)) |cval| {
-            var tmp = cval;
-            defer tmp.destroy(self.gpa);
-            return try comp.constValueFromComptime(self, blk, self.getExprType(ctx, a, id), cval);
+            return try comp.constValueFromComptime(self, &a.type_info.val_store, blk, self.getExprType(ctx, a, id), cval);
         }
         return null;
     }
@@ -4323,6 +4467,14 @@ fn lowerBinary(
         }
     }
 
+    // String equality/inequality via rt_memcmp
+    if ((row.op == .eq or row.op == .neq) and
+        self.context.type_store.getKind(l_ty_promo) == .String and
+        self.context.type_store.getKind(r_ty_promo) == .String)
+    {
+        return try self.emitStringEq(f, blk, l, r, loc, row.op == .eq);
+    }
+
     // Final binary emission
     const t = op_ty orelse self.commonNumeric(l_ty_promo, r_ty_promo) orelse self.context.type_store.tI64();
     try self.noteExprType(ctx, id, t);
@@ -4668,16 +4820,17 @@ pub fn lowerExpr(
         .FieldAccess => self.lowerFieldAccess(ctx, a, env, f, blk, id, expected_ty, mode),
         .Block => try self.lowerBlockExprValue(ctx, a, env, f, blk, id, expected_ty orelse self.getExprType(ctx, a, id)),
         .Splice => blk_splice: {
-            var cval = try self.getCachedComptimeValue(a, id);
-            if (cval) |*comptime_val| {
-                defer comptime_val.destroy(self.gpa);
-                if (comptime_val.* == .Code) {
-                    if (comp.codeExprFromCodeValue(a, comptime_val.Code)) |expr_id| {
+            const cval = try self.getCachedComptimeValue(a, id);
+            if (cval) |comptime_val| {
+                const s = &a.type_info.val_store;
+                if (s.kind(comptime_val) == .Code) {
+                    const code = s.get(.Code, comptime_val);
+                    if (comp.codeExprFromCodeValue(a, code)) |expr_id| {
                         break :blk_splice try self.lowerExpr(ctx, a, env, f, blk, expr_id, expected_ty, mode);
                     }
                     return error.LoweringBug;
                 }
-                break :blk_splice try comp.constValueFromComptime(self, blk, expected_ty orelse self.getExprType(ctx, a, id), comptime_val.*);
+                break :blk_splice try comp.constValueFromComptime(self, &a.type_info.val_store, blk, expected_ty orelse self.getExprType(ctx, a, id), comptime_val);
             }
             return error.LoweringBug;
         },
@@ -4726,10 +4879,9 @@ pub fn lowerExpr(
         .CodeBlock => self.safeUndef(blk, self.getExprType(ctx, a, id), optLoc(a, id)),
         .ComptimeBlock => blk_comp: {
             const cb = a.exprs.get(.ComptimeBlock, id);
-            var cval = try self.getCachedComptimeValue(a, cb.block);
-            if (cval) |*comptime_val| {
-                defer comptime_val.destroy(self.gpa);
-                break :blk_comp try comp.constValueFromComptime(self, blk, self.getExprType(ctx, a, cb.block), comptime_val.*);
+            const cval = try self.getCachedComptimeValue(a, cb.block);
+            if (cval) |comptime_val| {
+                break :blk_comp try comp.constValueFromComptime(self, &a.type_info.val_store, blk, self.getExprType(ctx, a, cb.block), comptime_val);
             }
             return error.LoweringBug;
         },
@@ -4911,8 +5063,54 @@ fn lookupComptimeAliasType(self: *LowerTir, a: *ast.Ast, name: ast.StrId) ?types
     return if (self.context.type_store.getKind(ty) == .TypeType) ty else null;
 }
 
-fn cloneComptimeAliasValue(self: *LowerTir, a: *ast.Ast, name: ast.StrId) !?comp.ComptimeValue {
-    return try a.type_info.cloneComptimeBindingValue(self.gpa, name);
+fn cloneComptimeAliasValue(self: *LowerTir, a: *ast.Ast, name: ast.StrId) !?comp.ValueId {
+    _ = self;
+    return try a.type_info.cloneComptimeBindingValue(&a.type_info.val_store, name);
+}
+
+pub fn emitStringEq(
+    self: *LowerTir,
+    f: *tir.Builder.FunctionFrame,
+    blk: *tir.Builder.BlockFrame,
+    l: tir.ValueId,
+    r: tir.ValueId,
+    loc: tir.OptLocId,
+    want_eq: bool,
+) !tir.ValueId {
+    const ts = self.context.type_store;
+    const ptr_ty = ts.mkPtr(ts.tU8(), true);
+    const len_ty = ts.tUsize();
+    const lptr = blk.builder.extractField(blk, ptr_ty, l, 0, loc);
+    const rptr = blk.builder.extractField(blk, ptr_ty, r, 0, loc);
+    const llen = blk.builder.extractField(blk, len_ty, l, 1, loc);
+    const rlen = blk.builder.extractField(blk, len_ty, r, 1, loc);
+
+    const len_eq = blk.builder.binBool(blk, .CmpEq, llen, rlen, loc);
+
+    var then_blk = try f.builder.beginBlock(f);
+    var else_blk = try f.builder.beginBlock(f);
+    var join_blk = try f.builder.beginBlock(f);
+    const res_param = try f.builder.addBlockParam(&join_blk, null, ts.tBool());
+
+    try f.builder.condBr(blk, len_eq, then_blk.id, &.{}, else_blk.id, &.{}, loc);
+    try f.builder.endBlock(f, blk.*);
+
+    const memcmp_fn = then_blk.builder.intern("rt_memcmp");
+    const cmp_res = then_blk.builder.call(&then_blk, ts.tI32(), memcmp_fn, &.{ lptr, rptr, llen }, loc);
+    const zero = then_blk.builder.tirValue(.ConstInt, &then_blk, ts.tI32(), loc, .{ .value = 0 });
+    const cmp_ok = if (want_eq)
+        then_blk.builder.binBool(&then_blk, .CmpEq, cmp_res, zero, loc)
+    else
+        then_blk.builder.binBool(&then_blk, .CmpNe, cmp_res, zero, loc);
+    try f.builder.br(&then_blk, join_blk.id, &.{cmp_ok}, loc);
+    try f.builder.endBlock(f, then_blk);
+
+    const else_val = else_blk.builder.tirValue(.ConstBool, &else_blk, ts.tBool(), loc, .{ .value = !want_eq });
+    try f.builder.br(&else_blk, join_blk.id, &.{else_val}, loc);
+    try f.builder.endBlock(f, else_blk);
+
+    blk.* = join_blk;
+    return res_param;
 }
 
 /// Optionally adjust the type recorded for `expr` by considering surrounding bindings.
@@ -5169,10 +5367,10 @@ fn destructureDeclFromExpr(
                 const tt = self.context.type_store.get(.TypeType, src_ty);
                 if (!self.isType(tt.of, .Any)) break :blk_res tt.of;
             }
-            var cval = try self.getCachedComptimeValue(a, src_expr);
-            if (cval) |*computed| {
-                defer computed.destroy(self.gpa);
-                if (computed.* == .Type) break :blk_res computed.Type;
+            const cval = try self.getCachedComptimeValue(a, src_expr);
+            if (cval) |computed| {
+                const s = &a.type_info.val_store;
+                if (s.kind(computed) == .Type) break :blk_res s.get(.Type, computed).ty;
             }
             return error.UnsupportedComptimeType;
         };

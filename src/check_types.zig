@@ -26,7 +26,7 @@ pub const Binding = union(enum) {
         /// Identifier bound to a value.
         name: ast.StrId,
         /// Constant value assigned to the identifier.
-        value: comp.ComptimeValue,
+        value: comp.ValueId,
         /// Type describing the stored value.
         ty: types.TypeId,
     },
@@ -542,7 +542,7 @@ pub fn storeSpecializationSnapshots(
     var type_ids = std.ArrayListUnmanaged(u32){};
     var type_vals = std.ArrayListUnmanaged(types.TypeId){};
     var cv_ids = std.ArrayListUnmanaged(u32){};
-    var cv_vals = std.ArrayListUnmanaged(comp.ComptimeValue){};
+    var cv_vals = std.ArrayListUnmanaged(comp.ValueId){};
     defer {
         type_ids.deinit(self.gpa);
         type_vals.deinit(self.gpa);
@@ -574,7 +574,7 @@ pub fn storeSpecializationSnapshots(
 }
 
 /// Convert `bindings` into a pipeline binding slice suitable for `evalComptimeExpr`.
-fn comptimeBindingsFor(self: *Checker, bindings: []const Binding) !ComptimeBindingSlice {
+fn comptimeBindingsFor(self: *Checker, ast_unit: *ast.Ast, bindings: []const Binding) !ComptimeBindingSlice {
     if (bindings.len == 0) return .{ .items = &.{}, .owns = false };
 
     var out = try self.gpa.alloc(ComptimeBinding, bindings.len);
@@ -582,7 +582,7 @@ fn comptimeBindingsFor(self: *Checker, bindings: []const Binding) !ComptimeBindi
     while (i < bindings.len) : (i += 1) {
         out[i] = switch (bindings[i]) {
             .Type => |t| .{ .type_param = .{ .name = t.name, .ty = t.ty } },
-            .Value => |v| .{ .value_param = .{ .name = v.name, .ty = v.ty, .value = v.value } },
+            .Value => |v| .{ .value_param = .{ .name = v.name, .ty = v.ty, .value = v.value, .store = &ast_unit.type_info.val_store } },
         };
     }
 
@@ -596,8 +596,8 @@ fn evalComptimeValueWithBindings(
     ast_unit: *ast.Ast,
     expr: ast.ExprId,
     bindings: []const Binding,
-) !comp.ComptimeValue {
-    const pb = try comptimeBindingsFor(self, bindings);
+) !comp.ValueId {
+    const pb = try comptimeBindingsFor(self, ast_unit, bindings);
     defer if (pb.owns) self.gpa.free(pb.items);
     return self.evalComptimeExpr(ctx, ast_unit, expr, pb.items);
 }
@@ -614,7 +614,7 @@ fn lookupTypeBinding(bindings: []const Binding, name: ast.StrId) ?types.TypeId {
 }
 
 /// Search `bindings` for a value binding named `name`.
-fn lookupValueBinding(bindings: []const Binding, name: ast.StrId) ?comp.ComptimeValue {
+fn lookupValueBinding(bindings: []const Binding, name: ast.StrId) ?comp.ValueId {
     for (bindings) |binding| {
         switch (binding) {
             .Value => |v| if (v.name.eq(name)) return v.value,
@@ -1101,9 +1101,10 @@ fn variantPayloadType(self: *Checker, variant_ty: types.TypeId, tag: ast.StrId) 
 }
 
 /// Evaluate literal expression `id` to a comptime integer value when possible.
-fn evalLiteralToComptime(ast_unit: *ast.Ast, id: ast.ExprId) !?comp.ComptimeValue {
+fn evalLiteralToComptime(ast_unit: *ast.Ast, id: ast.ExprId) !?comp.ValueId {
     if (ast_unit.kind(id) != .Literal) return null;
     const lit = ast_unit.exprs.get(.Literal, id);
+    const s = &ast_unit.type_info.val_store;
     return switch (lit.kind) {
         .int => blk: {
             const info = switch (lit.data) {
@@ -1111,13 +1112,13 @@ fn evalLiteralToComptime(ast_unit: *ast.Ast, id: ast.ExprId) !?comp.ComptimeValu
                 else => return null,
             };
             if (!info.valid) return null;
-            break :blk comp.ComptimeValue{ .Int = @as(i128, @intCast(info.value)) };
+            break :blk s.add(.Int, .{ .value = @as(i128, @intCast(info.value)) });
         },
         else => null,
     };
 }
 
-fn resolveTensorType(
+    fn resolveTensorType(
     self: *Checker,
     ctx: *Checker.CheckerContext,
     ast_unit: *ast.Ast,
@@ -1158,12 +1159,13 @@ fn resolveTensorType(
         // Optimization: Fast path for known bindings
         var value_resolved = false;
         var resolved_int: usize = 0;
+        const s = &ast_unit.type_info.val_store;
 
         if (ast_unit.kind(expr_to_eval) == .Ident) {
             const name = ast_unit.exprs.get(.Ident, expr_to_eval).name;
             if (lookupValueBinding(bindings, name)) |val| {
-                if (val == .Int) {
-                    resolved_int = std.math.cast(usize, val.Int) orelse 0;
+                if (s.kind(val) == .Int) {
+                    resolved_int = std.math.cast(usize, s.get(.Int, val).value) orelse 0;
                     value_resolved = true;
                 }
             } else if (lookupTypeBinding(bindings, name)) |ty| {
@@ -1177,17 +1179,17 @@ fn resolveTensorType(
 
         if (!value_resolved) {
             if (evalComptimeValueWithBindings(self, ctx, ast_unit, expr_to_eval, bindings)) |cv| {
-                var val = cv;
-                defer val.destroy(self.gpa);
-                switch (val) {
-                    .Int => |v| {
+                switch (s.kind(cv)) {
+                    .Int => {
+                        const v = s.get(.Int, cv).value;
                         resolved_int = std.math.cast(usize, v) orelse 0;
                         value_resolved = true;
                     },
-                    .Sequence => |seq| {
+                    .Sequence => {
+                        const seq = s.get(.Sequence, cv);
                         // Handle tuple expansion for shapes
-                        for (seq.values.items) |item| {
-                            const item_val = if (item == .Int) std.math.cast(usize, item.Int) orelse 0 else 0;
+                        for (s.val_pool.slice(seq.elems)) |item| {
+                            const item_val = if (s.kind(item) == .Int) std.math.cast(usize, s.get(.Int, item).value) orelse 0 else 0;
                             if (item_val == 0) {
                                 try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
                                 status = false;
@@ -1271,7 +1273,7 @@ fn resolveTypeFunctionCall(
 
     var interp_param_bindings = try List(interpreter.Binding).initCapacity(self.gpa, total_cap);
     defer {
-        for (interp_param_bindings.items) |*b| b.value.destroy(self.gpa);
+        // value is ValueId, no destroy
         interp_param_bindings.deinit(self.gpa);
     }
 
@@ -1279,15 +1281,19 @@ fn resolveTypeFunctionCall(
     const base_param_specs = callee_ctx.param_specializations.items.len;
     defer callee_ctx.param_specializations.items.len = base_param_specs;
 
+    try self.ensureInterpreter(ast_unit, callee_ctx);
+    var interp = &callee_ctx.interp.?;
+
     // Load existing bindings into interpreter and specializations
     for (existing_bindings) |b| {
         switch (b) {
             .Type => |t| {
                 try callee_ctx.param_specializations.append(self.gpa, .{ .name = t.name, .ty = t.ty });
-                try interp_param_bindings.append(self.gpa, .{ .name = t.name, .value = .{ .Type = t.ty } });
+                try interp_param_bindings.append(self.gpa, .{ .name = t.name, .value = interp.store().add(.Type, .{ .ty = t.ty }), .store = interp.store() });
             },
             .Value => |v| {
-                try interp_param_bindings.append(self.gpa, .{ .name = v.name, .value = try comp.cloneComptimeValue(self.gpa, v.value) });
+                const cloned = try interp.store().cloneValue(&ast_unit.type_info.val_store, v.value);
+                try interp_param_bindings.append(self.gpa, .{ .name = v.name, .value = cloned, .store = interp.store() });
             },
         }
     }
@@ -1314,9 +1320,9 @@ fn resolveTypeFunctionCall(
 
             bindings_builder.appendAssumeCapacity(.{ .Type = .{ .name = pname, .ty = arg_res[1] } });
             try callee_ctx.param_specializations.append(self.gpa, .{ .name = pname, .ty = arg_res[1] });
-            try interp_param_bindings.append(self.gpa, .{ .name = pname, .value = .{ .Type = arg_res[1] } });
+            try interp_param_bindings.append(self.gpa, .{ .name = pname, .value = interp.store().add(.Type, .{ .ty = arg_res[1] }), .store = interp.store() });
         } else {
-            var value: comp.ComptimeValue = undefined;
+            var value: comp.ValueId = undefined;
             var have_value = false;
 
             // Fast path: Ident lookup
@@ -1346,7 +1352,7 @@ fn resolveTypeFunctionCall(
             if (!have_value) return null;
 
             bindings_builder.appendAssumeCapacity(.{ .Value = .{ .name = pname, .value = value, .ty = annotated } });
-            try interp_param_bindings.append(self.gpa, .{ .name = pname, .value = try comp.cloneComptimeValue(self.gpa, value) });
+            try interp_param_bindings.append(self.gpa, .{ .name = pname, .value = try interp.store().cloneValue(&ast_unit.type_info.val_store, value), .store = interp.store() });
         }
     }
 
@@ -1371,8 +1377,6 @@ fn resolveTypeFunctionCall(
         });
     }
 
-    try self.ensureInterpreter(ast_unit, callee_ctx);
-    var interp = &callee_ctx.interp.?;
     var scope = try interp.pushBindings(&interp_param_bindings);
     defer scope.deinit();
 
@@ -1536,13 +1540,15 @@ pub fn typeFromTypeExprWithBindings(
             break :blk_ident .{ false, ts.tTypeError() };
         },
         .Splice => blk_splice: {
+            const s = &ast_unit.type_info.val_store;
             if (ast_unit.type_info.getComptimeValue(id)) |cached| {
-                if (cached.* == .Type) break :blk_splice .{ true, cached.Type };
+                if (s.kind(cached.*) == .Type) break :blk_splice .{ true, s.get(.Type, cached.*).ty };
             }
             const name = ast_unit.exprs.get(.Splice, id).name;
-            if (ast_unit.type_info.cloneComptimeBindingValue(ast_unit.type_info.gpa, name) catch null) |val| {
+            if (ast_unit.type_info.comptime_bindings.get(name)) |e| {
+                const val = e.value;
                 try ast_unit.type_info.setComptimeValue(id, val);
-                if (val == .Type) break :blk_splice .{ true, val.Type };
+                if (s.kind(val) == .Type) break :blk_splice .{ true, s.get(.Type, val).ty };
             }
             const row = ast_unit.exprs.get(.Splice, id);
             const name_str = ast_unit.exprs.strs.get(row.name);
@@ -1611,10 +1617,9 @@ pub fn typeFromTypeExprWithBindings(
             const size_loc = ast_unit.exprs.locs.get(row.loc);
 
             if (evalComptimeValueWithBindings(self, ctx, ast_unit, row.size, bindings)) |v| {
-                var size_eval = v;
-                defer size_eval.destroy(self.gpa);
-                if (size_eval == .Int) {
-                    if (std.math.cast(usize, size_eval.Int)) |concrete| {
+                const s = &ast_unit.type_info.val_store;
+                if (s.kind(v) == .Int) {
+                    if (std.math.cast(usize, s.get(.Int, v).value)) |concrete| {
                         size = concrete;
                     } else {
                         try self.context.diags.addError(size_loc, .array_size_not_integer_literal, .{});
@@ -1646,20 +1651,19 @@ pub fn typeFromTypeExprWithBindings(
 
             const callee_kind = ast_unit.kind(call_row.callee);
             if (callee_kind == .FieldAccess or callee_kind == .Ident) {
-                var value = evalComptimeValueWithBindings(self, ctx, ast_unit, id, bindings) catch |err| {
+                const value = evalComptimeValueWithBindings(self, ctx, ast_unit, id, bindings) catch |err| {
                     if (status) {
                         const msg = std.fmt.allocPrint(self.gpa, "comptime evaluation of type function failed: {s}", .{@errorName(err)}) catch "comptime evaluation failed";
                         try self.context.diags.addError(ast_unit.exprs.locs.get(call_row.loc), .could_not_resolve_type, .{@as([]const u8, msg)});
                     }
                     break :blk_call .{ false, ts.tTypeError() };
                 };
-                defer value.destroy(self.gpa);
-
-                if (value == .Type) {
-                    const wrapped = self.context.type_store.mkTypeType(value.Type);
+                const s = &ast_unit.type_info.val_store;
+                if (s.kind(value) == .Type) {
+                    const wrapped = self.context.type_store.mkTypeType(s.get(.Type, value).ty);
                     try ast_unit.type_info.ensureExpr(self.gpa, id);
                     ast_unit.type_info.expr_types.items[id.toRaw()] = wrapped;
-                    break :blk_call .{ status, value.Type };
+                    break :blk_call .{ status, s.get(.Type, value).ty };
                 } else if (status) {
                     try self.context.diags.addError(ast_unit.exprs.locs.get(call_row.loc), .could_not_resolve_type, .{@as([]const u8, "expression evaluated to a value, but a type was expected")});
                     status = false;
@@ -1816,29 +1820,34 @@ pub fn typeFromTypeExprWithBindings(
                     const val_id = enum_field.value.unwrap();
                     var resolved = false;
                     const b_slice = enum_value_bindings.items;
-                    if (ast_unit.kind(val_id) == .Ident) {
-                        const ident = ast_unit.exprs.get(.Ident, val_id);
-                        if (lookupValueBinding(b_slice, ident.name)) |bv| if (bv == .Int) {
-                            current_value = bv.Int;
+                if (ast_unit.kind(val_id) == .Ident) {
+                    const ident = ast_unit.exprs.get(.Ident, val_id);
+                    if (lookupValueBinding(b_slice, ident.name)) |bv| {
+                        const s = &ast_unit.type_info.val_store;
+                        if (s.kind(bv) == .Int) {
+                            current_value = s.get(.Int, bv).value;
                             resolved = true;
-                        };
+                        }
                     }
-                    if (!resolved) {
-                        if (evalComptimeValueWithBindings(self, ctx, ast_unit, val_id, b_slice)) |v| {
-                            var cv = v;
-                            defer cv.destroy(self.gpa);
-                            if (cv == .Int) current_value = cv.Int else {
-                                try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
-                                status = false;
-                            }
-                        } else |_| {
+                }
+                if (!resolved) {
+                    if (evalComptimeValueWithBindings(self, ctx, ast_unit, val_id, b_slice)) |v| {
+                        const s = &ast_unit.type_info.val_store;
+                        if (s.kind(v) == .Int) {
+                            current_value = s.get(.Int, v).value;
+                        } else {
                             try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
                             status = false;
+                        }
+                    } else |_| {
+                        try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
+                        status = false;
                         }
                     }
                 }
                 member_buf[i] = .{ .name = enum_field.name, .value = @intCast(current_value) };
-                try enum_value_bindings.append(self.gpa, .{ .Value = .{ .name = enum_field.name, .value = comp.ComptimeValue{ .Int = current_value }, .ty = tag_ty } });
+                const int_val = ast_unit.type_info.val_store.add(.Int, .{ .value = current_value });
+                try enum_value_bindings.append(self.gpa, .{ .Value = .{ .name = enum_field.name, .value = int_val, .ty = tag_ty } });
                 next_value = current_value + 1;
             }
             break :blk_en .{ status, ts.mkEnum(member_buf, tag_ty) };

@@ -7,6 +7,7 @@ const LowerTir = @import("lower_tir.zig");
 const Pipeline = @import("pipeline.zig").Pipeline;
 const checker = @import("checker.zig");
 const ast = @import("ast.zig");
+const cst = @import("cst.zig");
 const interpreter = @import("interpreter.zig");
 const List = std.ArrayList;
 
@@ -18,141 +19,356 @@ pub const ComptimeApi = struct {
     type_of: *const fn (context: ?*anyopaque, expr_id: u32) callconv(.c) u32,
 };
 
-pub const FunctionValue = struct {
-    expr: ast.ExprId,
-    ast: *ast.Ast,
+////////////////////////////////////////////////////////////////////////////////
+//              Data-Oriented Design (DOD) Value Representation
+////////////////////////////////////////////////////////////////////////////////
+
+pub const ValueTag = struct {};
+pub const ValueId = cst.Index(ValueTag);
+pub const OptValueId = cst.SentinelIndex(ValueTag);
+
+pub const CodeBindingId = cst.Index(ValueRows.CodeBinding);
+pub const StructFieldId = cst.Index(ValueRows.StructField);
+pub const MapEntryId = cst.Index(ValueRows.MapEntry);
+
+pub const ValueKind = enum(u8) {
+    Void,
+    Int,
+    Float,
+    Bool,
+    String,
+    Sequence,
+    Struct,
+    Variant,
+    Map,
+    Pointer,
+    Range,
+    Type,
+    MlirType,
+    MlirAttribute,
+    MlirModule,
+    Function,
+    Code,
 };
 
-pub const CodeValue = struct {
-    block: ast.ExprId,
-    ast: *ast.Ast,
-    captures: std.ArrayList(CodeBinding),
+pub const ValueRows = struct {
+    pub const Void = struct {};
+    pub const Int = struct { value: i128 };
+    pub const Float = struct { value: f64 };
+    pub const Bool = struct { value: bool };
+    pub const String = struct { value: []const u8 };
+
+    pub const Sequence = struct { elems: cst.RangeOf(ValueId) };
+
+    pub const StructField = struct { name: cst.StrId, value: ValueId };
+    pub const Struct = struct { fields: cst.RangeOf(StructFieldId), owner: cst.OptStrId };
+
+    pub const Variant = struct { tag: cst.StrId, payload: OptValueId };
+
+    pub const MapEntry = struct { key: ValueId, value: ValueId };
+    pub const Map = struct { entries: cst.RangeOf(MapEntryId) };
+
+    pub const Pointer = struct { pointee: ValueId };
+
+    pub const Range = struct { start: i128, end: i128, inclusive: bool };
+
+    pub const Type = struct { ty: types.TypeId };
+
+    pub const MlirType = struct { ty: mlir.Type };
+    pub const MlirAttribute = struct { attr: mlir.Attribute };
+    pub const MlirModule = struct { module: mlir.Module };
+
+    pub const Function = struct { expr: ast.ExprId, ast: *ast.Ast };
+
+    pub const CodeBinding = struct { name: cst.StrId, value: ValueId };
+    pub const Code = struct { block: ast.ExprId, ast: *ast.Ast, captures: cst.RangeOf(CodeBindingId) };
 };
 
-pub const CodeBinding = struct {
-    name: ast.StrId,
-    value: ComptimeValue,
-};
+/// Convenience alias for code values stored in the value store.
+pub const CodeValue = ValueRows.Code;
 
-pub fn codeExprFromCodeValue(ast_unit: *ast.Ast, code: CodeValue) ?ast.ExprId {
-    if (code.ast != ast_unit) return null;
-    if (ast_unit.kind(code.block) != .Block) return null;
-    const block = ast_unit.exprs.get(.Block, code.block);
-    const stmts = ast_unit.stmts.stmt_pool.slice(block.items);
-    if (stmts.len != 1 or ast_unit.kind(stmts[0]) != .Expr) return null;
-    return ast_unit.stmts.get(.Expr, stmts[0]).expr;
+pub inline fn ValueRowT(comptime K: ValueKind) type {
+    return switch (K) {
+        .Void => ValueRows.Void,
+        .Int => ValueRows.Int,
+        .Float => ValueRows.Float,
+        .Bool => ValueRows.Bool,
+        .String => ValueRows.String,
+        .Sequence => ValueRows.Sequence,
+        .Struct => ValueRows.Struct,
+        .Variant => ValueRows.Variant,
+        .Map => ValueRows.Map,
+        .Pointer => ValueRows.Pointer,
+        .Range => ValueRows.Range,
+        .Type => ValueRows.Type,
+        .MlirType => ValueRows.MlirType,
+        .MlirAttribute => ValueRows.MlirAttribute,
+        .MlirModule => ValueRows.MlirModule,
+        .Function => ValueRows.Function,
+        .Code => ValueRows.Code,
+    };
 }
 
-pub const Sequence = struct {
-    values: std.ArrayList(ComptimeValue),
-};
+pub const ValueStore = struct {
+    gpa: std.mem.Allocator,
+    arena: std.heap.ArenaAllocator,
+    index: cst.StoreIndex(ValueKind) = .{},
 
-pub const MapEntry = struct {
-    key: ComptimeValue,
-    value: ComptimeValue,
-};
+    Int: cst.Table(ValueRows.Int) = .{},
+    Float: cst.Table(ValueRows.Float) = .{},
+    Bool: cst.Table(ValueRows.Bool) = .{},
+    String: cst.Table(ValueRows.String) = .{},
+    Sequence: cst.Table(ValueRows.Sequence) = .{},
+    Struct: cst.Table(ValueRows.Struct) = .{},
+    Variant: cst.Table(ValueRows.Variant) = .{},
+    Map: cst.Table(ValueRows.Map) = .{},
+    Pointer: cst.Table(ValueRows.Pointer) = .{},
+    Range: cst.Table(ValueRows.Range) = .{},
+    Type: cst.Table(ValueRows.Type) = .{},
+    MlirType: cst.Table(ValueRows.MlirType) = .{},
+    MlirAttribute: cst.Table(ValueRows.MlirAttribute) = .{},
+    MlirModule: cst.Table(ValueRows.MlirModule) = .{},
+    Function: cst.Table(ValueRows.Function) = .{},
+    Code: cst.Table(ValueRows.Code) = .{},
+    Void: cst.Table(ValueRows.Void) = .{},
 
-pub const MapValue = struct {
-    entries: std.ArrayList(MapEntry),
-};
+    val_pool: cst.Pool(ValueId) = .{},
+    struct_field_pool: cst.Pool(StructFieldId) = .{},
+    map_entry_pool: cst.Pool(MapEntryId) = .{},
+    code_binding_pool: cst.Pool(CodeBindingId) = .{},
 
-pub const StructField = struct {
-    name: ast.StrId,
-    value: ComptimeValue,
-};
+    StructField: cst.Table(ValueRows.StructField) = .{},
+    MapEntry: cst.Table(ValueRows.MapEntry) = .{},
+    CodeBinding: cst.Table(ValueRows.CodeBinding) = .{},
 
-pub const StructValue = struct {
-    fields: std.ArrayList(StructField),
-    owner: ?ast.StrId,
-};
+    pub fn init(gpa: std.mem.Allocator) ValueStore {
+        return .{ .gpa = gpa, .arena = std.heap.ArenaAllocator.init(gpa) };
+    }
 
-pub const VariantValue = struct {
-    tag: ast.StrId,
-    payload: ?*ComptimeValue = null,
-};
+    pub fn deinit(self: *@This()) void {
+        const gpa = self.gpa;
+        self.index.deinit(gpa);
+        inline for (@typeInfo(ValueKind).@"enum".fields) |f| @field(self, f.name).deinit(gpa);
+        inline for (.{ "val_pool", "struct_field_pool", "map_entry_pool", "code_binding_pool" }) |n| @field(self, n).deinit(gpa);
+        inline for (.{ "StructField", "MapEntry", "CodeBinding" }) |n| @field(self, n).deinit(gpa);
+        self.arena.deinit();
+    }
 
-pub const RangeValue = struct {
-    start: i128,
-    end: i128,
-    inclusive: bool,
-};
-
-pub const ComptimeValue = union(enum) {
-    Void,
-    Int: i128,
-    Float: f64,
-    Bool: bool,
-    String: []const u8,
-    Sequence: Sequence,
-    Struct: StructValue,
-    Variant: VariantValue,
-    Map: MapValue,
-    Pointer: *ComptimeValue,
-    Range: RangeValue,
-    Type: types.TypeId,
-    MlirType: mlir.Type,
-    MlirAttribute: mlir.Attribute,
-    MlirModule: mlir.Module,
-    Function: FunctionValue,
-    Code: CodeValue,
-
-    pub fn destroy(self: *ComptimeValue, gpa: std.mem.Allocator) void {
-        switch (self.*) {
-            .String => |s| gpa.free(s),
-            .Sequence => |*seq| {
-                for (seq.values.items) |*item| item.destroy(gpa);
-                seq.values.deinit(gpa);
-            },
-            .Struct => |*sv| {
-                for (sv.fields.items) |*field| field.value.destroy(gpa);
-                sv.fields.deinit(gpa);
-            },
-            .Variant => |*vv| {
-                if (vv.payload) |p| {
-                    p.destroy(gpa);
-                    gpa.destroy(p);
-                    vv.payload = null;
+    pub fn add(self: *@This(), comptime K: ValueKind, row: ValueRowT(K)) ValueId {
+        if (K == .Sequence) {
+            const seq = row;
+            const items = self.val_pool.slice(seq.elems);
+            for (items, 0..) |item, i| {
+                const raw = item.toRaw();
+                if (raw >= self.index.kinds.items.len) {
+                    std.debug.print(
+                        "comptime> add Sequence invalid elem: index={}, elem_id={}, store_len={}\n",
+                        .{ i, raw, self.index.kinds.items.len },
+                    );
+                    @panic("add Sequence: invalid element id");
                 }
-            },
-            .Map => |*map| {
-                for (map.entries.items) |*entry| {
-                    entry.key.destroy(gpa);
-                    entry.value.destroy(gpa);
-                }
-                map.entries.deinit(gpa);
-            },
-            .Pointer => |ptr| {
-                ptr.destroy(gpa);
-                gpa.destroy(ptr);
-            },
-            .MlirModule => |*mod| mod.destroy(),
-            .Code => |*code| {
-                for (code.captures.items) |*binding| binding.value.destroy(gpa);
-                code.captures.deinit(gpa);
-            },
-            else => {},
+            }
         }
-        self.* = .Void;
+        const r = @field(self, @tagName(K)).add(self.gpa, row);
+        return self.index.newId(self.gpa, K, r.toRaw(), ValueId);
+    }
+
+    pub fn get(self: *@This(), comptime K: ValueKind, id: ValueId) ValueRowT(K) {
+        std.debug.assert(self.kind(id) == K);
+        return @field(self, @tagName(K)).get(.{ .index = self.index.rows.items[id.toRaw()] });
+    }
+
+    pub fn kind(self: *const ValueStore, id: ValueId) ValueKind {
+        return self.index.kinds.items[id.toRaw()];
+    }
+
+    pub fn addStructFields(self: *@This(), fields: []const ValueRows.StructField) cst.RangeOf(StructFieldId) {
+        var ids = std.ArrayList(StructFieldId){};
+        defer ids.deinit(self.gpa);
+        for (fields) |f| ids.append(self.gpa, self.StructField.add(self.gpa, f)) catch @panic("OOM");
+        return self.struct_field_pool.pushMany(self.gpa, ids.items);
+    }
+
+    pub fn addMapEntries(self: *@This(), entries: []const ValueRows.MapEntry) cst.RangeOf(MapEntryId) {
+        var ids = std.ArrayList(MapEntryId){};
+        defer ids.deinit(self.gpa);
+        for (entries) |e| ids.append(self.gpa, self.MapEntry.add(self.gpa, e)) catch @panic("OOM");
+        return self.map_entry_pool.pushMany(self.gpa, ids.items);
+    }
+
+    pub fn addCodeBindings(self: *@This(), bindings: []const ValueRows.CodeBinding) cst.RangeOf(CodeBindingId) {
+        var ids = std.ArrayList(CodeBindingId){};
+        defer ids.deinit(self.gpa);
+        for (bindings) |b| ids.append(self.gpa, self.CodeBinding.add(self.gpa, b)) catch @panic("OOM");
+        return self.code_binding_pool.pushMany(self.gpa, ids.items);
+    }
+
+    pub fn cloneValue(self: *ValueStore, other: *ValueStore, id: ValueId) !ValueId {
+        const raw = id.toRaw();
+        if (raw >= other.index.kinds.items.len) {
+            std.debug.print("comptime> cloneValue invalid id: id={}, other_len={}\n", .{ raw, other.index.kinds.items.len });
+            @panic("cloneValue: id out of bounds");
+        }
+        switch (other.kind(id)) {
+            .Void => return self.add(.Void, .{}),
+            .Int => return self.add(.Int, other.get(.Int, id)),
+            .Float => return self.add(.Float, other.get(.Float, id)),
+            .Bool => return self.add(.Bool, other.get(.Bool, id)),
+            .String => {
+                const s = other.get(.String, id).value;
+                const copy = try self.arena.allocator().dupe(u8, s);
+                return self.add(.String, .{ .value = copy });
+            },
+            .Type => return self.add(.Type, other.get(.Type, id)),
+            .MlirType => return self.add(.MlirType, other.get(.MlirType, id)),
+            .MlirAttribute => return self.add(.MlirAttribute, other.get(.MlirAttribute, id)),
+            .MlirModule => {
+                const mod = other.get(.MlirModule, id).module;
+                return self.add(.MlirModule, .{ .module = mlir.Module.fromOperation(mlir.Operation.clone(mod.getOperation())) });
+            },
+            .Range => return self.add(.Range, other.get(.Range, id)),
+            .Pointer => {
+                const p = other.get(.Pointer, id);
+                return self.add(.Pointer, .{ .pointee = try self.cloneValue(other, p.pointee) });
+            },
+            .Function => return self.add(.Function, other.get(.Function, id)),
+            .Sequence => {
+                const seq = other.get(.Sequence, id);
+                const elems_copy = try self.gpa.dupe(ValueId, other.val_pool.slice(seq.elems));
+                defer self.gpa.free(elems_copy);
+
+                var new_elems = try std.ArrayList(ValueId).initCapacity(self.gpa, elems_copy.len);
+                defer new_elems.deinit(self.gpa);
+                for (elems_copy, 0..) |e, i| {
+                    const e_raw = e.toRaw();
+                    if (e_raw >= other.index.kinds.items.len) {
+                        std.debug.print(
+                            "comptime> cloneValue invalid sequence elem: parent_id={}, index={}, elem_id={}, other_len={}\n",
+                            .{ raw, i, e_raw, other.index.kinds.items.len },
+                        );
+                        @panic("cloneValue: sequence elem out of bounds");
+                    }
+                    new_elems.appendAssumeCapacity(try self.cloneValue(other, e));
+                }
+                return self.add(.Sequence, .{ .elems = self.val_pool.pushMany(self.gpa, new_elems.items) });
+            },
+            .Struct => {
+                const st = other.get(.Struct, id);
+                const fields_copy = try self.gpa.dupe(StructFieldId, other.struct_field_pool.slice(st.fields));
+                defer self.gpa.free(fields_copy);
+
+                var new_fields = try std.ArrayList(ValueRows.StructField).initCapacity(self.gpa, fields_copy.len);
+                defer new_fields.deinit(self.gpa);
+                for (fields_copy) |fid| {
+                    const f = other.StructField.get(fid);
+                    new_fields.appendAssumeCapacity(.{ .name = f.name, .value = try self.cloneValue(other, f.value) });
+                }
+                return self.add(.Struct, .{ .fields = self.addStructFields(new_fields.items), .owner = st.owner });
+            },
+            .Variant => {
+                const v = other.get(.Variant, id);
+                const payload = if (v.payload.isNone()) OptValueId.none() else OptValueId.some(try self.cloneValue(other, v.payload.unwrap()));
+                return self.add(.Variant, .{ .tag = v.tag, .payload = payload });
+            },
+            .Map => {
+                const m = other.get(.Map, id);
+                const entries_copy = try self.gpa.dupe(MapEntryId, other.map_entry_pool.slice(m.entries));
+                defer self.gpa.free(entries_copy);
+
+                var new_entries = try std.ArrayList(ValueRows.MapEntry).initCapacity(self.gpa, entries_copy.len);
+                defer new_entries.deinit(self.gpa);
+                for (entries_copy) |eid| {
+                    const e = other.MapEntry.get(eid);
+                    new_entries.appendAssumeCapacity(.{ .key = try self.cloneValue(other, e.key), .value = try self.cloneValue(other, e.value) });
+                }
+                return self.add(.Map, .{ .entries = self.addMapEntries(new_entries.items) });
+            },
+            .Code => {
+                const c = other.get(.Code, id);
+                const captures_copy = try self.gpa.dupe(CodeBindingId, other.code_binding_pool.slice(c.captures));
+                defer self.gpa.free(captures_copy);
+
+                var new_captures = try std.ArrayList(ValueRows.CodeBinding).initCapacity(self.gpa, captures_copy.len);
+                defer new_captures.deinit(self.gpa);
+                for (captures_copy) |cid| {
+                    const cb = other.CodeBinding.get(cid);
+                    new_captures.appendAssumeCapacity(.{ .name = cb.name, .value = try self.cloneValue(other, cb.value) });
+                }
+                return self.add(.Code, .{ .block = c.block, .ast = c.ast, .captures = self.addCodeBindings(new_captures.items) });
+            },
+        }
+    }
+
+    pub fn hashValue(self: *ValueStore, id: ValueId) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        const k = self.kind(id);
+        hasher.update(&.{@intFromEnum(k)});
+        switch (k) {
+            .Void => {},
+            .Int => hasher.update(std.mem.asBytes(&self.get(.Int, id).value)),
+            .Float => hasher.update(std.mem.asBytes(&self.get(.Float, id).value)),
+            .Bool => hasher.update(std.mem.asBytes(&self.get(.Bool, id).value)),
+            .String => hasher.update(self.get(.String, id).value),
+            .Type => hasher.update(std.mem.asBytes(&self.get(.Type, id).ty.toRaw())),
+            .MlirType => hasher.update(std.mem.asBytes(&self.get(.MlirType, id).ty.handle)),
+            .MlirAttribute => hasher.update(std.mem.asBytes(&self.get(.MlirAttribute, id).attr.handle)),
+            .MlirModule => hasher.update(std.mem.asBytes(&self.get(.MlirModule, id).module.handle)),
+            .Range => hasher.update(std.mem.asBytes(&self.get(.Range, id))),
+            .Pointer => hasher.update(std.mem.asBytes(&self.hashValue(self.get(.Pointer, id).pointee))),
+            .Function => hasher.update(std.mem.asBytes(&self.get(.Function, id).expr.toRaw())),
+            .Sequence => {
+                const elems = self.val_pool.slice(self.get(.Sequence, id).elems);
+                hasher.update(std.mem.asBytes(&elems.len));
+                for (elems) |e| hasher.update(std.mem.asBytes(&self.hashValue(e)));
+            },
+            .Struct => {
+                const fields = self.struct_field_pool.slice(self.get(.Struct, id).fields);
+                hasher.update(std.mem.asBytes(&fields.len));
+                for (fields) |fid| {
+                    const f = self.StructField.get(fid);
+                    hasher.update(std.mem.asBytes(&f.name));
+                    hasher.update(std.mem.asBytes(&self.hashValue(f.value)));
+                }
+            },
+            .Variant => {
+                const v = self.get(.Variant, id);
+                hasher.update(std.mem.asBytes(&v.tag));
+                if (!v.payload.isNone()) hasher.update(std.mem.asBytes(&self.hashValue(v.payload.unwrap())));
+            },
+            .Map => {
+                const entries = self.map_entry_pool.slice(self.get(.Map, id).entries);
+                hasher.update(std.mem.asBytes(&entries.len));
+                for (entries) |eid| {
+                    const e = self.MapEntry.get(eid);
+                    hasher.update(std.mem.asBytes(&self.hashValue(e.key)));
+                    hasher.update(std.mem.asBytes(&self.hashValue(e.value)));
+                }
+            },
+            .Code => {
+                const c = self.get(.Code, id);
+                hasher.update(std.mem.asBytes(&c.block.toRaw()));
+                const captures = self.code_binding_pool.slice(c.captures);
+                hasher.update(std.mem.asBytes(&captures.len));
+                for (captures) |cid| {
+                    const cb = self.CodeBinding.get(cid);
+                    hasher.update(std.mem.asBytes(&cb.name));
+                    hasher.update(std.mem.asBytes(&self.hashValue(cb.value)));
+                }
+            },
+        }
+        return hasher.final();
     }
 };
 
-pub const BindingValue = struct {
-    ty: types.TypeId,
-    value: ComptimeValue,
-
-    pub fn init(gpa: std.mem.Allocator, ty: types.TypeId, value: ComptimeValue) !BindingValue {
-        return .{ .ty = ty, .value = try cloneComptimeValue(gpa, value) };
-    }
-
-    fn clone(self: BindingValue, gpa: std.mem.Allocator) !BindingValue {
-        return .{ .ty = self.ty, .value = try cloneComptimeValue(gpa, self.value) };
-    }
-
-    fn deinit(self: *BindingValue, gpa: std.mem.Allocator) void {
-        self.value.destroy(gpa);
-        self.* = .{ .ty = types.TypeId.fromRaw(0), .value = .Void };
-    }
-};
+/// Extract a single expression from a code value when it represents a one-expression block.
+pub fn codeExprFromCodeValue(ast_unit: *ast.Ast, code: CodeValue) ?ast.ExprId {
+    if (ast_unit.kind(code.block) != .Block) return code.block;
+    const block = ast_unit.exprs.get(.Block, code.block);
+    const stmts = ast_unit.stmts.stmt_pool.slice(block.items);
+    if (stmts.len != 1) return null;
+    if (ast_unit.kind(stmts[0]) != .Expr) return null;
+    return ast_unit.stmts.get(.Expr, stmts[0]).expr;
+}
 
 pub const BindingInfo = struct {
     name: ast.StrId,
@@ -168,21 +384,32 @@ pub const BindingInfo = struct {
         return .{ .name = name, .kind = .{ .type_param = ty } };
     }
 
-    pub fn valueParam(gpa: std.mem.Allocator, name: ast.StrId, ty: types.TypeId, value: ComptimeValue) !BindingInfo {
-        return .{ .name = name, .kind = .{ .value_param = try BindingValue.init(gpa, ty, value) } };
+    pub fn valueParam(name: ast.StrId, ty: types.TypeId, value: ValueId) BindingInfo {
+        return .{ .name = name, .kind = .{ .value_param = .{ .ty = ty, .value = value } } };
     }
 
     pub fn runtimeParam(name: ast.StrId, ty: types.TypeId) BindingInfo {
         return .{ .name = name, .kind = .{ .runtime_param = ty } };
     }
+};
 
-    pub fn deinit(self: *BindingInfo, gpa: std.mem.Allocator) void {
-        switch (self.kind) {
-            .value_param => |*vp| vp.deinit(gpa),
-            else => {},
-        }
-        self.* = .{ .name = ast.StrId.fromRaw(0), .kind = .{ .type_param = types.TypeId.fromRaw(0) } };
-    }
+pub const BindingValue = struct {
+    ty: types.TypeId,
+    value: ValueId,
+};
+
+pub const SpecializationContext = struct {
+    specialized_ty: types.TypeId,
+    skip_params: usize,
+    bindings: []const BindingInfo,
+};
+
+pub const SpecializationRequest = struct {
+    decl_id: ast.DeclId,
+    mangled_name: tir.StrId,
+    specialized_ty: types.TypeId,
+    skip_params: usize,
+    bindings: []const BindingInfo,
 };
 
 // =============================
@@ -250,254 +477,100 @@ pub fn get_type_by_name_impl(context: ?*anyopaque, name: [*c]const u8) callconv(
 // Comptime Lower TIR API
 // =============================
 
-fn evaluateTypeExpr(self: *LowerTir, ctx: *LowerTir.LowerContext, a: *ast.Ast, expr: ast.ExprId) anyerror!types.TypeId {
-    switch (a.kind(expr)) {
-        .Ident => {
-            const ident = a.exprs.get(.Ident, expr);
-            if (self.lookupComptimeAliasType(a, ident.name)) |ty| return ty;
-            const name_slice = self.context.type_store.strs.get(ident.name);
-            return builtinTypeId(self.context.type_store, name_slice) orelse error.TypeNotFound;
-        },
-        .StructType => {
-            const st = a.exprs.get(.StructType, expr);
-            var fields = std.ArrayList(types.TypeStore.StructFieldArg).init(self.gpa);
-            defer fields.deinit();
-
-            for (a.exprs.sfield_pool.slice(st.fields)) |field_id| {
-                const field_def = a.exprs.StructField.get(field_id);
-                try fields.append(.{ .name = field_def.name, .ty = try evaluateTypeExpr(self, ctx, a, field_def.ty) });
-            }
-            return self.context.type_store.mkStruct(try fields.toOwnedSlice(), 0);
-        },
-        .Call => {
-            const call = a.exprs.get(.Call, expr);
-            const checker_ctx = &self.chk.checker_ctx.items[a.file_id];
-
-            const proc_node = switch (a.kind(call.callee)) {
-                .Ident => blk: {
-                    const ident = a.exprs.get(.Ident, call.callee);
-                    const sym_id = checker_ctx.symtab.lookup(checker_ctx.symtab.currentId(), ident.name) orelse return error.SymbolNotFound;
-                    const decl_id = (checker_ctx.symtab.syms.get(sym_id).origin_decl.unwrap()); // Assumes unwrap safe based on original logic implies check
-                    const decl = a.exprs.Decl.get(decl_id);
-                    if (a.kind(decl.value) != .FunctionLit) return error.NotAProcedure;
-                    break :blk a.exprs.get(.FunctionLit, decl.value);
-                },
-                else => return error.NotAProcedure,
-            };
-
-            var bindings = std.ArrayList(Pipeline.ComptimeBinding).init(self.gpa);
-            defer bindings.deinit();
-
-            for (a.exprs.param_pool.slice(proc_node.params), a.exprs.expr_pool.slice(call.args)) |param_id, arg_expr| {
-                const param = a.exprs.Param.get(param_id);
-                if (!param.is_comptime) continue;
-
-                const param_name = if (!param.pat.isNone() and a.kind(param.pat.unwrap()) == .Binding)
-                    a.pats.get(.Binding, param.pat.unwrap()).name
-                else
-                    return error.MissingParameterName; // Simplified check based on original logic
-
-                var is_type_param = false;
-                if (!param.ty.isNone()) {
-                    const k = a.kind(param.ty.unwrap());
-                    is_type_param = (k == .TypeType or k == .AnyType);
-                }
-
-                if (is_type_param) {
-                    try bindings.append(.{ .type_param = .{ .name = param_name, .ty = try evaluateTypeExpr(self, ctx, a, arg_expr) } });
-                } else {
-                    const arg_ty = self.getExprType(ctx, a, arg_expr);
-                    if (self.context.type_store.getKind(arg_ty) == .TypeType) {
-                        try bindings.append(.{ .type_param = .{ .name = param_name, .ty = try evaluateTypeExpr(self, ctx, a, arg_expr) } });
-                    } else {
-                        try bindings.append(.{ .value_param = .{ .name = param_name, .ty = arg_ty, .value = try runComptimeExpr(self, ctx, a, arg_expr, &[_]Pipeline.ComptimeBinding{}) } });
-                    }
-                }
-            }
-
-            if (proc_node.body.isNone()) return error.MissingFunctionBody;
-            const res = try runComptimeExpr(self, ctx, a, proc_node.body.unwrap(), bindings.items);
-            return switch (res) {
-                .Type => |t| t,
-                else => error.UnsupportedComptimeType,
-            };
-        },
-        .Block => {
-            const block = a.exprs.get(.Block, expr);
-            if (block.items.len == 0) return self.context.type_store.tVoid();
-
-            var last_ty: ?types.TypeId = null;
-            // Use parallel arrays for local aliases (simple linear scan is efficient for blocks)
-            var alias_names = std.ArrayList(ast.StrId).init(self.gpa);
-            var alias_types = std.ArrayList(types.TypeId).init(self.gpa);
-            defer {
-                alias_names.deinit();
-                alias_types.deinit();
-            }
-
-            for (a.stmts.stmt_pool.slice(block.items)) |stmt_id| {
-                switch (a.kind(stmt_id)) {
-                    .Decl => {
-                        const d = a.exprs.Decl.get(a.stmts.get(.Decl, stmt_id).decl);
-                        // Method declarations
-                        if (!d.method_path.isNone() and a.kind(d.value) == .FunctionLit) {
-                            const seg_ids = a.exprs.method_path_pool.slice(d.method_path.asRange());
-                            if (seg_ids.len >= 2) {
-                                const owner_name = a.exprs.MethodPathSeg.get(seg_ids[0]).name;
-                                const method_name = a.exprs.MethodPathSeg.get(seg_ids[seg_ids.len - 1]).name;
-
-                                var owner_ty = self.context.type_store.tAny();
-                                var found = false;
-
-                                // Optimization: manual loop for alias lookup
-                                for (alias_names.items, alias_types.items) |n, t| {
-                                    if (n.eq(owner_name)) {
-                                        owner_ty = t;
-                                        found = true;
-                                        break;
-                                    }
-                                }
-                                if (!found) {
-                                    if (self.lookupComptimeAliasType(a, owner_name)) |t| {
-                                        owner_ty = t;
-                                        found = true;
-                                    }
-                                }
-
-                                if (found) {
-                                    const fn_lit = a.exprs.get(.FunctionLit, d.value);
-                                    var param_types = std.ArrayList(types.TypeId).init(self.gpa);
-                                    defer param_types.deinit();
-
-                                    for (a.exprs.param_pool.slice(fn_lit.params)) |pid| {
-                                        const p = a.exprs.Param.get(pid);
-                                        const pty = if (!p.ty.isNone()) (evaluateTypeExpr(self, ctx, a, p.ty.unwrap()) catch self.context.type_store.tAny()) else self.context.type_store.tAny();
-                                        try param_types.append(pty);
-                                    }
-                                    const res_ty = if (!fn_lit.result_ty.isNone()) (evaluateTypeExpr(self, ctx, a, fn_lit.result_ty.unwrap()) catch self.context.type_store.tVoid()) else self.context.type_store.tVoid();
-
-                                    _ = self.context.type_store.addMethod(.{
-                                        .owner_type = owner_ty,
-                                        .method_name = method_name,
-                                        .decl_id = a.stmts.get(.Decl, stmt_id).decl,
-                                        .decl_ast = a,
-                                        .func_expr = d.value,
-                                        .func_type = self.context.type_store.mkFunction(param_types.items, res_ty, fn_lit.flags.is_variadic, true, fn_lit.flags.is_extern),
-                                        .self_param_type = null,
-                                        .receiver_kind = .none, // Simplified for brevity as per original strict logic not fully replicable without context, but keeping structure
-                                        .builtin = null,
-                                    }) catch {};
-                                }
-                            }
-                            continue;
-                        }
-                        // Type aliases
-                        if (!d.pattern.isNone() and a.kind(d.pattern.unwrap()) == .Binding) {
-                            const name = a.pats.get(.Binding, d.pattern.unwrap()).name;
-                            if (evaluateTypeExpr(self, ctx, a, d.value)) |ty| {
-                                last_ty = ty;
-                                try alias_names.append(name);
-                                try alias_types.append(ty);
-                            } else |_| break; // Stop on error/not-type
-                        }
-                    },
-                    .Return => |ret| if (!ret.value.isNone()) return try evaluateTypeExpr(self, ctx, a, ret.value.unwrap()),
-                    .Expr => |ex| {
-                        if (a.kind(ex.expr) == .Return) {
-                            const ret = a.exprs.get(.Return, ex.expr);
-                            if (!ret.value.isNone()) return try evaluateTypeExpr(self, ctx, a, ret.value.unwrap());
-                        } else {
-                            if (evaluateTypeExpr(self, ctx, a, ex.expr)) |t| last_ty = t else |_| {}
-                        }
-                    },
-                    else => {},
-                }
-            }
-            return last_ty orelse error.NoReturnValueInBlock;
-        },
-        else => return error.UnsupportedComptimeType,
-    }
-}
-
-pub fn runComptimeExpr(self: *LowerTir, ctx: *LowerTir.LowerContext, a: *ast.Ast, expr: ast.ExprId, bindings: []const Pipeline.ComptimeBinding) !ComptimeValue {
+pub fn runComptimeExpr(self: *LowerTir, ctx: *LowerTir.LowerContext, a: *ast.Ast, expr: ast.ExprId, bindings: []const Pipeline.ComptimeBinding) !ValueId {
     _ = ctx;
     return self.chk.evalComptimeExpr(&self.chk.checker_ctx.items[a.file_id], a, expr, bindings);
 }
 
-pub fn constValueFromComptime(self: *LowerTir, blk: *tir.Builder.BlockFrame, ty: types.TypeId, value: ComptimeValue) !tir.ValueId {
-    return switch (value) {
-        .Int => |val| blk.builder.tirValue(.ConstInt, blk, ty, .none(), .{
-            .value = switch (self.context.type_store.getKind(ty)) {
-                .I32 => @as(u64, @as(u32, @bitCast(@as(i32, @intCast(val))))),
-                .I64 => @as(u64, @bitCast(@as(i64, @intCast(val)))),
-                else => @as(u64, @intCast(val)),
-            },
-        }),
-        .Float => |val| blk.builder.tirValue(.ConstFloat, blk, ty, .none(), .{ .value = val }),
-        .Bool => |val| blk.builder.tirValue(.ConstBool, blk, ty, .none(), .{ .value = val }),
-        .Void => blk.builder.tirValue(.ConstUndef, blk, ty, .none(), .{}),
-        .String => |s| blk.builder.tirValue(.ConstString, blk, ty, .none(), .{ .text = blk.builder.intern(s) }),
-        .Sequence => |seq| blk: {
+pub fn constValueFromComptime(self: *LowerTir, store: *ValueStore, blk: *tir.Builder.BlockFrame, ty: types.TypeId, value: ValueId) !tir.ValueId {
+    switch (store.kind(value)) {
+        .Int => {
+            const val = store.get(.Int, value).value;
+            return blk.builder.tirValue(.ConstInt, blk, ty, .none(), .{
+                .value = switch (self.context.type_store.getKind(ty)) {
+                    .I32 => @as(u64, @as(u32, @bitCast(@as(i32, @intCast(val))))),
+                    .I64 => @as(u64, @bitCast(@as(i64, @intCast(val)))),
+                    else => @as(u64, @intCast(val)),
+                },
+            });
+        },
+        .Float => return blk.builder.tirValue(.ConstFloat, blk, ty, .none(), .{ .value = store.get(.Float, value).value }),
+        .Bool => return blk.builder.tirValue(.ConstBool, blk, ty, .none(), .{ .value = store.get(.Bool, value).value }),
+        .Void => return blk.builder.tirValue(.ConstUndef, blk, ty, .none(), .{}),
+        .String => return blk.builder.tirValue(.ConstString, blk, ty, .none(), .{ .text = blk.builder.intern(store.get(.String, value).value) }),
+        .Sequence => {
+            const seq = store.get(.Sequence, value);
             const ts = self.context.type_store;
             const kind = ts.getKind(ty);
+            const items = store.val_pool.slice(seq.elems);
             switch (kind) {
                 .Tuple => {
                     const tr = ts.get(.Tuple, ty);
                     const elem_tys = ts.type_pool.slice(tr.elems);
-                    if (elem_tys.len != seq.values.items.len) return error.UnsupportedComptimeType;
+                    if (elem_tys.len != items.len) return error.UnsupportedComptimeType;
                     var elems = try self.gpa.alloc(tir.ValueId, elem_tys.len);
                     defer self.gpa.free(elems);
                     for (elem_tys, 0..) |ety, i| {
-                        elems[i] = try constValueFromComptime(self, blk, ety, seq.values.items[i]);
+                        elems[i] = try constValueFromComptime(self, store, blk, ety, items[i]);
                     }
-                    break :blk blk.builder.tupleMake(blk, ty, elems, .none());
+                    return blk.builder.tupleMake(blk, ty, elems, .none());
                 },
                 .Array => {
                     const ar = ts.get(.Array, ty);
-                    if (ar.len != seq.values.items.len) return error.UnsupportedComptimeType;
+                    if (ar.len != items.len) return error.UnsupportedComptimeType;
                     var elems = try self.gpa.alloc(tir.ValueId, ar.len);
                     defer self.gpa.free(elems);
-                    for (seq.values.items, 0..) |item, i| {
-                        elems[i] = try constValueFromComptime(self, blk, ar.elem, item);
+                    for (items, 0..) |item, i| {
+                        elems[i] = try constValueFromComptime(self, store, blk, ar.elem, item);
                     }
-                    break :blk blk.builder.arrayMake(blk, ty, elems, .none());
+                    return blk.builder.arrayMake(blk, ty, elems, .none());
                 },
                 .Slice => {
                     const slice = ts.get(.Slice, ty);
-                    const array_ty = ts.mkArray(slice.elem, seq.values.items.len);
-                    var elems = try self.gpa.alloc(tir.ValueId, seq.values.items.len);
+                    const array_ty = ts.mkArray(slice.elem, items.len);
+                    var elems = try self.gpa.alloc(tir.ValueId, items.len);
                     defer self.gpa.free(elems);
-                    for (seq.values.items, 0..) |item, i| {
-                        elems[i] = try constValueFromComptime(self, blk, slice.elem, item);
+                    for (items, 0..) |item, i| {
+                        elems[i] = try constValueFromComptime(self, store, blk, slice.elem, item);
                     }
                     const array_val = blk.builder.arrayMake(blk, array_ty, elems, .none());
-                    break :blk coerceArrayToSliceConst(self, blk, array_val, array_ty, ty);
+                    return coerceArrayToSliceConst(self, blk, array_val, array_ty, ty);
                 },
-                else => return error.UnsupportedComptimeType,
+                else => {
+                    if (items.len == 1) {
+                        return constValueFromComptime(self, store, blk, ty, items[0]);
+                    }
+                    return error.UnsupportedComptimeType;
+                },
             }
         },
-        .Struct => |sv| blk: {
+        .Struct => {
+            const sv = store.get(.Struct, value);
             if (self.context.type_store.getKind(ty) != .Struct) return error.UnsupportedComptimeType;
             const struct_row = self.context.type_store.get(.Struct, ty);
             const type_fields = self.context.type_store.field_pool.slice(struct_row.fields);
             var inits = try self.gpa.alloc(tir.Rows.StructFieldInit, type_fields.len);
             defer self.gpa.free(inits);
 
+            const value_fields = store.struct_field_pool.slice(sv.fields);
+
             for (type_fields, 0..) |fid, i| {
                 const fdef = self.context.type_store.Field.get(fid);
-                var val: ?ComptimeValue = null;
-                for (sv.fields.items) |item| {
-                    if (item.name.eq(fdef.name)) {
-                        val = item.value;
+                var val: ?ValueId = null;
+                for (value_fields) |sfid| {
+                    const sf = store.StructField.get(sfid);
+                    if (sf.name.eq(fdef.name)) {
+                        val = sf.value;
                         break;
                     }
                 }
-                const field_val = if (val) |v| try constValueFromComptime(self, blk, fdef.ty, v) else blk.builder.tirValue(.ConstUndef, blk, fdef.ty, .none(), .{});
+                const field_val = if (val) |v| try constValueFromComptime(self, store, blk, fdef.ty, v) else blk.builder.tirValue(.ConstUndef, blk, fdef.ty, .none(), .{});
                 inits[i] = .{ .index = @intCast(i), .name = .some(fdef.name), .value = field_val };
             }
-            break :blk blk.builder.structMake(blk, ty, inits, .none());
+            return blk.builder.structMake(blk, ty, inits, .none());
         },
-        .Variant => |vv| blk: {
+        .Variant => {
+            const vv = store.get(.Variant, value);
             const ts = self.context.type_store;
             const kind = ts.getKind(ty);
             if (kind != .Variant and kind != .Error) return error.UnsupportedComptimeType;
@@ -531,8 +604,8 @@ pub fn constValueFromComptime(self: *LowerTir, blk: *tir.Builder.BlockFrame, ty:
 
             const payload_val: ?tir.ValueId = blk_payload: {
                 if (ts.getKind(payload_ty) == .Void) break :blk_payload null;
-                const payload = vv.payload orelse return error.UnsupportedComptimeType;
-                break :blk_payload try constValueFromComptime(self, blk, payload_ty, payload.*);
+                if (vv.payload.isNone()) return error.UnsupportedComptimeType;
+                break :blk_payload try constValueFromComptime(self, store, blk, payload_ty, vv.payload.unwrap());
             };
 
             const tag_val = blk.builder.tirValue(.ConstInt, blk, ts.tI32(), .none(), .{ .value = tag_idx });
@@ -542,14 +615,14 @@ pub fn constValueFromComptime(self: *LowerTir, blk: *tir.Builder.BlockFrame, ty:
             else
                 blk.builder.tirValue(.ConstUndef, blk, union_ty, .none(), .{});
 
-            break :blk blk.builder.structMake(blk, ty, &[_]tir.Rows.StructFieldInit{
+            return blk.builder.structMake(blk, ty, &[_]tir.Rows.StructFieldInit{
                 .{ .index = 0, .name = .none(), .value = tag_val },
                 .{ .index = 1, .name = .none(), .value = union_val },
             }, .none());
         },
-        .MlirType, .MlirAttribute, .MlirModule => blk.builder.tirValue(.ConstUndef, blk, ty, .none(), .{}),
-        else => error.UnsupportedComptimeType,
-    };
+        .MlirType, .MlirAttribute, .MlirModule => return blk.builder.tirValue(.ConstUndef, blk, ty, .none(), .{}),
+        else => return error.UnsupportedComptimeType,
+    }
 }
 
 fn coerceArrayToSliceConst(self: *LowerTir, blk: *tir.Builder.BlockFrame, array_value: tir.ValueId, array_ty: types.TypeId, slice_ty: types.TypeId) tir.ValueId {
@@ -572,140 +645,7 @@ fn coerceArrayToSliceConst(self: *LowerTir, blk: *tir.Builder.BlockFrame, array_
     }, .none());
 }
 
-pub fn cloneComptimeValue(gpa: std.mem.Allocator, value: ComptimeValue) !ComptimeValue {
-    return switch (value) {
-        .Void => .Void,
-        .Int => |v| .{ .Int = v },
-        .Float => |v| .{ .Float = v },
-        .Bool => |v| .{ .Bool = v },
-        .String => |s| .{ .String = try gpa.dupe(u8, s) },
-        .Sequence => |seq| blk: {
-            var values = try std.ArrayList(ComptimeValue).initCapacity(gpa, seq.values.items.len);
-            for (seq.values.items) |item| {
-                values.appendAssumeCapacity(try cloneComptimeValue(gpa, item));
-            }
-            break :blk .{ .Sequence = .{ .values = values } };
-        },
-        .Struct => |sv| blk: {
-            var fields = try std.ArrayList(StructField).initCapacity(gpa, sv.fields.items.len);
-            for (sv.fields.items) |item| {
-                fields.appendAssumeCapacity(.{ .name = item.name, .value = try cloneComptimeValue(gpa, item.value) });
-            }
-            break :blk .{ .Struct = .{ .fields = fields, .owner = sv.owner } };
-        },
-        .Variant => |vv| blk: {
-            const payload = if (vv.payload) |p| blk_p: {
-                const clone = try gpa.create(ComptimeValue);
-                clone.* = try cloneComptimeValue(gpa, p.*);
-                break :blk_p clone;
-            } else null;
-            break :blk .{ .Variant = .{ .tag = vv.tag, .payload = payload } };
-        },
-        .Map => |map| blk: {
-            var entries = try std.ArrayList(MapEntry).initCapacity(gpa, map.entries.items.len);
-            for (map.entries.items) |entry| {
-                entries.appendAssumeCapacity(.{
-                    .key = try cloneComptimeValue(gpa, entry.key),
-                    .value = try cloneComptimeValue(gpa, entry.value),
-                });
-            }
-            break :blk .{ .Map = .{ .entries = entries } };
-        },
-        .Pointer => |ptr| .{ .Pointer = blk: {
-            const p = try gpa.create(ComptimeValue);
-            p.* = try cloneComptimeValue(gpa, ptr.*);
-            break :blk p;
-        } },
-        .Type => |ty| .{ .Type = ty },
-        .MlirType => |ty| .{ .MlirType = ty },
-        .MlirAttribute => |attr| .{ .MlirAttribute = attr },
-        .MlirModule => |mod| .{ .MlirModule = mlir.Module.fromOperation(mlir.Operation.clone(mod.getOperation())) },
-        .Range => |rng| .{ .Range = rng },
-        .Function => |func| .{ .Function = func },
-        .Code => |code| blk: {
-            var captures = try std.ArrayList(CodeBinding).initCapacity(gpa, code.captures.items.len);
-            errdefer {
-                for (captures.items) |*binding| binding.value.destroy(gpa);
-                captures.deinit(gpa);
-            }
-            for (code.captures.items) |binding| {
-                captures.appendAssumeCapacity(.{ .name = binding.name, .value = try cloneComptimeValue(gpa, binding.value) });
-            }
-            break :blk .{ .Code = .{ .block = code.block, .ast = code.ast, .captures = captures } };
-        },
-    };
-}
-
-pub fn hashComptimeValue(value: ComptimeValue) u64 {
-    var hasher = std.hash.Wyhash.init(0);
-    hasher.update(&.{@intFromEnum(value)});
-    switch (value) {
-        .Void => {},
-        .Int => |v| hasher.update(std.mem.asBytes(&v)),
-        .Float => |v| hasher.update(std.mem.asBytes(&@as(u64, @bitCast(v)))),
-        .Bool => |v| hasher.update(&.{if (v) 1 else 0}),
-        .String => |s| {
-            hasher.update(std.mem.asBytes(&s.len));
-            hasher.update(s);
-        },
-        .Type => |t| {
-            const r = t.toRaw();
-            hasher.update(std.mem.asBytes(&r));
-        },
-        .MlirType => |t| hasher.update(std.mem.asBytes(&t.handle)),
-        .MlirAttribute => |a| hasher.update(std.mem.asBytes(&a.handle)),
-        .MlirModule => |m| hasher.update(std.mem.asBytes(&m.handle)),
-        .Sequence => |s| {
-            hasher.update(std.mem.asBytes(&s.values.items.len));
-            for (s.values.items) |i| hasher.update(std.mem.asBytes(&hashComptimeValue(i)));
-        },
-        .Struct => |s| {
-            hasher.update(std.mem.asBytes(&s.fields.items.len));
-            for (s.fields.items) |f| {
-                hasher.update(std.mem.asBytes(&f.name));
-                hasher.update(std.mem.asBytes(&hashComptimeValue(f.value)));
-            }
-            if (s.owner) |o| hasher.update(std.mem.asBytes(&o));
-        },
-        .Variant => |v| {
-            hasher.update(std.mem.asBytes(&v.tag));
-            if (v.payload) |p| {
-                const h = hashComptimeValue(p.*);
-                hasher.update(std.mem.asBytes(&h));
-            }
-        },
-        .Map => |m| {
-            hasher.update(std.mem.asBytes(&m.entries.items.len));
-            for (m.entries.items) |e| {
-                hasher.update(std.mem.asBytes(&hashComptimeValue(e.key)));
-                hasher.update(std.mem.asBytes(&hashComptimeValue(e.value)));
-            }
-        },
-        .Pointer => |p| {
-            const h = hashComptimeValue(p.*);
-            hasher.update(std.mem.asBytes(&h));
-        },
-        .Function => |f| {
-            const r = f.expr.toRaw();
-            hasher.update(std.mem.asBytes(&r));
-        },
-        .Code => |c| {
-            const r = c.block.toRaw();
-            const fid: u32 = @intCast(c.ast.file_id);
-            hasher.update(std.mem.asBytes(&r));
-            hasher.update(std.mem.asBytes(&fid));
-            hasher.update(std.mem.asBytes(&c.captures.items.len));
-            for (c.captures.items) |cap| {
-                hasher.update(std.mem.asBytes(&cap.name));
-                hasher.update(std.mem.asBytes(&hashComptimeValue(cap.value)));
-            }
-        },
-        .Range => |r| hasher.update(std.mem.asBytes(&.{ r.start, r.end, r.inclusive })),
-    }
-    return hasher.final();
-}
-
-pub fn mangleMonomorphName(self: *LowerTir, base: tir.StrId, bindings: []const BindingInfo) !tir.StrId {
+pub fn mangleMonomorphName(self: *LowerTir, store: *ValueStore, base: tir.StrId, bindings: []const BindingInfo) !tir.StrId {
     var buf = List(u8).init(self.gpa);
     defer buf.deinit();
     try buf.appendSlice(self.context.type_store.strs.get(base));
@@ -716,99 +656,9 @@ pub fn mangleMonomorphName(self: *LowerTir, base: tir.StrId, bindings: []const B
         var w = buf.writer();
         switch (info.kind) {
             .type_param => |ty| try w.print("T{}", .{ty.toRaw()}),
-            .value_param => |vp| try w.print("V{}x{X}", .{ vp.ty.toRaw(), hashComptimeValue(vp.value) }),
+            .value_param => |vp| try w.print("V{}x{X}", .{ vp.ty.toRaw(), store.hashValue(vp.value) }),
             .runtime_param => |ty| try w.print("R{}", .{ty.toRaw()}),
         }
     }
     return self.context.type_store.strs.intern(buf.items);
-}
-
-pub const SpecializationContext = struct {
-    specialized_ty: types.TypeId,
-    skip_params: usize,
-    bindings: []const BindingInfo,
-};
-
-pub const SpecializationRequest = struct {
-    decl_id: ast.DeclId,
-    mangled_name: tir.StrId,
-    specialized_ty: types.TypeId,
-    skip_params: usize,
-    bindings: []const BindingInfo,
-};
-
-pub fn lowerSpecializedFunction(self: *LowerTir, ctx: *LowerTir.LowerContext, a: *ast.Ast, b: *tir.Builder, req: *const SpecializationRequest) !void {
-    const decl = a.exprs.Decl.get(req.decl_id);
-    if (a.kind(decl.value) == .FunctionLit) {
-        const fn_lit = a.exprs.get(.FunctionLit, decl.value);
-        if (!fn_lit.body.isNone() and a.kind(fn_lit.body.unwrap()) == .Block) {
-            const blk = a.exprs.get(.Block, fn_lit.body.unwrap());
-            // Optimization: Use HashMap for O(1) alias lookups instead of linear scan lists
-            var alias_map = std.AutoHashMapUnmanaged(ast.StrId, types.TypeId){};
-            defer alias_map.deinit(self.gpa);
-
-            for (a.stmts.stmt_pool.slice(blk.items)) |sid| {
-                if (a.kind(sid) != .Decl) continue;
-                const sd = a.stmts.get(.Decl, sid);
-                const d2 = a.exprs.Decl.get(sd.decl);
-
-                // Alias Gathering
-                if (!d2.pattern.isNone() and a.kind(d2.pattern.unwrap()) == .Binding) {
-                    const bname = a.pats.get(.Binding, d2.pattern.unwrap()).name;
-                    if (evaluateTypeExpr(self, ctx, a, d2.value)) |tval| {
-                        try alias_map.put(self.gpa, bname, tval);
-                    } else |_| {}
-                }
-
-                // Method Registration
-                if (!d2.method_path.isNone() and a.kind(d2.value) == .FunctionLit) {
-                    const seg_ids = a.exprs.method_path_pool.slice(d2.method_path.asRange());
-                    if (seg_ids.len < 2) continue;
-
-                    const owner_name = a.exprs.MethodPathSeg.get(seg_ids[0]).name;
-                    const method_name = a.exprs.MethodPathSeg.get(seg_ids[seg_ids.len - 1]).name;
-
-                    const owner_ty = alias_map.get(owner_name) orelse (self.lookupComptimeAliasType(a, owner_name) orelse continue);
-
-                    const mfn = a.exprs.get(.FunctionLit, d2.value);
-                    const param_ids = a.exprs.param_pool.slice(mfn.params);
-                    var param_types = std.ArrayList(types.TypeId).init(self.gpa);
-                    defer param_types.deinit();
-
-                    var receiver_kind: types.MethodReceiverKind = .none;
-
-                    for (param_ids, 0..) |pid2, i| {
-                        const p = a.exprs.Param.get(pid2);
-                        const pty = if (!p.ty.isNone()) (evaluateTypeExpr(self, ctx, a, p.ty.unwrap()) catch self.context.type_store.tAny()) else self.context.type_store.tAny();
-                        try param_types.append(pty);
-
-                        if (i == 0 and !p.pat.isNone() and a.kind(p.pat.unwrap()) == .Binding) {
-                            if (std.mem.eql(u8, a.exprs.strs.get(a.pats.get(.Binding, p.pat.unwrap()).name), "self")) {
-                                const k = self.context.type_store.getKind(pty);
-                                if (k == .Ptr) {
-                                    const pr = self.context.type_store.get(.Ptr, pty);
-                                    if (pr.elem.eq(owner_ty)) receiver_kind = if (pr.is_const) .pointer_const else .pointer;
-                                } else if (pty.eq(owner_ty)) receiver_kind = .value;
-                            }
-                        }
-                    }
-
-                    const res_ty = if (!mfn.result_ty.isNone()) (evaluateTypeExpr(self, ctx, a, mfn.result_ty.unwrap()) catch self.context.type_store.tVoid()) else self.context.type_store.tVoid();
-
-                    _ = self.context.type_store.addMethod(.{
-                        .owner_type = owner_ty,
-                        .method_name = method_name,
-                        .decl_id = sd.decl,
-                        .decl_ast = a,
-                        .func_expr = d2.value,
-                        .func_type = self.context.type_store.mkFunction(param_types.items, res_ty, mfn.flags.is_variadic, true, mfn.flags.is_extern),
-                        .self_param_type = null,
-                        .receiver_kind = receiver_kind,
-                        .builtin = null,
-                    }) catch {};
-                }
-            }
-        }
-    }
-    try self.lowerFunction(ctx, a, b, req.mangled_name, decl.value);
 }

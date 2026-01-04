@@ -58,3 +58,41 @@ tag :: proc(comptime info: TypeInfo) string {
 isKind :: proc(comptime info: TypeInfo, kind: string) bool {
     return str.eq(tag(info), kind)
 }
+
+code_empty :: proc() Code {
+    return code { }
+}
+
+code_concat :: proc(left: Code, right: Code) Code {
+    return code {
+        `left`
+        `right`
+    }
+}
+
+code_join :: proc(comptime blocks: []Code) Code {
+    if blocks.len == 0 {
+        return code_empty()
+    }
+
+    out := blocks[0]
+    for b in blocks[1..blocks.len] {
+        out = code_concat(out, b)
+    }
+    return out
+}
+
+code_expr :: proc(comptime value: any) Code {
+    return code { `value` }
+}
+
+
+// CodeInfo :: typeof(codeinfo(code {}))
+
+// codeInfo :: proc(comptime c: Code) CodeInfo {
+//     return codeinfo(c)
+// }
+
+// codeFromInfo :: proc(comptime info: CodeInfo) Code {
+//     return codeFromInfo(info)
+// }

@@ -1,0 +1,39 @@
+package debug_mem
+
+io :: import "std/io"
+mem :: import "std/mem"
+
+test "debug_mem: simple eql" {
+    a_arr := [1, 2]
+    b_arr := [1, 2]
+    a := a_arr[0..2]
+    b := b_arr[0..2]
+    
+    // Explicit loop to see if it works outside of generic function
+    if a.len != b.len { return Error.Fail }
+    for i in 0 .. a.len {
+        v1 := a[i]
+        v2 := b[i]
+        if v1 != v2 { return Error.Fail }
+    }
+
+    if !mem.eql(i32, a, b) {
+        io.println("mem.eql returned false unexpectedly", ..())
+        return Error.Fail
+    }
+}
+
+test "debug_mem: simple index_of_scalar" {
+    arr_arr := [10, 20]
+    arr := arr_arr[0..2]
+    
+    idx := mem.index_of_scalar(i32, arr, 20)
+    if idx == null {
+        io.println("mem.index_of_scalar returned null unexpectedly", ..())
+        return Error.Fail 
+    }
+    if idx? != 1 { 
+        io.println("mem.index_of_scalar returned %d, expected 1", idx?)
+        return Error.Fail 
+    }
+}

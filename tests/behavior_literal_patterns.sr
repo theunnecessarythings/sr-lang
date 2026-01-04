@@ -14,14 +14,13 @@ test "patterns: match with integer literal" {
 }
 
 test "patterns: match with string literal" {
-    return Error.Fail
-    // s := "world"
-    // result := match s {
-    //     "hello" => "Greeting",
-    //     "world" => "Target",
-    //     _ => "Unknown",
-    // }
-    // if !testing.expect_equal_str("Target", result) { return Error.Fail }
+    s := "world"
+    result := match s {
+        "hello" => "Greeting",
+        "world" => "Target",
+        _ => "Unknown",
+    }
+    if !testing.expect_equal_str("Target", result) { return Error.Fail }
 }
 
 test "patterns: match with boolean literal" {

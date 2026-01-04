@@ -33,6 +33,7 @@ checker_ctx: List(?*CheckerContext), // Indexed by file_id
 expr_id_scratch: List(ast.ExprId) = .{},
 expr_id_scratch_marks: List(usize) = .{},
 cached_typeinfo_ty: ?types.TypeId = null,
+cached_codeinfo_ty: ?types.TypeId = null,
 
 /// Per-AST context that tracks symbol tables, loops, matches, and diagnostic state.
 pub const CheckerContext = struct {
@@ -91,7 +92,6 @@ pub const CheckerContext = struct {
         self.resolving_type_decls.deinit(gpa);
         self.resolving_type_exprs.deinit(gpa);
         self.param_specializations.deinit(gpa);
-        for (self.comptime_alias_bindings.items) |*b| b.value.destroy(gpa);
         self.comptime_alias_bindings.deinit(gpa);
         self.specialization_cache.deinit(gpa);
         self.spec_arena.deinit();
@@ -107,7 +107,7 @@ const MatchBindingCtx = struct { pat: ast.PatternId, subject_ty: types.TypeId };
 const CatchBindingCtx = struct { name: ast.StrId, ty: types.TypeId };
 const StringPayload = struct { value: []const u8 };
 pub const ParamSpecialization = struct { name: ast.StrId, ty: types.TypeId };
-pub const ComptimeParamBinding = struct { name: ast.StrId, ty: types.TypeId, value: comp.ComptimeValue };
+pub const ComptimeParamBinding = struct { name: ast.StrId, ty: types.TypeId, value: comp.ValueId };
 const InsertTarget = union(enum) {
     unit: void,
     block: struct { block_id: ast.ExprId, scope_id: symbols.ScopeId },
@@ -131,7 +131,7 @@ const LoopCtx = struct {
 // --- Checker Lifecycle ---
 
 pub fn init(gpa: std.mem.Allocator, context: *Context, pipeline: *Pipeline) Checker {
-    return .{ .gpa = gpa, .context = context, .pipeline = pipeline, .checker_ctx = .{}, .expr_id_scratch = .empty, .expr_id_scratch_marks = .empty, .cached_typeinfo_ty = null };
+    return .{ .gpa = gpa, .context = context, .pipeline = pipeline, .checker_ctx = .{}, .expr_id_scratch = .{}, .expr_id_scratch_marks = .{}, .cached_typeinfo_ty = null, .cached_codeinfo_ty = null };
 }
 
 pub fn deinit(self: *Checker) void {
@@ -197,7 +197,12 @@ pub fn run(self: *Checker, levels: *const compile.DependencyLevels) !void {
         for (level.items) |fid| {
             const ast_unit = ast_by_file_id[fid] orelse continue;
             const ctx = self.checker_ctx.items[fid].?;
-            for (ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls)) |did| try self.checkDecl(ctx, ast_unit, did);
+            const decl_ids = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
+            // Copy to avoid invalidation if inserts mutate decl_pool during checking.
+            const decl_copy = try self.gpa.alloc(ast.DeclId, decl_ids.len);
+            defer self.gpa.free(decl_copy);
+            @memcpy(decl_copy, decl_ids);
+            for (decl_copy) |did| try self.checkDecl(ctx, ast_unit, did);
         }
     }
 }
@@ -206,7 +211,12 @@ pub fn run(self: *Checker, levels: *const compile.DependencyLevels) !void {
 pub fn runAst(self: *Checker, ast_unit: *ast.Ast, ctx: *CheckerContext) !void {
     try self.ensureInterpreter(ast_unit, ctx);
     try self.predeclare(ast_unit, ctx);
-    for (ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls)) |did| try self.checkDecl(ctx, ast_unit, did);
+    const decl_ids = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
+    // Copy to avoid invalidation if inserts mutate decl_pool during checking.
+    const decl_copy = try self.gpa.alloc(ast.DeclId, decl_ids.len);
+    defer self.gpa.free(decl_copy);
+    @memcpy(decl_copy, decl_ids);
+    for (decl_copy) |did| try self.checkDecl(ctx, ast_unit, did);
 }
 
 // --- Stack & State Management Helpers ---
@@ -351,14 +361,48 @@ fn bindingNameOfPattern(ast_unit: *ast.Ast, pid: ast.PatternId) ?ast.StrId {
     return if (ast_unit.kind(pid) == .Binding) ast_unit.pats.get(.Binding, pid).name else null;
 }
 
-fn destroyComptimeBindings(self: *Checker, bindings: []const check_types.Binding) void {
-    for (bindings) |b| switch (b) {
-        .Value => |val| {
-            var v = val;
-            v.value.destroy(self.gpa);
-        },
-        else => {},
-    };
+fn destroyComptimeBindings(_: *Checker, _: []const check_types.Binding) void {}
+
+fn recordComptimeBlockSnapshot(
+    self: *Checker,
+    ast_unit: *ast.Ast,
+    expr_id: ast.ExprId,
+    baseline: *const std.AutoArrayHashMapUnmanaged(ast.StrId, comp.ValueId),
+) !void {
+    const count = ast_unit.type_info.comptime_bindings.count();
+    if (count == 0) return;
+
+    var diff_count: usize = 0;
+    var it = ast_unit.type_info.comptime_bindings.iterator();
+    while (it.next()) |entry| {
+        if (baseline.get(entry.key_ptr.*)) |prev| {
+            if (prev == entry.value_ptr.value) continue;
+        }
+        diff_count += 1;
+    }
+    if (diff_count == 0) return;
+
+    const names = try self.gpa.alloc(ast.StrId, diff_count);
+    const tys = try self.gpa.alloc(types.TypeId, diff_count);
+    const vals = try self.gpa.alloc(comp.ValueId, diff_count);
+    defer {
+        self.gpa.free(names);
+        self.gpa.free(tys);
+        self.gpa.free(vals);
+    }
+
+    var i: usize = 0;
+    it = ast_unit.type_info.comptime_bindings.iterator();
+    while (it.next()) |entry| {
+        if (baseline.get(entry.key_ptr.*)) |prev| {
+            if (prev == entry.value_ptr.value) continue;
+        }
+        names[i] = entry.key_ptr.*;
+        tys[i] = entry.value_ptr.ty;
+        vals[i] = entry.value_ptr.value;
+        i += 1;
+    }
+    try ast_unit.type_info.storeComptimeBlockSnapshot(expr_id, names, tys, vals);
 }
 
 pub inline fn pushMatchBinding(self: *Checker, ctx: *CheckerContext, pat: ast.PatternId, subj: types.TypeId) !void {
@@ -437,7 +481,7 @@ fn loopCtxForLabel(_: *Checker, ctx: *CheckerContext, opt_label: ast.OptStrId) ?
 }
 
 fn appendComptimeValueBinding(self: *Checker, ast_unit: *ast.Ast, bindings: *List(check_types.Binding), pname: ast.StrId, ty: types.TypeId) !void {
-    if (ast_unit.type_info.cloneComptimeBindingValue(self.gpa, pname) catch null) |v| try bindings.append(self.gpa, .{ .Value = .{ .name = pname, .value = v, .ty = ty } });
+    if (ast_unit.type_info.comptime_bindings.get(pname)) |e| try bindings.append(self.gpa, .{ .Value = .{ .name = pname, .value = e.value, .ty = ty } });
 }
 
 fn getModuleSymtab(ctx: *anyopaque, file_id: u32) ?*symbols.SymbolStore {
@@ -592,7 +636,7 @@ pub fn ensureInterpreter(self: *Checker, ast_unit: *ast.Ast, ctx: *CheckerContex
             var tmp = List(interpreter.Binding){};
             defer tmp.deinit(self.gpa);
             var it = ast_unit.type_info.comptime_bindings.iterator();
-            while (it.next()) |e| try tmp.append(self.gpa, .{ .name = e.key_ptr.*, .value = try comp.cloneComptimeValue(self.gpa, e.value_ptr.value) });
+            while (it.next()) |e| try tmp.append(self.gpa, .{ .name = e.key_ptr.*, .value = e.value_ptr.value, .store = &ast_unit.type_info.val_store });
             ctx.stored_comptime_scope = try ctx.interp.?.pushBindings(&tmp);
         }
     }
@@ -644,10 +688,9 @@ pub fn evalComptimeExprBorrowed(
     ast_unit: *ast.Ast,
     expr: ast.ExprId,
     bindings: []const Pipeline.ComptimeBinding,
-) anyerror!*const comp.ComptimeValue {
+) anyerror!*const comp.ValueId {
     try self.ensureInterpreter(ast_unit, ctx);
 
-    // Check cache first
     if (ast_unit.type_info.getComptimeValue(expr)) |cached| return cached;
 
     const interp = &ctx.interp.?;
@@ -658,7 +701,6 @@ pub fn evalComptimeExprBorrowed(
     defer {
         if (has_scope) {
             binding_scope.deinit();
-            for (alias_bindings.items) |*b| b.value.destroy(self.gpa);
             alias_bindings.clearRetainingCapacity();
         }
     }
@@ -667,25 +709,26 @@ pub fn evalComptimeExprBorrowed(
         try alias_bindings.ensureTotalCapacity(self.gpa, bindings.len);
         for (bindings) |b| {
             const val = switch (b) {
-                .type_param => interpreter.Binding{ .name = b.type_param.name, .value = .{ .Type = b.type_param.ty } },
-                .value_param => interpreter.Binding{ .name = b.value_param.name, .value = try comp.cloneComptimeValue(self.gpa, b.value_param.value) },
+                .type_param => interpreter.Binding{ .name = b.type_param.name, .value = interp.store().add(.Type, .{ .ty = b.type_param.ty }), .store = interp.store() },
+                .value_param => blk: {
+                    const src_store = @constCast(b.value_param.store);
+                    const value_id = if (src_store == interp.store()) b.value_param.value else try interp.store().cloneValue(src_store, b.value_param.value);
+                    break :blk interpreter.Binding{ .name = b.value_param.name, .value = value_id, .store = interp.store() };
+                },
             };
             alias_bindings.appendAssumeCapacity(val);
         }
         binding_scope = try interp.pushBindings(alias_bindings);
     }
 
-    var computed = try interp.evalExpr(expr);
-    defer computed.destroy(self.gpa);
-
-    const stored = try comp.cloneComptimeValue(ast_unit.type_info.gpa, computed);
-    try ast_unit.type_info.setComptimeValue(expr, stored);
+    const computed = try interp.evalExpr(expr);
+    try ast_unit.type_info.setComptimeValue(expr, computed);
     return ast_unit.type_info.getComptimeValue(expr).?;
 }
 
-pub fn evalComptimeExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, expr: ast.ExprId, bindings: []const Pipeline.ComptimeBinding) anyerror!comp.ComptimeValue {
+pub fn evalComptimeExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, expr: ast.ExprId, bindings: []const Pipeline.ComptimeBinding) anyerror!comp.ValueId {
     const borrowed = try self.evalComptimeExprBorrowed(ctx, ast_unit, expr, bindings);
-    return comp.cloneComptimeValue(self.gpa, borrowed.*);
+    return borrowed.*;
 }
 
 // =========================================================
@@ -712,6 +755,20 @@ pub fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_
         if (expect_ok) {
             expect_ty = res[1];
             ast_unit.type_info.decl_types.items[decl_id.toRaw()] = expect_ty.?;
+        }
+    }
+
+    if (decl.ty.isNone()) {
+        const vkind = ast_unit.kind(decl.value);
+        const is_type_expr = switch (vkind) {
+            .TupleType, .ArrayType, .DynArrayType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType => true,
+            else => false,
+        };
+        if (is_type_expr) {
+            if (try check_types.findAnyTypeExpr(self.gpa, ast_unit, decl.value)) |any_id| {
+                try self.context.diags.addError(exprLocFromId(ast_unit, any_id), .invalid_any_type_annotation, .{});
+                return;
+            }
         }
     }
 
@@ -767,29 +824,23 @@ pub fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_
             var binding_ty = expect_ty orelse rhs_ty;
 
             if (self.evalComptimeExpr(ctx, ast_unit, decl.value, &[_]Pipeline.ComptimeBinding{}) catch null) |computed| {
-                var val = computed;
-                defer val.destroy(self.gpa);
+                const s = &ast_unit.type_info.val_store;
 
                 // Narrow `const T: type = int`
-                if (self.typeKind(binding_ty) == .TypeType and computed == .Type) {
+                if (self.typeKind(binding_ty) == .TypeType and s.kind(computed) == .Type) {
                     const of = self.context.type_store.get(.TypeType, binding_ty).of;
                     if (self.typeKind(of) == .Any or of.eq(binding_ty)) {
-                        binding_ty = self.context.type_store.mkTypeType(computed.Type);
+                        binding_ty = self.context.type_store.mkTypeType(s.get(.Type, computed).ty);
                         rhs_ty = binding_ty;
                         ast_unit.type_info.decl_types.items[decl_id.toRaw()] = binding_ty;
                         ast_unit.type_info.expr_types.items[decl.value.toRaw()] = binding_ty;
                     }
                 }
 
-                const cloned = try comp.cloneComptimeValue(ast_unit.type_info.gpa, computed);
-                try ast_unit.type_info.setComptimeBinding(binding.name, binding_ty, cloned);
+                try ast_unit.type_info.setComptimeBinding(binding.name, binding_ty, computed);
 
                 if (ctx.interp) |*interp| {
-                    var ic = try comp.cloneComptimeValue(self.gpa, computed);
-                    interp.setBinding(binding.name, ic) catch |e| {
-                        ic.destroy(self.gpa);
-                        return e;
-                    };
+                    interp.setBinding(binding.name, computed) catch |e| return e;
                 }
             }
         }
@@ -962,17 +1013,14 @@ pub fn checkSpecializedFunction(
 
     if (comptime_params.len > 0 and ctx.interp != null) {
         var tmp = std.ArrayListUnmanaged(interpreter.Binding){};
-        defer {
-            for (tmp.items) |*b| b.value.destroy(self.gpa);
-            tmp.deinit(self.gpa);
-        }
+        defer tmp.deinit(self.gpa);
         try tmp.ensureTotalCapacity(self.gpa, comptime_params.len);
-        for (comptime_params) |b| tmp.appendAssumeCapacity(.{ .name = b.name, .value = try comp.cloneComptimeValue(self.gpa, b.value) });
+        for (comptime_params) |b| tmp.appendAssumeCapacity(.{ .name = b.name, .value = b.value, .store = &ast_unit.type_info.val_store });
         interp_scope = try ctx.interp.?.pushBindings(&tmp);
     }
 
     // 3. Backup Comptime Bindings & Setup Values
-    const backup_struct = struct { name: ast.StrId, ty: ?types.TypeId, value: ?comp.ComptimeValue };
+    const backup_struct = struct { name: ast.StrId, ty: ?types.TypeId, value: ?comp.ValueId };
     var ct_backups = try std.ArrayListUnmanaged(backup_struct).initCapacity(self.gpa, comptime_params.len);
 
     var val_bindings = List(check_types.Binding){};
@@ -984,13 +1032,8 @@ pub fn checkSpecializedFunction(
             ast_unit.type_info.removeComptimeBinding(bk.name);
             if (bk.ty) |t| {
                 if (bk.value) |v| {
-                    const c = comp.cloneComptimeValue(ast_unit.type_info.gpa, v) catch continue;
-                    ast_unit.type_info.setComptimeBinding(bk.name, t, c) catch {};
+                    ast_unit.type_info.setComptimeBinding(bk.name, t, v) catch {};
                 }
-            }
-            if (bk.value) |val| {
-                var v = val;
-                v.destroy(self.gpa);
             }
         }
         ct_backups.deinit(self.gpa);
@@ -1001,17 +1044,12 @@ pub fn checkSpecializedFunction(
     }
 
     for (comptime_params) |b| {
-        const existing_val = ast_unit.type_info.cloneComptimeBindingValue(self.gpa, b.name) catch null;
+        const existing_val = if (ast_unit.type_info.comptime_bindings.get(b.name)) |e| e.value else null;
         ct_backups.appendAssumeCapacity(.{ .name = b.name, .ty = ast_unit.type_info.lookupComptimeBindingType(b.name), .value = existing_val });
 
-        var clone = try comp.cloneComptimeValue(ast_unit.type_info.gpa, b.value);
-        errdefer clone.destroy(ast_unit.type_info.gpa);
-        try ast_unit.type_info.setComptimeBinding(b.name, b.ty, clone);
+        try ast_unit.type_info.setComptimeBinding(b.name, b.ty, b.value);
 
-        const v = switch (b.value) {
-            .Type => |t| check_types.Binding{ .Value = .{ .name = b.name, .value = .{ .Type = t }, .ty = b.ty } },
-            else => check_types.Binding{ .Value = .{ .name = b.name, .value = try comp.cloneComptimeValue(self.gpa, b.value), .ty = b.ty } },
-        };
+        const v = check_types.Binding{ .Value = .{ .name = b.name, .value = b.value, .ty = b.ty } };
         val_bindings.appendAssumeCapacity(v);
     }
 
@@ -1024,11 +1062,8 @@ pub fn checkSpecializedFunction(
     try check_types.collectDeclExprs(self.gpa, ast_unit, decl_id, &self.expr_id_scratch);
     const expr_ids = self.expr_id_scratch.items[mark..];
 
-    var removed_cv = List(comp.ComptimeValue){};
-    defer {
-        for (removed_cv.items) |*v| v.destroy(ast_unit.type_info.gpa);
-        removed_cv.deinit(self.gpa);
-    }
+    var removed_cv = List(comp.ValueId){};
+    defer removed_cv.deinit(self.gpa);
 
     const TypeBackup = struct { idx: u32, ty: ?types.TypeId };
     var type_backups = try self.gpa.alloc(TypeBackup, expr_ids.len);
@@ -1088,7 +1123,7 @@ pub fn checkSpecializedFunction(
             const a = ctx.temp_arena.allocator();
             const names = try a.alloc(ast.StrId, comptime_params.len);
             const tys = try a.alloc(types.TypeId, comptime_params.len);
-            const vals = try a.alloc(comp.ComptimeValue, comptime_params.len);
+            const vals = try a.alloc(comp.ValueId, comptime_params.len);
             for (comptime_params, 0..) |b, i| {
                 names[i] = b.name;
                 tys[i] = b.ty;
@@ -2177,8 +2212,7 @@ fn checkStmt(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, sid: ast.
         .Insert => {
             const row = getStmt(ast_unit, .Insert, sid);
             _ = try self.checkExpr(ctx, ast_unit, row.expr);
-            var computed = try self.evalComptimeExpr(ctx, ast_unit, row.expr, &.{});
-            defer computed.destroy(self.gpa);
+            const computed = try self.evalComptimeExpr(ctx, ast_unit, row.expr, &.{});
             try self.expandInsertValue(ctx, ast_unit, computed, exprLoc(ast_unit, row));
         },
         .Return => return try self.checkReturn(ctx, ast_unit, getStmt(ast_unit, .Return, sid)),
@@ -2222,8 +2256,26 @@ pub fn checkExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: a
             try self.pushAllowInsertTarget(ctx, false);
             defer self.popAllowInsertTarget(ctx);
             const res = try self.checkExpr(ctx, ast_unit, cb.block);
-            var computed = try self.evalComptimeExpr(ctx, ast_unit, cb.block, &.{});
-            computed.destroy(self.gpa);
+            var baseline = std.AutoArrayHashMapUnmanaged(ast.StrId, comp.ValueId){};
+            defer baseline.deinit(self.gpa);
+            if (!self.isValueReq(ctx)) {
+                const count = ast_unit.type_info.comptime_bindings.count();
+                if (count > 0) {
+                    try baseline.ensureTotalCapacity(self.gpa, count);
+                    var it = ast_unit.type_info.comptime_bindings.iterator();
+                    while (it.next()) |entry| {
+                        try baseline.put(self.gpa, entry.key_ptr.*, entry.value_ptr.value);
+                    }
+                }
+            }
+            _ = self.evalComptimeExpr(ctx, ast_unit, cb.block, &.{}) catch |err| {
+                const err_name: []const u8 = @errorName(err);
+                try self.context.diags.addError(exprLoc(ast_unit, cb), .comptime_eval_failed, .{err_name});
+                return self.context.type_store.tTypeError();
+            };
+            if (!self.isValueReq(ctx)) {
+                try self.recordComptimeBlockSnapshot(ast_unit, id, &baseline);
+            }
             break :blk res;
         },
         .AsyncBlock => try self.checkAsyncBlock(ctx, ast_unit, id),
@@ -2259,10 +2311,6 @@ pub fn checkExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: a
 
         // Type Expressions
         .TupleType, .ArrayType, .DynArrayType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType => blk: {
-            if (try check_types.findAnyTypeExpr(self.gpa, ast_unit, id)) |any_id| {
-                try self.context.diags.addError(exprLocFromId(ast_unit, any_id), .invalid_any_type_annotation, .{});
-                break :blk self.context.type_store.tTypeError();
-            }
             const res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, id);
             break :blk if (res[0]) self.context.type_store.mkTypeType(res[1]) else self.context.type_store.tTypeError();
         },
@@ -2712,6 +2760,9 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
             // 2. Optional Comparison (eq/neq only)
             const is_eq = bin.op == .eq or bin.op == .neq;
             if (is_eq) {
+                if (l_k == .String and r_k == .String) {
+                    return self.context.type_store.tBool();
+                }
                 if ((l_k == .Optional) != (r_k == .Optional)) {
                     const opt = if (l_k == .Optional) l else r;
                     const other = if (l_k == .Optional) r else l;
@@ -2738,7 +2789,7 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
             var match = false;
             // Strict types
             if (l.eq(r)) {
-                if (l_k == .Enum or l_k == .Error or l_k == .Bool) match = true;
+                if (l_k == .Enum or l_k == .Error or l_k == .Bool or l_k == .TypeType) match = true;
                 if (is_eq and l_k == .Error) return self.context.type_store.tBool();
             }
 
@@ -2853,8 +2904,7 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     {
         var iter = ast_unit.type_info.comptime_bindings.iterator();
         while (iter.next()) |entry| {
-            const cloned = try comp.cloneComptimeValue(self.gpa, entry.value_ptr.value);
-            try value_bindings.append(self.gpa, .{ .Value = .{ .name = entry.key_ptr.*, .value = cloned, .ty = entry.value_ptr.ty } });
+            try value_bindings.append(self.gpa, .{ .Value = .{ .name = entry.key_ptr.*, .value = entry.value_ptr.value, .ty = entry.value_ptr.ty } });
         }
     }
 
@@ -2963,22 +3013,24 @@ fn checkParam(
                 }
 
                 if (pat_id) |pidx| {
+                    var pattern_ok = true;
                     switch (pattern_matching.checkPatternShapeForDecl(self, ast_unit, pidx, pt)) {
                         .ok => {},
                         .tuple_arity_mismatch => {
                             try self.context.diags.addError(exprLocFromId(ast_unit, ty_expr), .tuple_arity_mismatch, .{ @as(i64, @intCast(tuplePatternLength(ast_unit, pidx))), @as(i64, @intCast(tupleTypeLength(self, pt))) });
-                            return self.context.type_store.tTypeError();
+                            pattern_ok = false;
                         },
                         .struct_pattern_field_mismatch => {
                             const fstr = if (structPatternFieldName(ast_unit, pidx)) |n| getStr(ast_unit, n) else "pattern field";
                             try self.context.diags.addError(exprLocFromId(ast_unit, ty_expr), .struct_pattern_field_mismatch, StringPayload{ .value = fstr });
-                            return self.context.type_store.tTypeError();
+                            pattern_ok = false;
                         },
                         .pattern_shape_mismatch => {
                             try self.context.diags.addError(exprLocFromId(ast_unit, ty_expr), .pattern_shape_mismatch, StringPayload{ .value = "pattern shape mismatch" });
-                            return self.context.type_store.tTypeError();
+                            pattern_ok = false;
                         },
                     }
+                    if (!pattern_ok) pt = self.context.type_store.tTypeError();
                 }
             }
         }
@@ -3029,25 +3081,16 @@ fn checkParamDefault(
     }
 
     if (is_comptime and param_name != null) {
-        var def_val = self.evalComptimeExpr(ctx, ast_unit, val_expr, &[_]Pipeline.ComptimeBinding{}) catch {
+        const def_val = self.evalComptimeExpr(ctx, ast_unit, val_expr, &[_]Pipeline.ComptimeBinding{}) catch {
             try self.context.diags.addError(exprLocFromId(ast_unit, val_expr), .checker_comptime_not_executed, .{});
             return;
         };
-        defer def_val.destroy(self.gpa);
 
-        const cloned = try comp.cloneComptimeValue(ast_unit.type_info.gpa, def_val);
-        try ast_unit.type_info.setComptimeBinding(param_name.?, param_ty, cloned);
-
-        var binding_clone = try comp.cloneComptimeValue(self.gpa, def_val);
-        errdefer binding_clone.destroy(self.gpa);
-        try value_bindings.append(self.gpa, .{ .Value = .{ .name = param_name.?, .value = binding_clone, .ty = param_ty } });
+        try ast_unit.type_info.setComptimeBinding(param_name.?, param_ty, def_val);
+        try value_bindings.append(self.gpa, .{ .Value = .{ .name = param_name.?, .value = def_val, .ty = param_ty } });
 
         if (ctx.interp) |*interp| {
-            var interp_clone = try comp.cloneComptimeValue(self.gpa, def_val);
-            interp.setBinding(param_name.?, interp_clone) catch |err| {
-                interp_clone.destroy(self.gpa);
-                return err;
-            };
+            try interp.setBinding(param_name.?, def_val);
         }
     }
 }
@@ -3871,7 +3914,11 @@ fn checkStructLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
             if (!try self.checkMissingFields(ctx, ast_unit, struct_lit, buf, expect_ty)) return ts.tTypeError();
         },
         .unknown_struct_field => {
-            const expect_fields = ts.field_pool.slice(ts.get(.Struct, expect_ty).fields);
+            const expect_fields = switch (self.typeKind(expect_ty)) {
+                .Struct => ts.field_pool.slice(ts.get(.Struct, expect_ty).fields),
+                .Union => ts.field_pool.slice(ts.get(.Union, expect_ty).fields),
+                else => &[_]types.FieldId{},
+            };
             for (buf) |provided| {
                 if (self.findFieldByName(expect_fields, provided.name) == null) {
                     try diags.addError(exprLoc(ast_unit, struct_lit), .unknown_struct_field, StringPayload{ .value = getStr(ast_unit, provided.name) });
@@ -4213,6 +4260,54 @@ fn checkSpecialForms(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, i
 
             return ts.tU64();
         }
+        if (std.mem.eql(u8, getStr(ast_unit, idr.name), "codeinfo")) {
+            if (args.len != 1) {
+                try self.context.diags.addError(exprLoc(ast_unit, call_expr), .argument_count_mismatch, .{ 1, @as(i64, @intCast(args.len)) });
+                return ts.tTypeError();
+            }
+            try self.pushValueReq(ctx, true);
+            const arg_ty = try self.checkExpr(ctx, ast_unit, args[0]);
+            self.popValueReq(ctx);
+            if (self.typeKind(arg_ty) == .TypeError) return ts.tTypeError();
+
+            try ast_unit.type_info.ensureExpr(self.gpa, id);
+            const info_ty = self.codeInfoResultType();
+            ast_unit.type_info.expr_types.items[id.toRaw()] = info_ty;
+
+            const code_ty = ts.tCode();
+            const fn_ty = ts.mkFunction(&.{code_ty}, info_ty, false, true, false);
+            try ast_unit.type_info.ensureExpr(self.gpa, call_expr.callee);
+            ast_unit.type_info.expr_types.items[call_expr.callee.toRaw()] = fn_ty;
+
+            _ = self.evalComptimeExprBorrowed(ctx, ast_unit, id, &.{}) catch {};
+            return info_ty;
+        }
+        if (std.mem.eql(u8, getStr(ast_unit, idr.name), "codeFromInfo")) {
+            if (args.len != 1) {
+                try self.context.diags.addError(exprLoc(ast_unit, call_expr), .argument_count_mismatch, .{ 1, @as(i64, @intCast(args.len)) });
+                return ts.tTypeError();
+            }
+            try self.pushValueReq(ctx, true);
+            const arg_ty = try self.checkExpr(ctx, ast_unit, args[0]);
+            self.popValueReq(ctx);
+            if (self.typeKind(arg_ty) == .TypeError) return ts.tTypeError();
+
+            // Should verify arg_ty is CodeInfo?
+            // CodeInfo is the variant type generated by codeInfoResultType().
+            // Ideally we check compatibility. For now, assume correct usage.
+
+            try ast_unit.type_info.ensureExpr(self.gpa, id);
+            const code_ty = ts.tCode();
+            ast_unit.type_info.expr_types.items[id.toRaw()] = code_ty;
+
+            const info_ty = self.codeInfoResultType();
+            const fn_ty = ts.mkFunction(&.{info_ty}, code_ty, false, true, false);
+            try ast_unit.type_info.ensureExpr(self.gpa, call_expr.callee);
+            ast_unit.type_info.expr_types.items[call_expr.callee.toRaw()] = fn_ty;
+
+            _ = self.evalComptimeExprBorrowed(ctx, ast_unit, id, &.{}) catch {};
+            return code_ty;
+        }
         if (std.mem.eql(u8, getStr(ast_unit, idr.name), "typeinfo")) {
             if (args.len != 1) {
                 try self.context.diags.addError(exprLoc(ast_unit, call_expr), .argument_count_mismatch, .{ 1, @as(i64, @intCast(args.len)) });
@@ -4375,6 +4470,144 @@ fn typeInfoResultType(self: *Checker) types.TypeId {
 
     const info_ty = ts.mkVariant(cases);
     self.cached_typeinfo_ty = info_ty;
+    return info_ty;
+}
+
+fn codeInfoResultType(self: *Checker) types.TypeId {
+    if (self.cached_codeinfo_ty) |ty| return ty;
+    const ts = self.context.type_store;
+    const strs = ts.strs;
+
+    const void_payload = ts.tVoid();
+    const any_ty = ts.tAny();
+    // Recursive fields use Any for now
+    const code_info_ref = any_ty;
+    const code_info_slice = ts.mkSlice(code_info_ref, false);
+    const opt_code_info = ts.mkOptional(code_info_ref);
+
+    const bool_ty = ts.tBool();
+    const string_ty = ts.tString();
+
+    const literal_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = strs.intern("value"), .ty = any_ty },
+    }, 0);
+
+    const ident_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = strs.intern("name"), .ty = string_ty },
+    }, 0);
+
+    const block_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = strs.intern("stmts"), .ty = code_info_slice },
+    }, 0);
+
+    const decl_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = strs.intern("name"), .ty = string_ty },
+        .{ .name = strs.intern("value"), .ty = opt_code_info },
+        .{ .name = strs.intern("ty"), .ty = opt_code_info },
+        .{ .name = strs.intern("is_const"), .ty = bool_ty },
+    }, 0);
+
+    const binary_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = strs.intern("op"), .ty = string_ty },
+        .{ .name = strs.intern("left"), .ty = code_info_ref },
+        .{ .name = strs.intern("right"), .ty = code_info_ref },
+    }, 0);
+
+    const unary_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = strs.intern("op"), .ty = string_ty },
+        .{ .name = strs.intern("expr"), .ty = code_info_ref },
+    }, 0);
+
+    const if_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = strs.intern("cond"), .ty = code_info_ref },
+        .{ .name = strs.intern("then_block"), .ty = code_info_ref },
+        .{ .name = strs.intern("else_block"), .ty = opt_code_info },
+    }, 0);
+
+    const return_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = strs.intern("value"), .ty = opt_code_info },
+    }, 0);
+
+    const call_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = strs.intern("callee"), .ty = code_info_ref },
+        .{ .name = strs.intern("args"), .ty = code_info_slice },
+    }, 0);
+
+    const splice_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = strs.intern("name"), .ty = string_ty },
+    }, 0);
+
+    const insert_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = strs.intern("expr"), .ty = code_info_ref },
+    }, 0);
+
+    const field_access_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = strs.intern("parent"), .ty = code_info_ref },
+        .{ .name = strs.intern("field"), .ty = string_ty },
+    }, 0);
+
+    const index_access_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = strs.intern("collection"), .ty = code_info_ref },
+        .{ .name = strs.intern("index"), .ty = code_info_ref },
+    }, 0);
+
+    const array_lit_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = strs.intern("elems"), .ty = code_info_slice },
+    }, 0);
+
+    const struct_field_val_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = strs.intern("name"), .ty = string_ty },
+        .{ .name = strs.intern("value"), .ty = code_info_ref },
+    }, 0);
+
+    const struct_field_val_union = ts.mkVariant(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = strs.intern("Field"), .ty = struct_field_val_payload },
+        .{ .name = strs.intern("Spread"), .ty = code_info_ref }, // For spreads
+    });
+
+    const struct_lit_payload = ts.mkStruct(&[_]types.TypeStore.StructFieldArg{
+        .{ .name = strs.intern("fields"), .ty = ts.mkSlice(struct_field_val_union, false) },
+        .{ .name = strs.intern("ty"), .ty = opt_code_info },
+    }, 0);
+
+    var cases = std.ArrayList(types.TypeStore.StructFieldArg){ .items = &.{}, .capacity = 0 };
+
+    defer cases.deinit(self.gpa);
+
+    const addCase = struct {
+        fn add(list: *std.ArrayList(types.TypeStore.StructFieldArg), s: *types.StringInterner, name: []const u8, ty: types.TypeId, gpa: std.mem.Allocator) void {
+            list.append(gpa, .{ .name = s.intern(name), .ty = ty }) catch @panic("OOM");
+        }
+    }.add;
+
+    addCase(&cases, strs, "None", void_payload, self.gpa);
+
+    addCase(&cases, strs, "Literal", literal_payload, self.gpa);
+
+    addCase(&cases, strs, "Ident", ident_payload, self.gpa);
+
+    addCase(&cases, strs, "Block", block_payload, self.gpa);
+
+    addCase(&cases, strs, "Decl", decl_payload, self.gpa);
+
+    addCase(&cases, strs, "Binary", binary_payload, self.gpa);
+
+    addCase(&cases, strs, "Unary", unary_payload, self.gpa);
+
+    addCase(&cases, strs, "If", if_payload, self.gpa);
+
+    addCase(&cases, strs, "Return", return_payload, self.gpa);
+
+    addCase(&cases, strs, "Call", call_payload, self.gpa);
+    addCase(&cases, strs, "Splice", splice_payload, self.gpa);
+    addCase(&cases, strs, "Insert", insert_payload, self.gpa);
+    addCase(&cases, strs, "FieldAccess", field_access_payload, self.gpa);
+    addCase(&cases, strs, "IndexAccess", index_access_payload, self.gpa);
+    addCase(&cases, strs, "ArrayLit", array_lit_payload, self.gpa);
+    addCase(&cases, strs, "StructLit", struct_lit_payload, self.gpa);
+
+    const info_ty = ts.mkVariant(cases.items);
+    self.cached_codeinfo_ty = info_ty;
     return info_ty;
 }
 
@@ -4666,10 +4899,7 @@ fn finalizeCallSpecialization(self: *Checker, ctx: *CheckerContext, ast_unit: *a
                 var comptime_hashes = try List(u64).initCapacity(self.gpa, fn_params.len);
                 defer comptime_hashes.deinit(self.gpa);
                 var comptime_bindings = List(ComptimeParamBinding){};
-                defer {
-                    for (comptime_bindings.items) |*b| b.value.destroy(self.gpa);
-                    comptime_bindings.deinit(self.gpa);
-                }
+                defer comptime_bindings.deinit(self.gpa);
 
                 for (fn_params, 0..) |pid, param_idx| {
                     const p = resolved_ctx.ast.exprs.Param.get(pid);
@@ -4684,19 +4914,18 @@ fn finalizeCallSpecialization(self: *Checker, ctx: *CheckerContext, ast_unit: *a
                         continue;
                     }
 
-                    var cval = self.evalComptimeExpr(ctx, ast_unit, arg_expr, &[_]Pipeline.ComptimeBinding{}) catch {
+                    const cval = self.evalComptimeExpr(ctx, ast_unit, arg_expr, &[_]Pipeline.ComptimeBinding{}) catch {
                         try self.context.diags.addError(exprLoc(ast_unit, call_expr), .checker_comptime_not_executed, .{});
                         return ts.tTypeError();
                     };
-                    comptime_hashes.appendAssumeCapacity(comp.hashComptimeValue(cval));
+                    comptime_hashes.appendAssumeCapacity(ast_unit.type_info.val_store.hashValue(cval));
 
                     if (!p.pat.isNone()) {
                         if (bindingNameOfPattern(resolved_ctx.ast, p.pat.unwrap())) |pname| {
-                            const cloned = try comp.cloneComptimeValue(self.gpa, cval);
+                            const cloned = try resolved_ctx.ast.type_info.val_store.cloneValue(&ast_unit.type_info.val_store, cval);
                             try comptime_bindings.append(self.gpa, .{ .name = pname, .ty = concrete_param_types.items[param_idx], .value = cloned });
                         }
                     }
-                    cval.destroy(self.gpa);
                 }
 
                 if (comptime_hashes.items.len < concrete_param_types.items.len) {
@@ -5109,18 +5338,15 @@ fn checkCodeBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
     return self.context.type_store.tCode();
 }
 
-fn expandInsertValue(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, value: comp.ComptimeValue, loc: Loc) !void {
-    switch (value) {
-        .Code => |code| try self.expandInsertBlock(ctx, ast_unit, code, loc),
+fn expandInsertValue(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, value: comp.ValueId, loc: Loc) !void {
+    const s = &ast_unit.type_info.val_store;
+    switch (s.kind(value)) {
+        .Code => try self.expandInsertBlock(ctx, ast_unit, s.get(.Code, value), loc),
         else => try self.context.diags.addError(loc, .insert_requires_code, .{}),
     }
 }
 
-fn codeBlockStmts(self: *Checker, ast_unit: *ast.Ast, code: comp.CodeValue, loc: Loc) ?[]const ast.StmtId {
-    if (code.ast != ast_unit) {
-        self.context.diags.addError(loc, .insert_requires_code, .{}) catch {};
-        return null;
-    }
+fn codeBlockStmts(self: *Checker, _: *CheckerContext, ast_unit: *ast.Ast, code: comp.CodeValue, loc: Loc) ?[]const ast.StmtId {
     if (ast_unit.kind(code.block) != .Block) {
         self.context.diags.addError(loc, .insert_requires_code, .{}) catch {};
         return null;
@@ -5129,7 +5355,7 @@ fn codeBlockStmts(self: *Checker, ast_unit: *ast.Ast, code: comp.CodeValue, loc:
     return ast_unit.stmts.stmt_pool.slice(block.items);
 }
 
-fn expandInsertBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, code: comp.CodeValue, loc: Loc) !void {
+fn expandInsertBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, code: comp.CodeValue, loc: Loc) anyerror!void {
     var expanded = List(ast.StmtId){};
     defer expanded.deinit(self.gpa);
     try self.expandCodeBlockStmts(ctx, ast_unit, code, &expanded, loc);
@@ -5181,16 +5407,22 @@ fn expandInsertBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, c
             ast_unit.exprs.Block.list.set(row_idx, block_row);
 
             for (expanded.items) |sid| {
-                if (ast_unit.kind(sid) != .Decl) continue;
-                const did = getStmt(ast_unit, .Decl, sid).decl;
-                try self.bindDeclPatternInScope(ctx, ast_unit, did, target.scope_id);
-                try self.checkDecl(ctx, ast_unit, did);
-                if (self.inFunction(ctx)) {
-                    const idx = ctx.func_stack.items.len - 1;
-                    var locals = &ctx.func_stack.items[idx].locals;
-                    const raw = did.toRaw();
-                    if (raw >= locals.capacity()) locals.resize(self.gpa, raw + 1, false) catch {};
-                    locals.set(raw);
+                switch (ast_unit.kind(sid)) {
+                    .Decl => {
+                        const did = getStmt(ast_unit, .Decl, sid).decl;
+                        try self.bindDeclPatternInScope(ctx, ast_unit, did, target.scope_id);
+                        try self.checkDecl(ctx, ast_unit, did);
+                        if (self.inFunction(ctx)) {
+                            const idx = ctx.func_stack.items.len - 1;
+                            var locals = &ctx.func_stack.items[idx].locals;
+                            const raw = did.toRaw();
+                            if (raw >= locals.capacity()) locals.resize(self.gpa, raw + 1, false) catch {};
+                            locals.set(raw);
+                        }
+                    },
+                    else => {
+                        _ = try self.checkStmt(ctx, ast_unit, sid);
+                    },
                 }
             }
         },
@@ -5205,7 +5437,30 @@ fn expandCodeBlockStmts(
     out: *List(ast.StmtId),
     loc: Loc,
 ) !void {
-    const stmts = self.codeBlockStmts(ast_unit, code, loc) orelse return;
+    var local_code = code;
+    if (local_code.ast != ast_unit) {
+        if (ctx.interp) |*interp| {
+            local_code = interp.cloneCodeToAst(local_code, ast_unit) catch {
+                self.context.diags.addError(loc, .insert_requires_code, .{}) catch {};
+                return;
+            };
+            // Ensure type info capacity for new expressions
+            if (ast_unit.exprs.index.kinds.items.len > 0) {
+                const last_expr = ast.ExprId.fromRaw(@intCast(ast_unit.exprs.index.kinds.items.len - 1));
+                ast_unit.type_info.ensureExpr(self.context.gpa, last_expr) catch {};
+            }
+            // Ensure type info capacity for new declarations
+            if (ast_unit.exprs.Decl.list.len > 0) {
+                const last_decl = ast.DeclId.fromRaw(@intCast(ast_unit.exprs.Decl.list.len - 1));
+                ast_unit.type_info.ensureDecl(self.context.gpa, last_decl) catch {};
+            }
+        } else {
+            self.context.diags.addError(loc, .insert_requires_code, .{}) catch {};
+            return;
+        }
+    }
+
+    const stmts = self.codeBlockStmts(ctx, ast_unit, local_code, loc) orelse return;
     if (stmts.len == 0) return;
 
     for (stmts) |sid| {
@@ -5213,9 +5468,10 @@ fn expandCodeBlockStmts(
             const expr_id = getStmt(ast_unit, .Expr, sid).expr;
             if (ast_unit.kind(expr_id) == .Splice) {
                 const sp = getExpr(ast_unit, .Splice, expr_id);
-                if (try self.resolveSpliceValue(ctx, ast_unit, code, expr_id, sp.name, exprLoc(ast_unit, sp))) |val| {
-                    if (val.* == .Code) {
-                        try self.expandCodeBlockStmts(ctx, ast_unit, val.Code, out, loc);
+                if (try self.resolveSpliceValue(ctx, ast_unit, local_code, expr_id, sp.name, exprLoc(ast_unit, sp))) |val| {
+                    const s = &ast_unit.type_info.val_store;
+                    if (s.kind(val.*) == .Code) {
+                        try self.expandCodeBlockStmts(ctx, ast_unit, s.get(.Code, val.*), out, loc);
                     } else {
                         const name_str = getStr(ast_unit, sp.name);
                         try self.context.diags.addError(exprLoc(ast_unit, sp), .code_splice_requires_code, .{name_str});
@@ -5224,7 +5480,7 @@ fn expandCodeBlockStmts(
                 continue;
             }
         }
-        try self.applySpliceBindingsInStmt(ctx, ast_unit, code, sid);
+        try self.applySpliceBindingsInStmt(ctx, ast_unit, local_code, sid);
         try out.append(self.gpa, sid);
     }
 }
@@ -5237,20 +5493,58 @@ fn resolveSpliceValue(
     expr_id: ast.ExprId,
     name: ast.StrId,
     loc: Loc,
-) !?*comp.ComptimeValue {
+) !?*comp.ValueId {
     if (ast_unit.type_info.getComptimeValue(expr_id)) |cached| return cached;
-    for (code.captures.items) |binding| {
+    const s = &ast_unit.type_info.val_store;
+    const caps = s.code_binding_pool.slice(code.captures);
+    for (caps) |cid| {
+        const binding = s.CodeBinding.get(cid);
         if (!binding.name.eq(name)) continue;
-        const clone = try comp.cloneComptimeValue(ast_unit.type_info.gpa, binding.value);
-        try ast_unit.type_info.setComptimeValue(expr_id, clone);
+        var value_id = binding.value;
+        if (s.kind(value_id) == .Code) {
+            var code_val = s.get(.Code, value_id);
+            if (code_val.ast != ast_unit) {
+                if (ctx.interp) |*interp| {
+                    code_val = interp.cloneCodeToAst(code_val, ast_unit) catch {
+                        try self.context.diags.addError(loc, .code_splice_requires_expr, .{});
+                        return null;
+                    };
+                    const code_caps = s.code_binding_pool.slice(code_val.captures);
+                    var new_captures = std.ArrayList(comp.ValueRows.CodeBinding){};
+                    defer new_captures.deinit(self.gpa);
+                    for (code_caps) |cap_id| {
+                        const b = s.CodeBinding.get(cap_id);
+                        const name_str = code_val.ast.exprs.strs.get(b.name);
+                        const new_name = ast_unit.exprs.strs.intern(name_str);
+                        const cloned_val = try s.cloneValue(&code_val.ast.type_info.val_store, b.value);
+                        try new_captures.append(self.gpa, .{ .name = new_name, .value = cloned_val });
+                    }
+                    code_val.captures = s.addCodeBindings(new_captures.items);
+                    value_id = s.add(.Code, code_val);
+                } else {
+                    try self.context.diags.addError(loc, .code_splice_requires_expr, .{});
+                    return null;
+                }
+                // Ensure type info capacity
+                if (ast_unit.exprs.index.kinds.items.len > 0) {
+                    const last_expr = ast.ExprId.fromRaw(@intCast(ast_unit.exprs.index.kinds.items.len - 1));
+                    try ast_unit.type_info.ensureExpr(self.context.gpa, last_expr);
+                }
+                // Ensure type info capacity for new declarations
+                if (ast_unit.exprs.Decl.list.len > 0) {
+                    const last_decl = ast.DeclId.fromRaw(@intCast(ast_unit.exprs.Decl.list.len - 1));
+                    try ast_unit.type_info.ensureDecl(self.context.gpa, last_decl);
+                }
+            }
+        }
+        try ast_unit.type_info.setComptimeValue(expr_id, value_id);
         return ast_unit.type_info.getComptimeValue(expr_id);
     }
-    if (ast_unit.type_info.cloneComptimeBindingValue(ast_unit.type_info.gpa, name) catch null) |val| {
+    if (ast_unit.type_info.cloneComptimeBindingValue(&ast_unit.type_info.val_store, name) catch null) |val| {
         try ast_unit.type_info.setComptimeValue(expr_id, val);
         return ast_unit.type_info.getComptimeValue(expr_id);
     }
 
-    _ = ctx;
     const name_str = getStr(ast_unit, name);
     try self.context.diags.addError(loc, .code_splice_unknown_identifier, .{name_str});
     return null;
@@ -5322,15 +5616,94 @@ fn applySpliceBindingsInExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *as
     }
 }
 
-fn typeFromSpliceValue(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, value: comp.ComptimeValue, loc: Loc) !types.TypeId {
+fn typeFromSpliceValue(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, value: comp.ValueId, loc: Loc, opt_splice_id: ?ast.ExprId) !types.TypeId {
     const ts = self.context.type_store;
-    return switch (value) {
-        .Int => ts.tI64(),
+    const s = &ast_unit.type_info.val_store;
+    return switch (s.kind(value)) {
+        .Int => ts.tI64(), // Or infer from context? For now use default types for literals
         .Float => ts.tF64(),
         .Bool => ts.tBool(),
+        .Void => ts.tVoid(),
         .String => ts.tString(),
-        .Type => |ty| ts.mkTypeType(ty),
-        .Code => |code| blk: {
+        // TODO: Handle Sequence, Struct, Map if they can be lowered to runtime values
+        // For now, these are the basics required.
+        .Sequence => blk: {
+            const seq = s.get(.Sequence, value);
+            const items = s.val_pool.slice(seq.elems);
+            // Unpack single-element sequences (e.g. from blocks)
+            if (items.len == 1) {
+                break :blk try self.typeFromSpliceValue(ctx, ast_unit, items[0], loc, null);
+            }
+            // Create a tuple type
+            var elem_types = std.ArrayList(types.TypeId){};
+            defer elem_types.deinit(self.gpa);
+            for (items) |v| {
+                const t = try self.typeFromSpliceValue(ctx, ast_unit, v, loc, null);
+                try elem_types.append(self.gpa, t);
+            }
+            break :blk ts.mkTuple(elem_types.items);
+        },
+        .Struct => blk: {
+            const sv = s.get(.Struct, value);
+            const fields = s.struct_field_pool.slice(sv.fields);
+            // Create a struct type
+            // Note: This creates an anonymous struct type. Named structs might need different handling if they have an original declaration.
+            var struct_fields = std.ArrayList(types.TypeStore.StructFieldArg){};
+            defer struct_fields.deinit(self.gpa);
+            for (fields) |fid| {
+                const f = s.StructField.get(fid);
+                const name_str = ast_unit.exprs.strs.get(f.name);
+                const field_name = ast_unit.exprs.strs.intern(name_str); // Ensure interned in current unit
+                const t = try self.typeFromSpliceValue(ctx, ast_unit, f.value, loc, null);
+                try struct_fields.append(self.gpa, .{ .name = field_name, .ty = t });
+            }
+            break :blk ts.mkStruct(struct_fields.items, 0);
+        },
+        .Type => ts.mkTypeType(s.get(.Type, value).ty),
+        .Code => blk: {
+            var code = s.get(.Code, value);
+            var code_id = value;
+            if (code.ast != ast_unit) {
+                if (ctx.interp) |*interp| {
+                    code = interp.cloneCodeToAst(code, ast_unit) catch {
+                        try self.context.diags.addError(loc, .code_splice_requires_expr, .{});
+                        break :blk ts.tTypeError();
+                    };
+                    const caps = ast_unit.type_info.val_store.code_binding_pool.slice(code.captures);
+                    var new_captures = std.ArrayList(comp.ValueRows.CodeBinding){};
+                    defer new_captures.deinit(self.gpa);
+                    for (caps) |cid| {
+                        const b = ast_unit.type_info.val_store.CodeBinding.get(cid);
+                        const name_str = code.ast.exprs.strs.get(b.name);
+                        const new_name = ast_unit.exprs.strs.intern(name_str);
+                        const cloned_val = try ast_unit.type_info.val_store.cloneValue(&code.ast.type_info.val_store, b.value);
+                        try new_captures.append(self.gpa, .{ .name = new_name, .value = cloned_val });
+                    }
+                    code.captures = ast_unit.type_info.val_store.addCodeBindings(new_captures.items);
+                    code_id = ast_unit.type_info.val_store.add(.Code, code);
+                    // Ensure type info capacity for cloned expressions/declarations.
+                    if (ast_unit.exprs.index.kinds.items.len > 0) {
+                        const last_expr = ast.ExprId.fromRaw(@intCast(ast_unit.exprs.index.kinds.items.len - 1));
+                        try ast_unit.type_info.ensureExpr(self.context.gpa, last_expr);
+                    }
+                    if (ast_unit.exprs.Decl.list.len > 0) {
+                        const last_decl = ast.DeclId.fromRaw(@intCast(ast_unit.exprs.Decl.list.len - 1));
+                        try ast_unit.type_info.ensureDecl(self.context.gpa, last_decl);
+                    }
+                } else {
+                    try self.context.diags.addError(loc, .code_splice_requires_expr, .{});
+                    break :blk ts.tTypeError();
+                }
+            }
+
+            if (opt_splice_id) |sid| {
+                try ast_unit.type_info.ensureExpr(self.gpa, sid);
+                try ast_unit.type_info.setComptimeValue(sid, code_id);
+            } else {
+                break :blk ts.tCode();
+            }
+
+            // Try single expression extraction first
             if (comp.codeExprFromCodeValue(ast_unit, code)) |expr_id| {
                 try self.applySpliceBindingsInExpr(ctx, ast_unit, code, expr_id);
                 break :blk try self.checkExpr(ctx, ast_unit, expr_id);
@@ -5339,7 +5712,7 @@ fn typeFromSpliceValue(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast,
             break :blk ts.tTypeError();
         },
         else => {
-            try self.context.diags.addError(loc, .code_splice_unsupported, .{});
+            try self.context.diags.addError(loc, .code_splice_requires_expr, .{});
             return ts.tTypeError();
         },
     };
@@ -5440,10 +5813,8 @@ fn checkMlirBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
 
             if (sym.is_comptime or is_cached) {
                 try ast_unit.type_info.setMlirSpliceInfo(pid, .{ .decl = .{ .decl_id = did, .name = name } });
-                var computed = try self.evalComptimeExpr(ctx, ast_unit, decl_expr, &[_]Pipeline.ComptimeBinding{});
-                const value_clone = try comp.cloneComptimeValue(ast_unit.type_info.gpa, computed);
-                try ast_unit.type_info.setMlirSpliceValue(pid, value_clone);
-                computed.destroy(self.gpa);
+                const computed = try self.evalComptimeExpr(ctx, ast_unit, decl_expr, &[_]Pipeline.ComptimeBinding{});
+                try ast_unit.type_info.setMlirSpliceValue(pid, computed);
                 continue;
             }
         }
@@ -5478,6 +5849,7 @@ fn checkMlirBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
         const mlir_ctx = self.pipeline.ensureMlirContext().*;
         const text_ref = mlir.StringRef.from(getStr(ast_unit, row.text));
         const loc = exprLoc(ast_unit, row);
+        const s = &ast_unit.type_info.val_store;
 
         switch (row.kind) {
             .Module => {
@@ -5486,7 +5858,7 @@ fn checkMlirBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
                     try diags.addError(loc, .mlir_parse_error, .{getStr(ast_unit, row.text)});
                     return ts.tTypeError();
                 }
-                try ast_unit.type_info.setComptimeValue(id, .{ .MlirModule = mod });
+                try ast_unit.type_info.setComptimeValue(id, s.add(.MlirModule, .{ .module = mod }));
             },
             .Type => {
                 const ty = mlir.Type.parseGet(mlir_ctx, text_ref);
@@ -5494,7 +5866,7 @@ fn checkMlirBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
                     try diags.addError(loc, .mlir_parse_error, .{getStr(ast_unit, row.text)});
                     return ts.tTypeError();
                 }
-                try ast_unit.type_info.setComptimeValue(id, .{ .MlirType = ty });
+                try ast_unit.type_info.setComptimeValue(id, s.add(.MlirType, .{ .ty = ty }));
             },
             .Attribute => {
                 const attr = mlir.Attribute.parseGet(mlir_ctx, text_ref);
@@ -5502,7 +5874,7 @@ fn checkMlirBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
                     try diags.addError(loc, .mlir_parse_error, .{getStr(ast_unit, row.text)});
                     return ts.tTypeError();
                 }
-                try ast_unit.type_info.setComptimeValue(id, .{ .MlirAttribute = attr });
+                try ast_unit.type_info.setComptimeValue(id, s.add(.MlirAttribute, .{ .attr = attr }));
             },
             .Operation => {}, // Handled by result_ty logic below
         }
@@ -5536,8 +5908,7 @@ fn checkMlirBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
 fn checkInsert(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const r = getExpr(ast_unit, .Insert, id);
     _ = try self.checkExpr(ctx, ast_unit, r.expr);
-    var computed = try self.evalComptimeExpr(ctx, ast_unit, r.expr, &.{});
-    defer computed.destroy(self.gpa);
+    const computed = try self.evalComptimeExpr(ctx, ast_unit, r.expr, &.{});
     try self.expandInsertValue(ctx, ast_unit, computed, exprLoc(ast_unit, r));
     return self.context.type_store.tAny();
 }
@@ -5547,7 +5918,7 @@ fn checkSplice(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
     const loc = exprLoc(ast_unit, row);
 
     if (ast_unit.type_info.getComptimeValue(id)) |cached| {
-        return try self.typeFromSpliceValue(ctx, ast_unit, cached.*, loc);
+        return try self.typeFromSpliceValue(ctx, ast_unit, cached.*, loc, id);
     }
 
     const name_str = getStr(ast_unit, row.name);

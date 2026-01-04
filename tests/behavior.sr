@@ -1,6 +1,7 @@
 package main
 
 testing :: import "std/testing"
+io :: import "std/io"
 
 // Aggregate all in-language behavior suites.
 _ :: import "behavior_any_type"
@@ -18,6 +19,7 @@ _ :: import "behavior_calls"
 _ :: import "behavior_char_literals"
 _ :: import "behavior_checked_casts"
 _ :: import "behavior_comparison_operators"
+_ :: import "behavior_comptime"
 _ :: import "behavior_complex_types"
 _ :: import "behavior_control_flow_advanced"
 _ :: import "behavior_code_blocks"
@@ -458,10 +460,10 @@ test "behavior: match expression with guards" {
 }
 
 print_variadic :: proc(prefix: string, args: any) {
-    // io.print("%s", prefix)
-    // // Assuming a way to iterate over 'any' tuple
-    // // For simplicity, just print a fixed number of args
-    // io.print(" %d %f\n", ..args)
+    io.print("%s", prefix)
+    // Assuming a way to iterate over 'any' tuple
+    // For simplicity, just print a fixed number of args
+    io.print(" %d %f\n", ..args)
 }
 
 test "behavior: variadic function call" {
@@ -491,15 +493,6 @@ test "behavior: variadic function call" {
 //     const code = getSource("", src);
 //     try runCompilerTest(code, "Captured closure result=12\n");
 // }
-test "behavior: comptime block" {
-    x := 0
-    comptime {
-        x = 10 // This should modify x at compile time
-    }
-
-    if !testing.expect_equal_i64(10, x.(i64)) { return Error.Fail }
-}
-
 test "behavior: typeof expression" {
     t_int := typeof(1)
     t_bool := typeof(true)
@@ -685,18 +678,6 @@ test "behavior: function pointer call" {
     if !testing.expect_equal_i64(30, r.(i64)) { return Error.Fail }
 }
 
-// test "behavior: code block and insert" {
-//     const src =
-//         \\ x := 10
-//         \\ comptime {
-//         \\   code_block := code { x = 20 }
-//         \\   insert code_block
-//         \\ }
-//         \\ printf("Code block x=%d\n", x)
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Code block x=20\n");
-// }
 test "behavior: labeled continue" {
     count := 0
     outer: for i in 0 .. 3 {
@@ -740,19 +721,6 @@ test "behavior: mlir attribute block" {
     attr := mlir attribute { 0: i32 }
 }
 
-// test "behavior: code block with function insert" {
-//     const src =
-//         \\ x := 0
-//         \\ comptime {
-//         \\   add_one_func := code { add_one :: fn(val: i32) i32 { return val + 1 } }
-//         \\   insert add_one_func
-//         \\ }
-//         \\ r := add_one(x)
-//         \\ printf("Inserted function result=%d\n", r)
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Inserted function result=1\n");
-// }
 test "behavior: complex arithmetic with mixed types" {
     x := 10 + 2.5 * 4 - (10 % 3)
     if !testing.expect_equal_f64(19.0, x.(f64), 0.001) { return Error.Fail }
@@ -939,28 +907,6 @@ test "behavior: labeled for loop with break" {
     if !testing.expect_equal_i64(19, result.(i64)) { return Error.Fail }
 }
 
-// test "behavior: comptime assertion" {
-//     const src =
-//         \\ comptime {
-//         \\   assert(1 + 1 == 2)
-//         \\   printf("Comptime assertion OK\n")
-//         \\ }
-//         \\ printf("Runtime after comptime\n")
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Comptime assertion OK\nRuntime after comptime\n");
-// }
-//
-// test "behavior: code block as expression" {
-//     const src =
-//         \\ x := 10
-//         \\ my_code := code { x + 5 }
-//         \\ // Assuming 'code' blocks are opaque and can be assigned
-//         \\ printf("Code block as expression assigned\n")
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Code block as expression assigned\n");
-// }
 test "behavior: default arguments mixed types" {
     configure_test("UserA")
     configure_test("UserB", 10)
@@ -1026,39 +972,6 @@ test "behavior: recursive function" {
     if !testing.expect_equal_i64(120, factorial_test(5)) { return Error.Fail }
 }
 
-// test "behavior: code block with expression evaluation" {
-//     const src =
-//         \\ x := 10
-//         \\ comptime {
-//         \\   expr_code := code { x + 5 }
-//         \\   // Assuming a way to evaluate code blocks at comptime
-//         \\   // For now, just check if it can be assigned
-//         \\   evaluated_val := expr_code // This would be a comptime evaluation
-//         \\ }
-//         \\ printf("Code block expression assigned\n")
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Code block expression assigned\n");
-// }
-
-// test "behavior: variadic function with no fixed arguments" {
-//     const globals =
-//         \\ print_all :: proc(args: any) {
-//         \\   printf("Args count=%d\n", args.len)
-//         \\   // Assuming iteration over 'any' tuple
-//         \\   // For simplicity, just print first two if they exist
-//         \\   if args.len > 0 { printf("First arg=%d\n", args.0) }
-//         \\   if args.len > 1 { printf("Second arg=%s\n", args.1) }
-//         \\ }
-//     ;
-//     const src =
-//         \\ print_all(10, "hello", true)
-//         \\ print_all(5)
-//     ;
-//     const code = getSource(globals, src);
-//     try runCompilerTest(code, "Args count=3\nFirst arg=10\nSecond arg=hello\nArgs count=1\nFirst arg=5\n");
-// }
-//
 test "behavior: error union orelse and catch combined" {
     r1 := might_fail_test_combined_catch(0) orelse {
         0
@@ -1114,18 +1027,6 @@ test "behavior: mlir op with nested region" {
     if !testing.expect_equal_i64(42, op.(i64)) { return Error.Fail }
 }
 
-// test "behavior: code block with complex type insert" {
-//     const src =
-//         \\ comptime {
-//         \\   PointType := code { Point :: struct { x: i32, y: i32 } }
-//         \\   insert PointType
-//         \\ }
-//         \\ p := Point{ x: 10, y: 20 }
-//         \\ printf("Inserted complex type x=%d\n", p.x)
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Inserted complex type x=10\n");
-// }
 test "behavior: match or-pattern with at-binding" {
     x := 10
     match x {

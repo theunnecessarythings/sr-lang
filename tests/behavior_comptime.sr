@@ -1,0 +1,35 @@
+package behavior_comptime
+
+testing :: import "std/testing"
+io :: import "std/io"
+
+test "behavior: comptime block" {
+    x := 0
+    comptime {
+        x = 10 // This should modify x at compile time
+    }
+
+    if !testing.expect_equal_i64(10, x.(i64)) { return Error.Fail }
+}
+
+test "behavior: comptime assertion" {
+    comptime {
+        io.assert(1 + 1 == 2, "Comptime assertion failed")
+        io.print("Comptime assertion OK\n")
+    }
+
+    io.print("Runtime after comptime\n")
+}
+
+// print_all :: proc(args: any) {
+//     io.print("Args count=%d\n", args.len)
+//     // Assuming iteration over 'any' tuple
+//     // For simplicity, just print first two if they exist
+//     if args.len > 0 { io.print("First arg=%d\n", args.0) }
+//     if args.len > 1 { io.print("Second arg=%s\n", args.1) }
+// }
+//
+// test "behavior: variadic function with no fixed arguments" {
+//     print_all(10, "hello", true)
+//     print_all(5)
+// }

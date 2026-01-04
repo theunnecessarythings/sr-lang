@@ -162,7 +162,7 @@ pub const Rows = struct {
 
     pub const Call = struct { result: ValueId, ty: types.TypeId, callee: StrId, args: RangeValList, loc: OptLocId };
     pub const IndirectCall = struct { result: ValueId, ty: types.TypeId, callee: ValueId, args: RangeValList, loc: OptLocId };
-    pub const MlirPiece = struct { kind: ast.MlirPieceKind, text: StrId, value: comp.ComptimeValue, ty: ?types.TypeId };
+    pub const MlirPiece = struct { kind: ast.MlirPieceKind, text: StrId, value: comp.ValueId, ty: ?types.TypeId };
     pub const MlirBlock = struct { result: OptValueId, ty: types.TypeId, kind: ast.MlirKind, expr: ast.ExprId, text: StrId, pieces: RangeMlirPiece, args: RangeValue, loc: OptLocId };
 
     pub const VariantMake = struct { result: ValueId, ty: types.TypeId, tag: u32, payload: OptValueId, payload_ty: types.TypeId, loc: OptLocId };
@@ -777,6 +777,16 @@ pub const TirPrinter = struct {
                         if (@field(r, f.name).isNone()) try self.writer.writeAll("null") else try self.writer.print("v{}", .{@field(r, f.name).unwrap().toRaw()});
                     } else if (f.type == StrId) {
                         try self.writer.print("\"{s}\"", .{self.s(@field(r, f.name))});
+                    } else if (f.type == bool) {
+                        try self.writer.print("{}", .{@field(r, f.name)});
+                    } else if (f.type == u32 or f.type == u64 or f.type == usize or f.type == i32 or f.type == i64 or f.type == i128) {
+                        try self.writer.print("{}", .{@field(r, f.name)});
+                    } else if (f.type == types.TypeId) {
+                        try self.writer.print("{}", .{@field(r, f.name)});
+                    } else if (f.type == FuncId or f.type == BlockId or f.type == InstrId or f.type == TermId) {
+                        try self.writer.print("{}", .{@field(r, f.name).toRaw()});
+                    } else if (f.type == ast.MlirKind or f.type == types.TypeKind) {
+                        try self.writer.print("{s}", .{@tagName(@field(r, f.name))});
                     } else {
                         try self.writer.writeAll("...");
                     }

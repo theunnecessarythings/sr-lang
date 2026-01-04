@@ -265,14 +265,7 @@ pub const OpBuilder = struct {
     }
 };
 
-pub fn ownedAttributeText(self: *Codegen, attr: mlir.Attribute) ![]u8 {
-    var list = ArrayList(u8).init(self.gpa);
-    errdefer list.deinit();
-    var had_error = false;
-    var pb = PrintBuffer{ .list = &list, .had_error = &had_error };
-    attr.print(printCallback, @ptrCast(&pb));
-    return if (had_error) error.OutOfMemory else list.toOwnedSlice();
-}
+
 
 fn appendMlirTypeText(self: *Codegen, buf: *ArrayList(u8), ty: mlir.Type) !void {
     try self.appendMlirPrintedText(buf, ty);
@@ -296,10 +289,12 @@ fn appendMlirPrintedText(self: *Codegen, buf: *ArrayList(u8), value: anytype) !v
     try buf.appendSlice(tmp.items);
 }
 
-fn appendMlirSpliceValue(self: *Codegen, buf: *ArrayList(u8), value: comp.ComptimeValue, ty: ?types.TypeId) !void {
-    switch (value) {
+fn appendMlirSpliceValue(self: *Codegen, buf: *ArrayList(u8), value: comp.ValueId, ty: ?types.TypeId) !void {
+    const s = &self.active_type_info.?.val_store;
+    switch (s.kind(value)) {
         .Void => return error.MlirSpliceMissingValue,
-        .Int => |v| {
+        .Int => {
+            const v = s.get(.Int, value).value;
             if (ty) |tid| {
                 const width: u32 = switch (self.context.type_store.getKind(tid)) {
                     .I8, .U8 => 8,
@@ -312,15 +307,28 @@ fn appendMlirSpliceValue(self: *Codegen, buf: *ArrayList(u8), value: comp.Compti
             }
             try buf.writer().print("{}", .{v});
         },
-        .Float => |v| try buf.writer().print("{}", .{v}),
-        .Bool => |b| try buf.appendSlice(if (b) "true" else "false"),
-        .String => |s| try buf.appendSlice(s),
-        .Sequence => |seq| try buf.writer().print("[sequence len={d}]", .{seq.values.items.len}),
-        .Struct => |sv| try buf.writer().print("<struct len={d}>", .{sv.fields.items.len}),
+        .Float => try buf.writer().print("{}", .{s.get(.Float, value).value}),
+        .Bool => try buf.appendSlice(if (s.get(.Bool, value).value) "true" else "false"),
+        .String => try buf.appendSlice(s.get(.String, value).value),
+        .Sequence => {
+            const seq = s.get(.Sequence, value);
+            try buf.writer().print("[sequence len={d}]", .{s.val_pool.slice(seq.elems).len});
+        },
+        .Struct => {
+            const sv = s.get(.Struct, value);
+            try buf.writer().print("<struct len={d}>", .{s.struct_field_pool.slice(sv.fields).len});
+        },
         .Variant => try buf.appendSlice("<variant>"),
-        .Map => |mp| try buf.writer().print("<map len={d}>", .{mp.entries.items.len}),
-        .Range => |rg| try buf.writer().print("range({d}..{d}{s})", .{ rg.start, rg.end, if (rg.inclusive) "=" else "" }),
-        .Type => |type_val| {
+        .Map => {
+            const mp = s.get(.Map, value);
+            try buf.writer().print("<map len={d}>", .{s.map_entry_pool.slice(mp.entries).len});
+        },
+        .Range => {
+            const rg = s.get(.Range, value);
+            try buf.writer().print("range({d}..{d}{s})", .{ rg.start, rg.end, if (rg.inclusive) "=" else "" });
+        },
+        .Type => {
+            const type_val = s.get(.Type, value).ty;
             const normalized = if (self.context.type_store.getKind(type_val) == .TypeType)
                 self.context.type_store.get(.TypeType, type_val).of
             else
@@ -331,9 +339,9 @@ fn appendMlirSpliceValue(self: *Codegen, buf: *ArrayList(u8), value: comp.Compti
                 try self.context.type_store.formatTypeForDiagnostic(type_val, .{}, buf.writer());
             }
         },
-        .MlirType => |mt| try self.appendMlirTypeText(buf, mt),
-        .MlirAttribute => |ma| try self.appendMlirAttributeText(buf, ma),
-        .MlirModule => |mm| try self.appendMlirModuleText(buf, mm),
+        .MlirType => try self.appendMlirTypeText(buf, s.get(.MlirType, value).ty),
+        .MlirAttribute => try self.appendMlirAttributeText(buf, s.get(.MlirAttribute, value).attr),
+        .MlirModule => try self.appendMlirModuleText(buf, s.get(.MlirModule, value).module),
         .Pointer => try buf.appendSlice("<pointer>"),
         .Function => return error.MlirSpliceMissingValue,
         .Code => return error.MlirSpliceMissingValue,
@@ -568,8 +576,15 @@ pub fn emit(self: *Codegen, levels: *const compile.DependencyLevels) !mlir.Modul
 
         for (level.items) |file_id| {
             const unit = unit_by_file.get(file_id) orelse continue;
-            if (unit.tir == null) continue;
-            _ = try self.emitModule(unit.tir.?);
+            if (unit.tir == null or unit.ast == null) {
+                const path = self.context.source_manager.get(file_id) orelse "?";
+                std.debug.print("codegen: missing {s} for file {s}\n", .{
+                    if (unit.tir == null) "tir" else "ast",
+                    path,
+                });
+                return error.MissingAstOrTir;
+            }
+            _ = try self.emitModule(unit.tir.?, &unit.ast.?.type_info);
         }
     }
     return self.module;
@@ -598,7 +613,16 @@ pub fn emitTritonModule(self: *Codegen, levels: *const compile.DependencyLevels)
 
         for (level.items) |file_id| {
             const unit = unit_by_file.get(file_id) orelse continue;
-            if (unit.tir == null) continue;
+            if (unit.tir == null or unit.ast == null) {
+                const path = self.context.source_manager.get(file_id) orelse "?";
+                std.debug.print("codegen: missing {s} for file {s}\n", .{
+                    if (unit.tir == null) "tir" else "ast",
+                    path,
+                });
+                return error.MissingAstOrTir;
+            }
+            self.active_type_info = &unit.ast.?.type_info;
+            defer self.active_type_info = null;
             for (unit.tir.?.funcs.func_pool.inner.data.items) |fid_raw| {
                 const fid = tir.FuncId.fromRaw(fid_raw);
                 const f = unit.tir.?.funcs.Function.get(fid);
@@ -676,7 +700,16 @@ pub fn emitTritonModule(self: *Codegen, levels: *const compile.DependencyLevels)
         if (level.items.len == 0) continue;
         for (level.items) |file_id| {
             const unit = unit_by_file.get(file_id) orelse continue;
-            if (unit.tir == null) continue;
+            if (unit.tir == null or unit.ast == null) {
+                const path = self.context.source_manager.get(file_id) orelse "?";
+                std.debug.print("codegen: missing {s} for file {s}\n", .{
+                    if (unit.tir == null) "tir" else "ast",
+                    path,
+                });
+                return error.MissingAstOrTir;
+            }
+            self.active_type_info = &unit.ast.?.type_info;
+            defer self.active_type_info = null;
             for (unit.tir.?.funcs.func_pool.inner.data.items) |fid_raw| {
                 const fid = tir.FuncId.fromRaw(fid_raw);
                 const f = unit.tir.?.funcs.Function.get(fid);
@@ -704,7 +737,11 @@ pub fn emitTritonModule(self: *Codegen, levels: *const compile.DependencyLevels)
 pub fn emitModule(
     self: *Codegen,
     t: *tir.TIR,
+    type_info: *types.TypeInfo,
 ) !mlir.Module {
+    self.active_type_info = type_info;
+    defer self.active_type_info = null;
+
     const prev_loc = self.loc;
     defer self.loc = prev_loc;
 
@@ -3040,11 +3077,12 @@ fn checkCachedMlirValue(self: *Codegen, p: tir.Rows.MlirBlock) !?mlir.Value {
     const ti = self.active_type_info orelse return null;
     const cached_ptr = ti.getComptimeValue(p.expr) orelse return null;
     const val = cached_ptr.*;
+    const s = &ti.val_store;
 
     switch (p.kind) {
         .Module => {
-            const module = switch (val) {
-                .MlirModule => |m| m,
+            const module = switch (s.kind(val)) {
+                .MlirModule => s.get(.MlirModule, val).module,
                 else => return null,
             };
 
@@ -3058,8 +3096,8 @@ fn checkCachedMlirValue(self: *Codegen, p: tir.Rows.MlirBlock) !?mlir.Value {
 
             return if (p.result.isNone()) .empty() else self.zeroOf(try self.llvmTypeOf(p.ty));
         },
-        .Type => return if (val == .MlirType) (if (p.result.isNone()) .empty() else self.zeroOf(try self.llvmTypeOf(p.ty))) else null,
-        .Attribute => return if (val == .MlirAttribute) (if (p.result.isNone()) .empty() else self.zeroOf(try self.llvmTypeOf(p.ty))) else null,
+        .Type => return if (s.kind(val) == .MlirType) (if (p.result.isNone()) .empty() else self.zeroOf(try self.llvmTypeOf(p.ty))) else null,
+        .Attribute => return if (s.kind(val) == .MlirAttribute) (if (p.result.isNone()) .empty() else self.zeroOf(try self.llvmTypeOf(p.ty))) else null,
         .Operation => unreachable,
     }
 }

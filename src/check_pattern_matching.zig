@@ -344,10 +344,6 @@ pub fn checkPattern(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast
             const lp = ast_unit.pats.get(.Literal, pid);
             const lit_ty = try self.checkExpr(ctx, ast_unit, lp.expr);
             if (self.typeKind(lit_ty) == .TypeError) return false;
-            if (self.typeKind(lit_ty) == .String and top_level) {
-                try self.context.diags.addError(ast_unit.exprs.locs.get(lp.loc), .string_equality_in_match_not_supported, .{});
-                return false;
-            }
             if (self.assignable(value_ty, lit_ty) != .success) {
                 if (top_level) try self.context.diags.addError(ast_unit.exprs.locs.get(lp.loc), .pattern_type_mismatch, .{});
                 return false;

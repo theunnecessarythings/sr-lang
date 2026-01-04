@@ -384,7 +384,7 @@ test "patterns and destructuring failure cases" {
     try checkProgram(
         \\ v := 1
         \\ r := match v { "s" => 0, _ => 1, }
-    , &[_]diag.DiagnosticCode{.string_equality_in_match_not_supported});
+    , &[_]diag.DiagnosticCode{.pattern_type_mismatch});
     try checkProgram(
         \\ Point :: struct { x: i32, y: i32 }
         \\ p := Point{ x: 1, y: 2 }
@@ -398,7 +398,7 @@ test "patterns and destructuring failure cases" {
     try checkProgram(
         \\ v := 1
         \\ r := match v { y @ "s" => 0, _ => 1,}
-    , &[_]diag.DiagnosticCode{.string_equality_in_match_not_supported});
+    , &[_]diag.DiagnosticCode{.pattern_type_mismatch});
     try checkProgram(
         \\ v := 5
         \\ r := match v { 1 | 2 => 0, 2 => 1, _ => 2, }

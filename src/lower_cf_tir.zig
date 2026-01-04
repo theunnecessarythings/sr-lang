@@ -342,6 +342,9 @@ pub fn matchPattern(
                 return matchRangeBounds(self, ctx, a, env, f, blk, range.start, range.end, range.inclusive_right, scrut, scrut_ty, loc);
             }
             const litv = try self.lowerExpr(ctx, a, env, f, blk, pr.expr, scrut_ty, .rvalue);
+            if (ts.getKind(scrut_ty) == .String) {
+                return try self.emitStringEq(f, blk, scrut, litv, loc, true);
+            }
             return blk.builder.binBool(blk, .CmpEq, scrut, litv, loc);
         },
         .VariantTuple => {

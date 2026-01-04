@@ -28,18 +28,16 @@ test "patterns: struct pattern with variable binding" {
 }
 
 test "patterns: partial struct pattern" {
-    return Error.Fail
-    // Partial struct matching syntax is not yet fully standardized/supported as '..'
-    // Commenting out until compiler support is confirmed or syntax is fixed.
-    /*
     u := User{ id: 1, name: "Alice", age: 30 }
     match u {
-        User{ name: "Alice", .. } => {
+        User {name: "Alice", ..} => {
             // Matched
         },
-        _ => { testing.fail("Matched other user"); return Error.Fail },
+        _ => {
+            testing.fail("Matched other user")
+            return Error.Fail
+        },
     }
-    */
 }
 
 test "patterns: nested struct pattern" {
@@ -61,5 +59,6 @@ test "patterns: struct pattern mismatch falls through" {
         Point {x: 3, y: 2} => "Hit",
         _ => "Miss",
     }
+
     if !testing.expect_equal_str("Miss", result) { return Error.Fail }
 }

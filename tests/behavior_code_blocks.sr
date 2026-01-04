@@ -1,21 +1,30 @@
 package behavior_code_blocks
 
 testing :: import "std/testing"
+meta :: import "std/meta"
 
 build_local :: proc() Code {
-    return code { local :: 41 }
+    return code {
+        local :: 41
+    }
 }
 
 build_extra :: proc() Code {
-    return code { extra :: 5 }
+    return code {
+        extra :: 5
+    }
 }
 
 build_more :: proc() Code {
-    return code { more :: 7 }
+    return code {
+        more :: 7
+    }
 }
 
 build_expr :: proc(comptime x: i64) Code {
-    return code { `x` + 2 }
+    return code {
+        `x` + 2
+    }
 }
 
 build_pair :: proc() Code {
@@ -26,18 +35,27 @@ build_pair :: proc() Code {
 }
 
 test "behavior: code insert scoped" {
-    comptime { insert build_local() }
+    comptime {
+        insert build_local()
+    }
+
     if !testing.expect_equal_i64(41, local.(i64)) { return Error.Fail }
 
     {
-        comptime { insert build_extra() }
+        comptime {
+            insert build_extra()
+        }
+
         if !testing.expect_equal_i64(5, extra.(i64)) { return Error.Fail }
     }
 
     comptime {
         insert build_more()
-        comptime { insert build_extra() }
+        comptime {
+            insert build_extra()
+        }
     }
+
     if !testing.expect_equal_i64(7, more.(i64)) { return Error.Fail }
     if !testing.expect_equal_i64(5, extra.(i64)) { return Error.Fail }
 }
@@ -45,8 +63,11 @@ test "behavior: code insert scoped" {
 test "behavior: code splice expression" {
     comptime {
         expr_code :: build_expr(40)
-        insert code { result :: `expr_code` }
+        insert code {
+            result :: `expr_code`
+        }
     }
+
     if !testing.expect_equal_i64(42, result.(i64)) { return Error.Fail }
 }
 
@@ -58,13 +79,107 @@ test "behavior: code splice statements" {
             sum :: left + right
         }
     }
+
     if !testing.expect_equal_i64(7, sum.(i64)) { return Error.Fail }
 }
 
 test "behavior: code splice type" {
     comptime {
-        Ty : type = i32
-        insert code { value: `Ty` = 123 }
+        Ty: type = i32
+        insert code {
+            value: `Ty` = 123
+        }
     }
+
     if !testing.expect_equal_i64(123, value.(i64)) { return Error.Fail }
+}
+
+test "behavior: code builder api" {
+    comptime {
+        insert meta.code_empty()
+    }
+
+    if !testing.expect_equal_i64(41, 41) { return Error.Fail }
+
+    comptime {
+        expr_code := meta.code_expr(41)
+        insert code {
+            expr_val :: `expr_code`
+        }
+    }
+
+    if !testing.expect_equal_i64(41, expr_val.(i64)) { return Error.Fail }
+
+    comptime {
+        a := code {
+            left :: 1
+        }
+
+        b := code {
+            right :: 2
+        }
+
+        insert meta.code_concat(a, b)
+    }
+
+    if !testing.expect_equal_i64(1, left.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(2, right.(i64)) { return Error.Fail }
+
+    comptime {
+        parts := [code {
+            a :: 3
+        }, code {
+            b :: 4
+        }, code {
+            c :: 5
+        }]
+
+        insert meta.code_join(parts[0 .. 3])
+    }
+
+    if !testing.expect_equal_i64(3, a.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(4, b.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(5, c.(i64)) { return Error.Fail }
+}
+
+test "behavior: code block and insert" {
+    x := 10
+    comptime {
+        code_block := code {
+            x = 20
+        }
+
+        insert code_block
+    }
+
+    if !testing.expect_equal_i64(20, x.(i64)) { return Error.Fail }
+}
+
+x := 0
+comptime {
+    add_one_func := code {
+        add_one :: proc(val: i32) i32 {
+            return val + 1
+        }
+    }
+
+    insert add_one_func
+}
+
+test "behavior: code block with function insert" {
+    r := add_one(x)
+    if !testing.expect_equal_i64(1, r.(i64)) { return Error.Fail }
+}
+
+test "behavior: code block with complex type insert" {
+    comptime {
+        PointType := code {
+            Point :: struct {x: i32, y: i32}
+        }
+
+        insert PointType
+    }
+
+    p := Point{ x: 10, y: 20 }
+    if !testing.expect_equal_i64(10, p.x.(i64)) { return Error.Fail }
 }

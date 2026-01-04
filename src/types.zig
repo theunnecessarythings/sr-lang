@@ -110,20 +110,22 @@ fn makeMethodKey(owner: TypeId, name: ast.StrId) MethodKey {
     return .{ .owner = owner.toRaw(), .name = name.toRaw() };
 }
 
-const StoredComptimeBinding = struct { ty: TypeId, value: comp.ComptimeValue };
-pub const ComptimeBindingVisitor = fn (?*anyopaque, ast.StrId, comp.ComptimeValue, TypeId) anyerror!void;
+const StoredComptimeBinding = struct { ty: TypeId, value: comp.ValueId };
+pub const ComptimeBindingVisitor = fn (?*anyopaque, ast.StrId, *comp.ValueStore, comp.ValueId, TypeId) anyerror!void;
 
 pub const TypeInfo = struct {
     arena: *std.heap.ArenaAllocator,
     backing_gpa: std.mem.Allocator,
     gpa: std.mem.Allocator,
     store: *TypeStore,
+    val_store: comp.ValueStore,
 
     expr_types: std.ArrayListUnmanaged(?TypeId) = .{},
     decl_types: std.ArrayListUnmanaged(?TypeId) = .{},
     field_index_for_expr: std.AutoArrayHashMapUnmanaged(u32, u32) = .{},
-    comptime_values: std.AutoArrayHashMapUnmanaged(ast.ExprId, comp.ComptimeValue) = .{},
+    comptime_values: std.AutoArrayHashMapUnmanaged(ast.ExprId, comp.ValueId) = .{},
     comptime_bindings: std.AutoArrayHashMapUnmanaged(ast.StrId, StoredComptimeBinding) = .{},
+    comptime_block_snapshots: std.AutoArrayHashMapUnmanaged(u32, ComptimeBindingSnapshot) = .{},
 
     method_bindings: std.AutoArrayHashMapUnmanaged(u32, MethodBinding) = .{},
     method_expr_snapshots: std.AutoArrayHashMapUnmanaged(MethodKey, MethodExprSnapshot) = .{},
@@ -133,7 +135,7 @@ pub const TypeInfo = struct {
     specialization_comptime_expr_snapshots: std.AutoArrayHashMapUnmanaged(u32, ComptimeExprSnapshot) = .{},
 
     mlir_splice_info: std.AutoArrayHashMapUnmanaged(u32, MlirSpliceInfo) = .{},
-    mlir_splice_values: std.AutoArrayHashMapUnmanaged(u32, comp.ComptimeValue) = .{},
+    mlir_splice_values: std.AutoArrayHashMapUnmanaged(u32, comp.ValueId) = .{},
     exports: std.AutoArrayHashMapUnmanaged(ast.StrId, ExportEntry) = .{},
     specialized_calls: std.AutoArrayHashMapUnmanaged(u32, call_resolution.FunctionDeclContext) = .{},
     spread_ranges: std.AutoArrayHashMapUnmanaged(u32, void) = .{},
@@ -143,8 +145,8 @@ pub const TypeInfo = struct {
     pub const ExportEntry = struct { ty: TypeId, decl_id: ast.DeclId };
     const MethodExprSnapshot = struct { expr_ids: []u32, expr_types: []TypeId };
     const CallSpecSnapshot = struct { expr_ids: []u32, specs: []CallSpecialization, comptime_snapshot: ?ComptimeBindingSnapshot = null };
-    const ComptimeBindingSnapshot = struct { names: []ast.StrId, types: []TypeId, values: []comp.ComptimeValue };
-    const ComptimeExprSnapshot = struct { expr_ids: []u32, values: []comp.ComptimeValue };
+    const ComptimeBindingSnapshot = struct { names: []ast.StrId, types: []TypeId, values: []comp.ValueId };
+    const ComptimeExprSnapshot = struct { expr_ids: []u32, values: []comp.ValueId };
 
     pub fn init(gpa: std.mem.Allocator, store: *TypeStore) TypeInfo {
         const arena = gpa.create(std.heap.ArenaAllocator) catch @panic("OOM");
@@ -154,10 +156,12 @@ pub const TypeInfo = struct {
             .backing_gpa = gpa,
             .gpa = arena.allocator(),
             .store = store,
+            .val_store = comp.ValueStore.init(arena.allocator()),
         };
     }
 
     pub fn deinit(self: *TypeInfo) void {
+        self.val_store.deinit();
         self.arena.deinit();
         self.backing_gpa.destroy(self.arena);
     }
@@ -192,6 +196,14 @@ pub const TypeInfo = struct {
             try self.field_index_for_expr.ensureTotalCapacity(self.arena.allocator(), need);
             var i = self.field_index_for_expr.count();
             while (i < need) : (i += 1) try self.field_index_for_expr.put(self.arena.allocator(), @intCast(i), 0xFFFF_FFFF);
+        }
+    }
+
+    pub fn ensureDecl(self: *TypeInfo, _: std.mem.Allocator, decl_id: ast.DeclId) !void {
+        const need = decl_id.toRaw() + 1;
+        if (self.decl_types.items.len < need) {
+            try self.decl_types.ensureTotalCapacity(self.arena.allocator(), need);
+            while (self.decl_types.items.len < need) self.decl_types.appendAssumeCapacity(null);
         }
     }
 
@@ -255,10 +267,9 @@ pub const TypeInfo = struct {
         try self.updateSnapshot(&self.specialization_expr_snapshots, decl_id.toRaw(), val);
     }
 
-    pub fn storeSpecializationComptimeExprSnapshot(self: *TypeInfo, decl_id: ast.DeclId, expr_ids: []const u32, values: []const comp.ComptimeValue) !void {
+    pub fn storeSpecializationComptimeExprSnapshot(self: *TypeInfo, decl_id: ast.DeclId, expr_ids: []const u32, values: []const comp.ValueId) !void {
         const ids = try self.cloneSlice(u32, expr_ids);
-        const val_copy = try self.arena.allocator().alloc(comp.ComptimeValue, values.len);
-        for (values, 0..) |v, i| val_copy[i] = try comp.cloneComptimeValue(self.arena.allocator(), v);
+        const val_copy = try self.cloneSlice(comp.ValueId, values);
         try self.updateSnapshot(&self.specialization_comptime_expr_snapshots, decl_id.toRaw(), ComptimeExprSnapshot{ .expr_ids = ids, .values = val_copy });
     }
 
@@ -281,14 +292,13 @@ pub const TypeInfo = struct {
         return self.specialization_call_snapshots.get(decl_id.toRaw());
     }
 
-    pub fn storeSpecializationComptimeSnapshot(self: *TypeInfo, _: std.mem.Allocator, decl_id: ast.DeclId, names: []const ast.StrId, types: []const TypeId, values: []const comp.ComptimeValue) !void {
+    pub fn storeSpecializationComptimeSnapshot(self: *TypeInfo, _: std.mem.Allocator, decl_id: ast.DeclId, names: []const ast.StrId, types: []const TypeId, values: []const comp.ValueId) !void {
         const gop = try self.specialization_call_snapshots.getOrPut(self.arena.allocator(), decl_id.toRaw());
         if (!gop.found_existing) {
             gop.value_ptr.* = .{ .expr_ids = &.{}, .specs = &.{}, .comptime_snapshot = null };
         }
 
-        const val_copy = try self.arena.allocator().alloc(comp.ComptimeValue, values.len);
-        for (values, 0..) |v, i| val_copy[i] = try comp.cloneComptimeValue(self.arena.allocator(), v);
+        const val_copy = try self.cloneSlice(comp.ValueId, values);
 
         gop.value_ptr.comptime_snapshot = .{
             .names = try self.cloneSlice(ast.StrId, names),
@@ -299,6 +309,20 @@ pub const TypeInfo = struct {
 
     pub fn getSpecializationComptimeSnapshot(self: *const TypeInfo, decl_id: ast.DeclId) ?ComptimeBindingSnapshot {
         return if (self.specialization_call_snapshots.get(decl_id.toRaw())) |snap| snap.comptime_snapshot else null;
+    }
+
+    pub fn storeComptimeBlockSnapshot(self: *TypeInfo, expr_id: ast.ExprId, names: []const ast.StrId, types: []const TypeId, values: []const comp.ValueId) !void {
+        const val_copy = try self.cloneSlice(comp.ValueId, values);
+        const snapshot = ComptimeBindingSnapshot{
+            .names = try self.cloneSlice(ast.StrId, names),
+            .types = try self.cloneSlice(TypeId, types),
+            .values = val_copy,
+        };
+        try self.updateSnapshot(&self.comptime_block_snapshots, expr_id.toRaw(), snapshot);
+    }
+
+    pub fn getComptimeBlockSnapshot(self: *const TypeInfo, expr_id: ast.ExprId) ?ComptimeBindingSnapshot {
+        return self.comptime_block_snapshots.get(expr_id.toRaw());
     }
 
     pub fn addExport(self: *TypeInfo, name: ast.StrId, ty: TypeId, decl_id: ast.DeclId) !void {
@@ -329,15 +353,15 @@ pub const TypeInfo = struct {
     pub fn hasComptimeValue(self: *const TypeInfo, expr_id: ast.ExprId) bool {
         return self.comptime_values.contains(expr_id);
     }
-    pub fn getComptimeValue(self: *const TypeInfo, expr_id: ast.ExprId) ?*comp.ComptimeValue {
+    pub fn getComptimeValue(self: *const TypeInfo, expr_id: ast.ExprId) ?*comp.ValueId {
         return self.comptime_values.getPtr(expr_id);
     }
 
-    pub fn setComptimeValue(self: *TypeInfo, expr_id: ast.ExprId, value: comp.ComptimeValue) !void {
+    pub fn setComptimeValue(self: *TypeInfo, expr_id: ast.ExprId, value: comp.ValueId) !void {
         try self.comptime_values.put(self.arena.allocator(), expr_id, value);
     }
 
-    pub fn setComptimeBinding(self: *TypeInfo, name: ast.StrId, ty: TypeId, value: comp.ComptimeValue) !void {
+    pub fn setComptimeBinding(self: *TypeInfo, name: ast.StrId, ty: TypeId, value: comp.ValueId) !void {
         try self.comptime_bindings.put(self.arena.allocator(), name, .{ .ty = ty, .value = value });
     }
 
@@ -345,20 +369,18 @@ pub const TypeInfo = struct {
         return if (self.comptime_bindings.get(name)) |e| e.ty else null;
     }
 
-    pub fn cloneComptimeBindingValue(self: *const TypeInfo, gpa: std.mem.Allocator, name: ast.StrId) anyerror!?comp.ComptimeValue {
-        return if (self.comptime_bindings.get(name)) |e| try comp.cloneComptimeValue(gpa, e.value) else null;
+    pub fn cloneComptimeBindingValue(self: *TypeInfo, target_store: *comp.ValueStore, name: ast.StrId) anyerror!?comp.ValueId {
+        return if (self.comptime_bindings.get(name)) |e| try target_store.cloneValue(&self.val_store, e.value) else null;
     }
 
     pub fn removeComptimeBinding(self: *TypeInfo, name: ast.StrId) void {
         _ = self.comptime_bindings.fetchSwapRemove(name);
     }
 
-    pub fn forEachComptimeBinding(self: *TypeInfo, gpa: std.mem.Allocator, ctx: ?*anyopaque, visitor: ComptimeBindingVisitor) anyerror!void {
+    pub fn forEachComptimeBinding(self: *TypeInfo, ctx: ?*anyopaque, visitor: ComptimeBindingVisitor) anyerror!void {
         var iter = self.comptime_bindings.iterator();
         while (iter.next()) |entry| {
-            var val = try comp.cloneComptimeValue(gpa, entry.value_ptr.value);
-            defer if (val != .Void) val.destroy(gpa);
-            try visitor(ctx, entry.key_ptr.*, val, entry.value_ptr.ty);
+            try visitor(ctx, entry.key_ptr.*, &self.val_store, entry.value_ptr.value, entry.value_ptr.ty);
         }
     }
 
@@ -369,10 +391,10 @@ pub const TypeInfo = struct {
         return self.mlir_splice_info.get(piece_id.toRaw());
     }
 
-    pub fn getMlirSpliceValue(self: *const TypeInfo, piece_id: ast.MlirPieceId) ?*comp.ComptimeValue {
+    pub fn getMlirSpliceValue(self: *const TypeInfo, piece_id: ast.MlirPieceId) ?*comp.ValueId {
         return self.mlir_splice_values.getPtr(piece_id.toRaw());
     }
-    pub fn setMlirSpliceValue(self: *TypeInfo, piece_id: ast.MlirPieceId, value: comp.ComptimeValue) !void {
+    pub fn setMlirSpliceValue(self: *TypeInfo, piece_id: ast.MlirPieceId, value: comp.ValueId) !void {
         try self.mlir_splice_values.put(self.arena.allocator(), piece_id.toRaw(), value);
     }
 };
