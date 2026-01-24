@@ -102,6 +102,24 @@ sudo ln -sf "$(command -v clang-20)" /usr/local/bin/clang
 sudo ln -sf "$(command -v clang++-20)" /usr/local/bin/clang++
 ```
 
+## 📦 Prebuilt Binaries
+
+If you don’t want to build from source, you can download a prebuilt binary from the GitHub Releases page and run it directly.
+
+- Tested on **Ubuntu 22.04** and **Arch Linux**
+- Other Linux distributions may work, but are not guaranteed
+
+### Download
+
+Go to the latest GitHub Release and download the binaries.
+
+### Run
+
+```bash
+./bin/src --help # Prints usage
+./bin/src run hello.sr # Compiles and runs the program
+```
+
 ### Required Local Configuration
 
 The build currently assumes system paths that may need adjustment for your machine. Check `build.zig` and update:
