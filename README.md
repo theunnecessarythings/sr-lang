@@ -4,7 +4,27 @@
 ![Built with Zig](https://img.shields.io/badge/built%20with-Zig-blue.svg)
 ![License](https://img.shields.io/badge/license-GPLv3-green.svg)
 
-`sr-lang` is a personal, experimental programming language and its compiler, currently in an early alpha stage of development. It aims to explore modern language features, explicit control over system resources, and deep integration with compiler infrastructure like MLIR.
+sr-lang is a personal, experimental programming language and compiler built as a way to learn compiler construction by building something real.
+
+The project started small and gradually accumulated features as I explored parsing, semantic analysis, type systems, and backend design. As a result, some parts are relatively solid while others are experimental, incomplete, or rough around the edges.
+
+This is intentional.
+
+The goal of sr-lang is exploration and learning, not polish or production readiness. Bugs, awkward designs, and missing pieces reflect my learning process at the time they were written, and improving or replacing them is part of the project’s value.
+
+
+## Project Philosophy
+
+sr-lang is a learning-first project.
+
+It prioritizes:
+- Real implementations over toy examples
+- Exploration over premature optimization
+- Iteration over stability
+
+If you’re looking for a polished or production-ready language, this is probably not it.
+If you’re interested in how languages are built — and rebuilt — this project is meant for that.
+
 
 ## ✨ Features
 
@@ -184,6 +204,64 @@ The language is in an **alpha** state. This means:
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to open issues or pull requests.
+
+## 🌱 Good First Contributions
+
+This project is intentionally incomplete in many areas, which makes it a good place to learn and experiment without fear of breaking something critical.
+
+If you’re new to compilers, programming languages, or open source in general, here are some concrete ways to get involved:
+
+### 🧩 Standard Library (High Impact, Beginner–Intermediate)
+
+The standard library is currently very minimal. This is a great opportunity to design and implement foundational pieces from scratch, such as:
+
+- Basic data structures (arrays, maps, strings, etc.)
+- I/O utilities
+- Math and numeric helpers
+- Error and result utilities
+
+Ownership of entire modules is encouraged.
+
+### 🧪 Tests & Validation (Beginner Friendly)
+
+Many language features exist but lack thorough testing.
+
+Contributions here include:
+- Writing `.sr` test cases for language features
+- Adding regression tests for existing bugs
+- Improving coverage for edge cases
+
+This is one of the best ways to learn how the language actually behaves.
+
+### 📚 Documentation & Examples (Beginner Friendly)
+
+Documentation is sparse and evolving.
+
+Help is welcome for:
+- Writing small language guides or explanations
+- Adding annotated examples in the `examples/` directory
+- Documenting language features that already exist but aren’t explained yet
+
+Clear docs are just as valuable as code.
+
+### 🛠️ Compiler Internals (Intermediate–Advanced)
+
+For contributors interested in compiler internals:
+- Improving diagnostics and error messages
+- Refactoring or simplifying parts of the AST or type checker
+- Exploring alternative MLIR lowering strategies
+- Cleaning up experimental or unused code paths
+
+This is a good place to learn how real compiler codebases evolve.
+
+### 🧭 Finding Your Way Around
+
+If you’re unsure where to start:
+- Look for issues labeled `good-first-issue` or `help-wanted`
+- Open an issue to ask questions or propose an idea
+- Submit a small exploratory PR — imperfect contributions are expected
+
+Learning and iteration matter more than polish here.
 
 ## 📄 License
 
