@@ -20,6 +20,9 @@ fn linkMLIR(LLVM_HOME: []const u8, exe: *std.Build.Step.Compile) !void {
     }
     // Ensure runtime can locate the shared libs
     exe.addRPath(.{ .cwd_relative = LLVM_HOME });
+    // Ensure linker searches the LLVM/MLIR lib dir
+    exe.addLibraryPath(.{ .cwd_relative = LLVM_HOME });
+    exe.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
 
     exe.linkSystemLibrary("pthread");
     exe.linkSystemLibrary("dl");
@@ -70,7 +73,12 @@ pub fn build(b: *std.Build) void {
     });
     exe.use_llvm = use_llvm;
 
-    const LLVM_HOME_S = "/usr/local/lib";
+    const LLVM_HOME_S =
+        b.option([]const u8, "llvm_home", "Path to LLVM/MLIR lib directory") orelse
+        (std.process.getEnvVarOwned(b.allocator, "LLVM_HOME_S") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => "/usr/local/lib",
+            else => "/usr/local/lib",
+        });
     linkMLIR(LLVM_HOME_S, exe) catch |err| {
         std.debug.print("Error linking MLIR: {}\n", .{err});
         @panic("Failed to link MLIR");

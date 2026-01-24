@@ -1,0 +1,20 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    build-essential cmake ninja-build git python3 \
+    clang lld curl ca-certificates pkg-config \
+    zlib1g-dev libzstd-dev libxml2-dev libedit-dev \
+    libstdc++6 libunwind-dev \
+    gnupg lsb-release software-properties-common wget \
+    xz-utils \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh \
+  && chmod +x /tmp/llvm.sh \
+  && /tmp/llvm.sh 18 \
+  && rm -f /tmp/llvm.sh
+
+WORKDIR /work

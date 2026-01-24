@@ -12,19 +12,18 @@ This is intentional.
 
 The goal of sr-lang is exploration and learning, not polish or production readiness. Bugs, awkward designs, and missing pieces reflect my learning process at the time they were written, and improving or replacing them is part of the project’s value.
 
-
 ## Project Philosophy
 
 sr-lang is a learning-first project.
 
 It prioritizes:
+
 - Real implementations over toy examples
 - Exploration over premature optimization
 - Iteration over stability
 
 If you’re looking for a polished or production-ready language, this is probably not it.
 If you’re interested in how languages are built — and rebuilt — this project is meant for that.
-
 
 ## ✨ Features
 
@@ -34,7 +33,7 @@ The language is designed with a focus on modern language features, explicit cont
 
 - **Variables & Constants:** Flexible declarations with type inference (`:=`) or explicit typing (`:`), and compile-time constants (`::`).
 - **Literals:** Comprehensive support for integer (decimal, hex, octal, binary), floating-point, character, string (including raw and byte strings), and boolean literals.
-- **Operators:** A full suite of arithmetic, comparison, logical, bitwise, and assignment operators, including specialized wrapping (`+|`, `+%`) and saturating (`+|`, `+%`) arithmetic.
+- **Operators:** A full suite of arithmetic, comparison, logical, bitwise, and assignment operators, including overflow-aware arithmetic (wrapping `+%` and saturating `+|`).
 - **Functions & Procedures:** Define functions (`fn`) with return values or procedures (`proc`) for side effects. Supports default arguments, variadic parameters (`any`), and external function declarations (`extern`).
 - **Control Flow:**
   - **Conditional Expressions:** `if`/`else` expressions.
@@ -89,6 +88,28 @@ To build and run the compiler, you will need:
 
 - **Zig Compiler:** The project is built using Zig.
 - **LLVM/MLIR Development Libraries:** The compiler links against MLIR for its backend.
+- **Clang 20:** Required for compiling generated LLVM IR (opaque pointers); ensure `clang`/`clang++` resolve to clang-20.
+
+On Ubuntu 22.04, you can install and map clang-20 like this:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y lsb-release wget software-properties-common gnupg
+curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
+chmod +x /tmp/llvm.sh
+sudo /tmp/llvm.sh 20
+sudo ln -sf "$(command -v clang-20)" /usr/local/bin/clang
+sudo ln -sf "$(command -v clang++-20)" /usr/local/bin/clang++
+```
+
+### Required Local Configuration
+
+The build currently assumes system paths that may need adjustment for your machine. Check `build.zig` and update:
+
+- `LLVM_HOME_S` (defaults to `/usr/local/lib`) to your LLVM/MLIR install `lib` directory.
+- The hardcoded `libstdc++` path (`/usr/lib/libstdc++.so.6`) if your distro uses a different location.
+
+Optional integrations (Triton, Torch, Skia) are also configured with hardcoded paths; see `build.zig` and the vendor sections below if you want to enable them.
 
 ### Building LLVM/MLIR
 
@@ -103,6 +124,26 @@ cmake -G Ninja ../llvm    -DLLVM_ENABLE_PROJECTS=mlir;llvm     -DLLVM_TARGETS_TO
 ninja
 cmake --install .
 ```
+
+### Docker Release Build (Ubuntu 22.04)
+
+If you want a portable Linux release without rebuilding LLVM/MLIR every time, use the Docker flow in this repo.
+
+Build the base image once:
+
+```bash
+./build_release_image.sh
+```
+
+Then build
+
+```bash
+./release_docker.sh
+```
+
+The release flow requires clang-20. The scripts map `clang` and `clang++` to `clang-20` to avoid opaque-pointers linker errors when compiling generated LLVM IR.
+
+This produces `sr-lang-0.1.0-linux-x86_64.tar.gz` from `zig-out` and caches LLVM/MLIR under `_llvm/build-<commit>/`.
 
 ### Building the Compiler
 
@@ -128,16 +169,26 @@ To run the "hello world" example:
 zig build run -- examples/hello.sr
 ```
 
-Alternatively, after building, you can directly run the executable:
+Alternatively, after building, you can directly run the executable (debug build name):
 
 ```bash
 ./zig-out/bin/sr_lang examples/hello.sr
 ```
 
-Release Version. (Why two different names? Because I can.)
+Release version (Why two different names? Because I can.):
 
 ```bash
 ./zig-out/bin/src examples/hello.sr
+```
+
+### Testing & Checks
+
+```bash
+zig build test
+```
+
+```bash
+zig build check
 ```
 
 ### Building Vendor Packages
@@ -201,6 +252,13 @@ The language is in an **alpha** state. This means:
 - `vendor/`: A collection of external packages that can be imported using the `import` keyword.
 - `build.zig`: The Zig build script for the project.
 
+## 📚 Documentation
+
+- `features.md`: Detailed language feature inventory derived from compiler sources.
+- `docs/`: In-progress design notes and documentation.
+- `BUGS.md`: Known issues and sharp edges.
+- `TODO.md`: Short- and long-term work items.
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to open issues or pull requests.
@@ -227,6 +285,7 @@ Ownership of entire modules is encouraged.
 Many language features exist but lack thorough testing.
 
 Contributions here include:
+
 - Writing `.sr` test cases for language features
 - Adding regression tests for existing bugs
 - Improving coverage for edge cases
@@ -238,6 +297,7 @@ This is one of the best ways to learn how the language actually behaves.
 Documentation is sparse and evolving.
 
 Help is welcome for:
+
 - Writing small language guides or explanations
 - Adding annotated examples in the `examples/` directory
 - Documenting language features that already exist but aren’t explained yet
@@ -247,6 +307,7 @@ Clear docs are just as valuable as code.
 ### 🛠️ Compiler Internals (Intermediate–Advanced)
 
 For contributors interested in compiler internals:
+
 - Improving diagnostics and error messages
 - Refactoring or simplifying parts of the AST or type checker
 - Exploring alternative MLIR lowering strategies
@@ -257,6 +318,7 @@ This is a good place to learn how real compiler codebases evolve.
 ### 🧭 Finding Your Way Around
 
 If you’re unsure where to start:
+
 - Look for issues labeled `good-first-issue` or `help-wanted`
 - Open an issue to ask questions or propose an idea
 - Submit a small exploratory PR — imperfect contributions are expected
