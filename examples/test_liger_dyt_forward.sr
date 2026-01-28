@@ -1,0 +1,133 @@
+package main
+
+liger_dyt :: import "vendor/liger_dyt"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+math :: import "std/math"
+
+PtrF32 :: triton.Ptr(f32)
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    n_rows: i32 = 32
+    n_cols: i32 = 256
+    size := n_rows.(usize) * n_cols.(usize) * 4
+
+    x_h_ptr := alloc.alloc(size) orelse return
+    x_h := x_h_ptr.^*f32
+    y_h_ptr := alloc.alloc(size) orelse return
+    y_h := y_h_ptr.^*f32
+    y_ref_ptr := alloc.alloc(size) orelse return
+    y_ref := y_ref_ptr.^*f32
+
+    gamma_h_ptr := alloc.alloc(n_cols.(usize) * 4) orelse return
+    gamma_h := gamma_h_ptr.^*f32
+    beta_h_ptr := alloc.alloc(n_cols.(usize) * 4) orelse return
+    beta_h := beta_h_ptr.^*f32
+    alpha_h_ptr := alloc.alloc(4) orelse return
+    alpha_h := alpha_h_ptr.^*f32
+
+    i: i32 = 0
+    total: i32 = n_rows * n_cols
+    while i < total {
+        x_h[i] = ((i % 97) - 48).(f32) * 0.01
+        i = i + 1
+    }
+
+    i = 0
+    while i < n_cols {
+        gamma_h[i] = ((i % 31) - 15).(f32) * 0.02
+        beta_h[i] = ((i % 17) - 8).(f32) * 0.03
+        i = i + 1
+    }
+
+    alpha_h[0] = 0.9.(f32)
+
+    r: i32 = 0
+    while r < n_rows {
+        c: i32 = 0
+        while c < n_cols {
+            idx := r * n_cols + c
+            tanh_val := math.tanhf(alpha_h[0] * x_h[idx])
+            y_ref[idx] = tanh_val * gamma_h[c] + beta_h[c]
+            c = c + 1
+        }
+        r = r + 1
+    }
+
+    x_d: cuda.CUdeviceptr = 0
+    y_d: cuda.CUdeviceptr = 0
+    gamma_d: cuda.CUdeviceptr = 0
+    beta_d: cuda.CUdeviceptr = 0
+    alpha_d: cuda.CUdeviceptr = 0
+
+    _ = cuda.cuMemAlloc(&x_d, size)
+    _ = cuda.cuMemAlloc(&y_d, size)
+    _ = cuda.cuMemAlloc(&gamma_d, n_cols.(usize) * 4)
+    _ = cuda.cuMemAlloc(&beta_d, n_cols.(usize) * 4)
+    _ = cuda.cuMemAlloc(&alpha_d, 4)
+
+    _ = cuda.cuMemcpyHtoD(x_d, x_h.^?*void, size)
+    _ = cuda.cuMemcpyHtoD(gamma_d, gamma_h.^?*void, n_cols.(usize) * 4)
+    _ = cuda.cuMemcpyHtoD(beta_d, beta_h.^?*void, n_cols.(usize) * 4)
+    _ = cuda.cuMemcpyHtoD(alpha_d, alpha_h.^?*void, 4)
+
+    triton.launch(
+        liger_dyt.dyt_fwd_kernel,
+        grid = (n_rows, 1, 1),
+        block = (128, 1, 1),
+        BLOCK_SIZE = 256,
+        x_d,
+        y_d,
+        alpha_d,
+        gamma_d,
+        beta_d,
+        1,
+        n_cols,
+    )
+
+    _ = cuda.cuMemcpyDtoH(y_h.^?*void, y_d, size)
+
+    success := true
+    epsilon: f32 = 1.e-3
+    i = 0
+    while i < total {
+        diff := y_h[i] - y_ref[i]
+        if diff < 0 { diff = -diff }
+        if diff > epsilon {
+            io.println("dyt fwd mismatch at %d: expected %f got %f", i, y_ref[i], y_h[i])
+            success = false
+            break
+        }
+        i = i + 1
+    }
+
+    if success { io.println("DyT forward verification passed", ()) }
+
+    _ = cuda.cuMemFree(x_d)
+    _ = cuda.cuMemFree(y_d)
+    _ = cuda.cuMemFree(gamma_d)
+    _ = cuda.cuMemFree(beta_d)
+    _ = cuda.cuMemFree(alpha_d)
+}

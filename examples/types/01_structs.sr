@@ -1,0 +1,52 @@
+package main
+
+// Chapter 5: Structs
+//
+// Structs are the primary way to create custom composite types.
+
+io :: import "std/io"
+
+// Define a struct `Point` with two fields `x` and `y`.
+Point :: struct {
+    x: i32,
+    y: i32,
+}
+
+// Structs can be nested.
+Rect :: struct {
+    top_left: Point,
+    bottom_right: Point,
+}
+
+// Methods can be defined for structs.
+// A method is just a function/proc with the struct as the first argument.
+area :: fn(r: Rect) i32 {
+    width := r.bottom_right.x - r.top_left.x
+    height := r.bottom_right.y - r.top_left.y
+    return width * height
+}
+
+main :: proc() {
+    io.println("--- Structs ---", 0)
+
+    // Instantiation
+    p1 := Point{ x: 0, y: 0 }
+    // Field access
+    io.println("p1: (%d, %d)", (p1.x, p1.y))
+
+    // Struct update syntax
+    // Create a new struct based on `p1`, changing only `x`.
+    p2 := Point{ x: 10, ..p1 }
+    io.println("p2: (%d, %d)", (p2.x, p2.y))
+
+    // Nested structs
+    r := Rect{
+        top_left: p1,
+        bottom_right: Point{ x: 20, y: 10 },
+    }
+
+    // Method call syntax
+    // `r.area()` is syntax sugar for `area(r)`
+    a := r.area()
+    io.println("Area of rect: %d", a)
+}

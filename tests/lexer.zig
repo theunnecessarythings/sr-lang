@@ -774,7 +774,6 @@ test "imaginary literals: integers & floats" {
     // unary minus stays separate
     try testSingle("-1i", &.{ .minus, .imaginary_literal });
 
-    // NOT imaginary: the '.' splits before 'i'
     try testSingle("1.i", &.{ .integer_literal, .dot, .identifier });
 }
 
@@ -787,8 +786,8 @@ test "printf call emits closing rparen" {
         \\printf(fmt.(*void), r);
     , &.{
         .identifier, .lparen,
-        .identifier, .dotlparen, .star, .identifier, .rparen, // closes .dotlparen
-        .comma, .identifier, .rparen, .eos, // closes printf(
+        .identifier, .dotlparen, .star, .identifier, .rparen,
+        .comma, .identifier, .rparen, .eos,
     });
 }
 

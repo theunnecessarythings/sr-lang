@@ -1,0 +1,137 @@
+package main
+
+liger_tvd :: import "vendor/liger_tvd"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+
+PtrF32 :: triton.Ptr(f32)
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    n_rows: i32 = 4
+    n_cols: i32 = 128
+    stride: i32 = n_cols
+    size := n_rows.(usize) * n_cols.(usize) * 4
+    loss_size := n_rows.(usize) * 4
+    label_size := n_rows.(usize) * 4
+
+    p_h_ptr := alloc.alloc(size) orelse return
+    p_h := p_h_ptr.^*f32
+    q_h_ptr := alloc.alloc(size) orelse return
+    q_h := q_h_ptr.^*f32
+    loss_h_ptr := alloc.alloc(loss_size) orelse return
+    loss_h := loss_h_ptr.^*f32
+    label_h_ptr := alloc.alloc(label_size) orelse return
+    label_h := label_h_ptr.^*i32
+
+    i: i32 = 0
+    total: i32 = n_rows * n_cols
+    while i < total {
+        p_h[i] = (i % 13).(f32) * 0.01
+        q_h[i] = (i % 7).(f32) * 0.02
+        i = i + 1
+    }
+    i = 0
+    while i < n_rows {
+        label_h[i] = 0
+        i = i + 1
+    }
+
+    // CPU reference (sum reduction per row)
+    loss_ref_ptr := alloc.alloc(loss_size) orelse return
+    loss_ref := loss_ref_ptr.^*f32
+    r: i32 = 0
+    while r < n_rows {
+        base := r * n_cols
+        sum: f32 = 0.0
+        c: i32 = 0
+        while c < n_cols {
+            diff := p_h[base + c] - q_h[base + c]
+            if diff < 0 { diff = -diff }
+            sum = sum + 0.5.(f32) * diff
+            c = c + 1
+        }
+        loss_ref[r] = sum
+        r = r + 1
+    }
+
+    p_d: cuda.CUdeviceptr = 0
+    q_d: cuda.CUdeviceptr = 0
+    loss_d: cuda.CUdeviceptr = 0
+    grads_d: cuda.CUdeviceptr = 0
+    label_d: cuda.CUdeviceptr = 0
+
+    _ = cuda.cuMemAlloc(&p_d, size)
+    _ = cuda.cuMemAlloc(&q_d, size)
+    _ = cuda.cuMemAlloc(&loss_d, loss_size)
+    _ = cuda.cuMemAlloc(&grads_d, size)
+    _ = cuda.cuMemAlloc(&label_d, label_size)
+
+    _ = cuda.cuMemcpyHtoD(p_d, p_h.^?*void, size)
+    _ = cuda.cuMemcpyHtoD(q_d, q_h.^?*void, size)
+    _ = cuda.cuMemcpyHtoD(label_d, label_h.^?*void, label_size)
+
+    triton.launch(
+        liger_tvd.tvd_forward_kernel,
+        grid = (n_rows, 1, 1),
+        block = (128, 1, 1),
+        BLOCK_SIZE = 128,
+        HAS_LABEL = 0,
+        REDUCTION = 1,
+        p_d,
+        stride,
+        q_d,
+        stride,
+        loss_d,
+        1,
+        grads_d,
+        stride,
+        label_d,
+        -100,
+        n_cols,
+    )
+
+    _ = cuda.cuMemcpyDtoH(loss_h.^?*void, loss_d, loss_size)
+
+    success := true
+    epsilon: f32 = 1.e-3
+    r = 0
+    while r < n_rows {
+        diff := loss_h[r] - loss_ref[r]
+        if diff < 0 { diff = -diff }
+        if diff > epsilon {
+            io.println("tvd loss mismatch at %d: expected %f got %f", r, loss_ref[r], loss_h[r])
+            success = false
+            break
+        }
+        r = r + 1
+    }
+    if success { io.println("TVD forward verification passed", ()) }
+
+    _ = cuda.cuMemFree(p_d)
+    _ = cuda.cuMemFree(q_d)
+    _ = cuda.cuMemFree(loss_d)
+    _ = cuda.cuMemFree(grads_d)
+    _ = cuda.cuMemFree(label_d)
+}

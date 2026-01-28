@@ -1,0 +1,120 @@
+package main
+
+liger_kldiv :: import "vendor/liger_kldiv"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+math :: import "std/math"
+
+PtrF32 :: triton.Ptr(f32)
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    n_rows: i32 = 4
+    n_cols: i32 = 128
+    y_stride: i32 = n_cols
+    gt_stride: i32 = n_cols
+    size := n_rows.(usize) * n_cols.(usize) * 4
+    loss_size := n_rows.(usize) * 4
+
+    y_h_ptr := alloc.alloc(size) orelse return
+    y_h := y_h_ptr.^*f32
+    gt_h_ptr := alloc.alloc(size) orelse return
+    gt_h := gt_h_ptr.^*f32
+    loss_h_ptr := alloc.alloc(loss_size) orelse return
+    loss_h := loss_h_ptr.^*f32
+
+    i: i32 = 0
+    total: i32 = n_rows * n_cols
+    while i < total {
+        y_h[i] = ((i % n_cols) - 64).(f32) * 0.01
+        gt_h[i] = ((i % 17) + 1).(f32) * 0.001
+        i = i + 1
+    }
+
+    eps: f32 = 1.e-5
+
+    loss_ref_ptr := alloc.alloc(loss_size) orelse return
+    loss_ref := loss_ref_ptr.^*f32
+    r: i32 = 0
+    while r < n_rows {
+        base := r * n_cols
+        sum: f32 = 0.0
+        c: i32 = 0
+        while c < n_cols {
+            gt := gt_h[base + c]
+            clipped := if gt > eps { gt } else { eps }
+            sum = sum + gt * (math.logf(clipped) - y_h[base + c])
+            c = c + 1
+        }
+        loss_ref[r] = sum
+        r = r + 1
+    }
+
+    y_d: cuda.CUdeviceptr = 0
+    gt_d: cuda.CUdeviceptr = 0
+    loss_d: cuda.CUdeviceptr = 0
+
+    _ = cuda.cuMemAlloc(&y_d, size)
+    _ = cuda.cuMemAlloc(&gt_d, size)
+    _ = cuda.cuMemAlloc(&loss_d, loss_size)
+
+    _ = cuda.cuMemcpyHtoD(y_d, y_h.^?*void, size)
+    _ = cuda.cuMemcpyHtoD(gt_d, gt_h.^?*void, size)
+
+    triton.launch(
+        liger_kldiv.kldiv_forward_kernel,
+        grid = (n_rows, 1, 1),
+        block = (128, 1, 1),
+        BLOCK_SIZE = 128,
+        y_d,
+        y_stride,
+        gt_d,
+        gt_stride,
+        loss_d,
+        1,
+        n_cols,
+        eps,
+    )
+
+    _ = cuda.cuMemcpyDtoH(loss_h.^?*void, loss_d, loss_size)
+
+    success := true
+    epsilon: f32 = 1.e-3
+    i = 0
+    while i < n_rows {
+        diff := loss_h[i] - loss_ref[i]
+        if diff < 0 { diff = -diff }
+        if diff > epsilon {
+            io.println("loss mismatch at %d: expected %f got %f", i, loss_ref[i], loss_h[i])
+            success = false
+            break
+        }
+        i = i + 1
+    }
+    if success { io.println("KLDiv forward verification passed", ()) }
+
+    _ = cuda.cuMemFree(y_d)
+    _ = cuda.cuMemFree(gt_d)
+    _ = cuda.cuMemFree(loss_d)
+}

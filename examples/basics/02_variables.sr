@@ -1,0 +1,67 @@
+package main
+
+// Chapter 2: Variables, Constants, and Types
+//
+// Learn how to store and manage data.
+
+io :: import "std/io"
+
+// --- Constants ---
+// Constants are declared with `::`. Their value must be known at compile-time.
+PI :: 3.14159
+MAX_USERS :: 100
+GREETING :: "Welcome"
+
+// --- Global Variables ---
+// Variables are declared with `: type = value` or `:= value`.
+// Global variables live for the entire lifetime of the program.
+global_counter: i32 = 0
+
+main :: proc() {
+    io.println("--- Variables & Constants ---", 0)
+
+    // 1. Type Inference (`:=`)
+    // The compiler infers the type from the value (i32 in this case).
+    x := 42
+    io.println("Inferred x: %d", x)
+
+    // 2. Explicit Typing (`: type =`)
+    // Useful when you want a specific type (e.g., f32 instead of f64).
+    y: f32 = 1.5
+    io.println("Explicit f32 y: %f", y)
+
+    // 3. Reassignment
+    // Variables declared with `:=` or `:` are mutable by default.
+    x = 100
+    io.println("Mutated x: %d", x)
+
+    // 4. Constants usage
+    io.println("Constant PI: %f", PI)
+
+    // --- Basic Types ---
+
+    // Integers: i8, u8, i16, u16, i32, u32, i64, u64, isize, usize
+    byte_val: u8 = 255
+    large_val: i64 = 9_000_000_000
+
+    // Floating Point: f32, f64
+    double_precision := 1.23456789
+
+    // Booleans: bool (true or false)
+    is_active := true
+    
+    // Strings: string
+    // Strings are slices of bytes, usually UTF-8.
+    name := "Sr-Lang"
+
+    io.println("Byte: %d, Large: %d", (byte_val, large_val))
+    io.println("Boolean: %d", is_active) // Prints 1 for true
+    io.println("String: %s", name)
+
+    // --- Type Conversions (Casts) ---
+    // You can convert between types using the postfix `.` operator.
+    
+    float_val := 3.9
+    int_val := float_val.(i32) // Truncates to 3
+    io.println("Cast 3.9 to int: %d", int_val)
+}

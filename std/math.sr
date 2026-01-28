@@ -8,8 +8,10 @@ cos :: extern proc(x: f64) f64
 sin :: extern proc(x: f64) f64
 tan :: extern proc(x: f64) f64
 sqrt :: extern proc(x: f64) f64
+sqrtf :: extern proc(x: f32) f32
 pow :: extern proc(x: f64, y: f64) f64
 expf :: extern proc(x: f32) f32
+tanhf :: extern proc(x: f32) f32
 
 rand :: extern proc() i64
 
@@ -20,6 +22,8 @@ fmod :: extern proc(x: f64, y: f64) f64
 fmodf :: extern proc(x: f32, y: f32) f32
 log10f :: extern proc(x: f32) f32
 log10 :: extern proc(x: f64) f64
+logf :: extern proc(x: f32) f32
+log :: extern proc(x: f64) f64
 round :: extern proc(x: f64) f64
 
 max :: proc(comptime T: type, a: T, b: T) T {

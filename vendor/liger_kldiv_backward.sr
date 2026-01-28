@@ -1,0 +1,32 @@
+package liger_kldiv_backward
+
+triton :: import "vendor/triton"
+
+PtrF32 :: triton.Ptr(f32)
+
+/// KLDiv backward kernel (simplified: log_target = false).
+kldiv_backward_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    target_ptr: PtrF32,
+    target_stride: i32,
+    new_grads_ptr: PtrF32,
+    new_grads_stride: i32,
+    n_cols: i32,
+    comptime BLOCK_SIZE: i32 = 1024,
+) {
+    pid := triton.program_id(0)
+    target_off_b := triton.splat(pid * target_stride, BLOCK_SIZE)
+    grads_off_b := triton.splat(pid * new_grads_stride, BLOCK_SIZE)
+    offs := triton.make_range(0, BLOCK_SIZE)
+
+    i: i32 = 0
+    while i < n_cols {
+        idx := offs + triton.splat(i, BLOCK_SIZE)
+        mask := idx < triton.splat(n_cols, BLOCK_SIZE)
+        target_ptrs := target_ptr + (target_off_b + idx)
+        grads_ptrs := new_grads_ptr + (grads_off_b + idx)
+        target := triton.load(target_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+        res := triton.splat(0.(f32), BLOCK_SIZE) - target
+        triton.store(grads_ptrs, res, mask)
+        i = i + BLOCK_SIZE
+    }
+}

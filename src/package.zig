@@ -57,6 +57,18 @@ pub const CompilationUnit = struct {
             .sources = .{},
         });
     }
+
+    /// Find a file unit by package name + filepath.
+    pub fn findFileUnit(self: *CompilationUnit, pkg_name: []const u8, filepath: []const u8) ?*FileUnit {
+        const pkg = self.packages.getPtr(pkg_name) orelse return null;
+        return pkg.sources.getPtr(filepath);
+    }
+
+    /// Find an AST by package name + filepath.
+    pub fn findAst(self: *CompilationUnit, pkg_name: []const u8, filepath: []const u8) ?*ast.Ast {
+        const unit = self.findFileUnit(pkg_name, filepath) orelse return null;
+        return unit.ast;
+    }
 };
 
 /// Tracks the parsed data associated with a single source file.

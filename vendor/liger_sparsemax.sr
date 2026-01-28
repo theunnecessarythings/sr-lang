@@ -1,0 +1,105 @@
+package liger_sparsemax
+
+triton :: import "vendor/triton"
+
+PtrF32 :: triton.Ptr(f32)
+
+/// Sparsemax forward kernel (expects sorted_x as input).
+sparsemax_forward_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    x_ptr: PtrF32,
+    x_stride: i32,
+    sorted_x_ptr: PtrF32,
+    sorted_x_stride: i32,
+    out_ptr: PtrF32,
+    out_stride: i32,
+    n_cols: i32,
+    comptime BLOCK_SIZE: i32 = 1024,
+) {
+    row := triton.program_id(0)
+    offs := triton.make_range(0, BLOCK_SIZE)
+    offs_f := triton.make_range_f32(0, BLOCK_SIZE)
+    mask := offs < triton.splat(n_cols, BLOCK_SIZE)
+
+    x_base := triton.splat(row * x_stride, BLOCK_SIZE)
+    sorted_base := triton.splat(row * sorted_x_stride, BLOCK_SIZE)
+    out_base := triton.splat(row * out_stride, BLOCK_SIZE)
+
+    z_sorted_ptrs := sorted_x_ptr + (sorted_base + offs)
+    z_sorted := triton.load(z_sorted_ptrs, mask, triton.splat(-3.4028235e38.(f32), BLOCK_SIZE))
+
+    zeros := triton.splat(0.0.(f32), BLOCK_SIZE)
+    z_valid := triton.where(mask, z_sorted, zeros)
+    cssv := triton.scan_sum(f32, z_valid, 0)
+
+    r := offs_f + 1.0.(f32)
+    t_vec := (cssv - triton.splat(1.0.(f32), BLOCK_SIZE)) / r
+    support := z_sorted > t_vec
+
+    support_f := triton.where(support, triton.splat(1.0.(f32), BLOCK_SIZE), zeros)
+    k := triton.reduce_sum(f32, support_f, 0)
+    if k < 1.0.(f32) { k = 1.0.(f32) }
+
+    s := triton.reduce_sum(f32, triton.where(support, z_sorted, zeros), 0)
+    tau := (s - 1.0.(f32)) / k
+
+    x_ptrs := x_ptr + (x_base + offs)
+    x_block := triton.load(x_ptrs, mask, zeros)
+    tau_b := triton.splat(tau, BLOCK_SIZE)
+    y := triton.maximum(x_block - tau_b, zeros)
+
+    out_ptrs := out_ptr + (out_base + offs)
+    triton.store(out_ptrs, y, mask)
+}
+
+/// Sparsemax backward kernel.
+sparsemax_backward_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    out_ptr: PtrF32,
+    go_ptr: PtrF32,
+    gi_ptr: PtrF32,
+    stride: i32,
+    n_cols: i32,
+    comptime BLOCK_SIZE: i32 = 1024,
+) {
+    row := triton.program_id(0)
+    offs := triton.make_range(0, BLOCK_SIZE)
+    mask0 := offs < 1.(i32)
+
+    base := triton.splat(row * stride, BLOCK_SIZE)
+
+    supp_cnt: f32 = 0.0.(f32)
+    go_sum: f32 = 0.0.(f32)
+    i: i32 = 0
+    while i < n_cols {
+        idx := triton.splat(i, BLOCK_SIZE)
+        out_ptrs := out_ptr + (base + idx)
+        go_ptrs := go_ptr + (base + idx)
+        out_vec := triton.load(out_ptrs, mask0, triton.splat(0.(f32), BLOCK_SIZE))
+        go_vec := triton.load(go_ptrs, mask0, triton.splat(0.(f32), BLOCK_SIZE))
+        out_val := triton.reduce_sum(f32, out_vec, 0)
+        go_val := triton.reduce_sum(f32, go_vec, 0)
+        if out_val > 0.0.(f32) {
+            supp_cnt = supp_cnt + 1.0.(f32)
+            go_sum = go_sum + go_val
+        }
+        i = i + 1
+    }
+
+    if supp_cnt < 1.0.(f32) { supp_cnt = 1.0.(f32) }
+    mean_go := go_sum / supp_cnt
+
+    i = 0
+    while i < n_cols {
+        idx := triton.splat(i, BLOCK_SIZE)
+        out_ptrs := out_ptr + (base + idx)
+        go_ptrs := go_ptr + (base + idx)
+        gi_ptrs := gi_ptr + (base + idx)
+        out_vec := triton.load(out_ptrs, mask0, triton.splat(0.(f32), BLOCK_SIZE))
+        go_vec := triton.load(go_ptrs, mask0, triton.splat(0.(f32), BLOCK_SIZE))
+        out_val := triton.reduce_sum(f32, out_vec, 0)
+        go_val := triton.reduce_sum(f32, go_vec, 0)
+        gi_val := 0.0.(f32)
+        if out_val > 0.0.(f32) { gi_val = go_val - mean_go }
+        triton.store(gi_ptrs, triton.splat(gi_val, BLOCK_SIZE), mask0)
+        i = i + 1
+    }
+}

@@ -1,0 +1,54 @@
+package main
+
+// Chapter 7: Arrays and Slices
+//
+// Managing collections of data.
+
+io :: import "std/io"
+
+main :: proc() {
+    io.println("--- Arrays & Slices ---", 0)
+
+    // 1. Arrays
+    // Fixed-size, homogeneous collections. Size is part of the type.
+    arr: [5]i32 = [10, 20, 30, 40, 50]
+    
+    // Type inference for array literals
+    arr2 := [1, 2, 3]
+
+    io.println("Array[0]: %d", arr[0])
+    io.println("Array length: %d", arr.len)
+
+    // 2. Slices
+    // A view into an array. Has a pointer and a length.
+    // Syntax: `array[start..end]` (exclusive end)
+    slice := arr[1..4] // Elements at indices 1, 2, 3 -> [20, 30, 40]
+    
+    io.println("Slice len: %d", slice.len)
+    io.println("Slice[0]: %d", slice[0]) // This is arr[1]
+
+    // Modifying the slice modifies the underlying array
+    slice[0] = 999
+    io.println("Modified Array[1]: %d", arr[1])
+
+    // 3. Dynamic Arrays
+    // Growable arrays (vectors).
+    // Syntax: `[dyn]T`
+    
+    // Currently, std/array provides a wrapper, or you can use the built-in syntax if supported.
+    // The built-in dynamic array syntax `[dyn]T` is:
+    dyn_arr: [dyn]i32 = []
+    
+    // Append items
+    dyn_arr.append(1)
+    dyn_arr.append(2)
+    
+    io.println("Dyn len: %d", dyn_arr.len)
+    
+    // Iteration works on all three
+    sum := 0
+    for x in slice {
+        sum = sum + x
+    }
+    io.println("Sum of slice: %d", sum)
+}

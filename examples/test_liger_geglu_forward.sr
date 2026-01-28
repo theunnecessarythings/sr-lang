@@ -1,0 +1,112 @@
+package main
+
+liger_geglu :: import "vendor/liger_geglu"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+math :: import "std/math"
+
+PtrF32 :: triton.Ptr(f32)
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    n_rows: i32 = 128
+    n_cols: i32 = 1024
+    size := n_rows.(usize) * n_cols.(usize) * 4
+
+    a_h_ptr := alloc.alloc(size) orelse return
+    a_h := a_h_ptr.^*f32
+    b_h_ptr := alloc.alloc(size) orelse return
+    b_h := b_h_ptr.^*f32
+    c_h_ptr := alloc.alloc(size) orelse return
+    c_h := c_h_ptr.^*f32
+
+    i: i32 = 0
+    total: i32 = n_rows * n_cols
+    while i < total {
+        a_h[i] = (i % 17).(f32) * 0.01
+        b_h[i] = (i % 23).(f32) * 0.02
+        i = i + 1
+    }
+
+    a_d: cuda.CUdeviceptr = 0
+    b_d: cuda.CUdeviceptr = 0
+    c_d: cuda.CUdeviceptr = 0
+
+    _ = cuda.cuMemAlloc(&a_d, size)
+    _ = cuda.cuMemAlloc(&b_d, size)
+    _ = cuda.cuMemAlloc(&c_d, size)
+    _ = cuda.cuMemcpyHtoD(a_d, a_h.^?*void, size)
+    _ = cuda.cuMemcpyHtoD(b_d, b_h.^?*void, size)
+
+    stride: i32 = n_cols
+    block_size: i32 = 256
+    grid_x: i32 = n_rows
+    grid_y: i32 = (n_cols + block_size - 1) / block_size
+
+    triton.launch(
+        liger_geglu.geglu_tanh_forward_kernel_tiled,
+        grid = (grid_x, grid_y, 1),
+        block = (block_size, 1, 1),
+        BLOCK_SIZE = 256,
+        a_d,
+        b_d,
+        c_d,
+        stride,
+        n_cols,
+    )
+
+    _ = cuda.cuMemcpyDtoH(c_h.^?*void, c_d, size)
+
+    success := true
+    epsilon: f32 = 1.e-3
+    r: i32 = 0
+    while r < n_rows and success {
+        c: i32 = 0
+        while c < n_cols {
+            idx := r * n_cols + c
+            a := a_h[idx]
+            b := b_h[idx]
+            a_cubed := a * a * a
+            tanh_arg := 0.7978845608.(f32) * (a + 0.044715.(f32) * a_cubed)
+            tanh_val := math.tanhf(tanh_arg)
+            gelu := 0.5.(f32) * a * (1.0.(f32) + tanh_val)
+            expected := gelu * b
+            actual := c_h[idx]
+            diff := actual - expected
+            if diff < 0 { diff = -diff }
+            if diff > epsilon {
+                io.println("Mismatch at row %d col %d: expected %f got %f", r, c, expected, actual)
+                success = false
+                break
+            }
+            c = c + 1
+        }
+        r = r + 1
+    }
+    if success { io.println("GEGLU forward verification passed", ()) }
+
+    _ = cuda.cuMemFree(a_d)
+    _ = cuda.cuMemFree(b_d)
+    _ = cuda.cuMemFree(c_d)
+}

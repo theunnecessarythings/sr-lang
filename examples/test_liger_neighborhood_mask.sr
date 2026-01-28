@@ -1,0 +1,100 @@
+package main
+
+liger_neigh :: import "vendor/liger_fused_neighborhood_attention"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+
+PtrF32 :: triton.Ptr(f32)
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    seq_len: i32 = 32
+    kernel_size: i32 = 5
+    dilation: i32 = 2
+    total := seq_len * seq_len
+    size := total.(usize) * 4
+
+    mask_h_ptr := alloc.alloc(size) orelse return
+    mask_h := mask_h_ptr.^*f32
+    ref_h_ptr := alloc.alloc(size) orelse return
+    ref_h := ref_h_ptr.^*f32
+
+    r: i32 = 0
+    while r < seq_len {
+        c: i32 = 0
+        half := kernel_size / 2
+        start := r - half * dilation
+        if start < 0 { start = 0 }
+        end := r + half * dilation + 1
+        if end > seq_len { end = seq_len }
+        while c < seq_len {
+            idx := r * seq_len + c
+            v: f32 = 0.0.(f32)
+            if c >= start and c < end {
+                if dilation > 1 {
+                    if ((c - r) % dilation) == 0 { v = 1.0.(f32) }
+                } else {
+                    v = 1.0.(f32)
+                }
+            }
+            ref_h[idx] = v
+            c = c + 1
+        }
+        r = r + 1
+    }
+
+    mask_d: cuda.CUdeviceptr = 0
+    _ = cuda.cuMemAlloc(&mask_d, size)
+
+    triton.launch(
+        liger_neigh.neighborhood_mask_kernel,
+        grid = (seq_len, 1, 1),
+        block = (128, 1, 1),
+        BLOCK_SIZE = 128,
+        mask_d,
+        seq_len,
+        kernel_size,
+        dilation,
+    )
+
+    _ = cuda.cuMemcpyDtoH(mask_h.^?*void, mask_d, size)
+
+    success := true
+    i: i32 = 0
+    epsilon: f32 = 1.e-4
+    while i < total {
+        diff := mask_h[i] - ref_h[i]
+        if diff < 0 { diff = -diff }
+        if diff > epsilon {
+            io.println("mask mismatch at %d: expected %f got %f", i, ref_h[i], mask_h[i])
+            success = false
+            break
+        }
+        i = i + 1
+    }
+
+    if success { io.println("Neighborhood mask verification passed", ()) }
+
+    _ = cuda.cuMemFree(mask_d)
+}

@@ -13,16 +13,13 @@ const DW_TAG_pointer_type: u32 = 0x0f;
 const DW_TAG_array_type: u32 = 0x01;
 const DW_TAG_structure_type: u32 = 0x13;
 const DW_TAG_member: u32 = 0x0d;
-/// Pointer width assumed when emitting LLVM Debug info (64 bits for the target triple).
 const POINTER_SIZE_BITS: u64 = 64;
 
-/// Cache for the MLIR attributes describing a source file and its compile unit.
 pub const DebugFileInfo = struct {
     file_attr: mlir.Attribute,
     compile_unit_attr: mlir.Attribute,
 };
 
-/// Represents the DWARF metadata attached to a function definition.
 pub const DebugSubprogramInfo = struct {
     attr: mlir.Attribute,
     file_id: u32,
@@ -337,7 +334,6 @@ pub fn ensureDIType(self: *Codegen, ty: types.TypeId) !mlir.Attribute {
             var name: []const u8 = "struct";
             var tag: []const u8 = "DW_TAG_structure_type";
 
-            // Determine fields
             switch (kind) {
                 .Struct => {
                     const s = self.context.type_store.get(.Struct, ty);
@@ -380,13 +376,11 @@ pub fn ensureDIType(self: *Codegen, ty: types.TypeId) !mlir.Attribute {
                         offset = 4; // tag size
                     }
 
-                    // Fields
                     const fields = if (kind == .ErrorSet) &[_]types.FieldId{} else if (kind == .Union) self.context.type_store.field_pool.slice(self.context.type_store.get(.Union, ty).fields) else if (kind == .Variant) self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, ty).variants) else self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, ty).variants);
 
                     var payload_align: u64 = if (kind == .Union) 1 else 4;
                     var max_size: u64 = 0;
 
-                    // Calc alignment/size
                     if (kind == .ErrorSet) {
                         const es = self.context.type_store.get(.ErrorSet, ty);
                         const v_sa = abi.abiSizeAlign(self, es.value_ty);

@@ -23,14 +23,12 @@ const Pipeline = pipeline_mod.Pipeline;
 const Builder = tir.Builder;
 const List = std.ArrayList;
 
-/// Metadata for a value binding tracked during lowering.
 pub const ValueBinding = struct {
     value: tir.ValueId,
     ty: types.TypeId,
     is_slot: bool,
 };
 
-/// Snapshot entry showing the previous binding for a name.
 pub const EnvBindingSnapshot = struct {
     name: ast.StrId,
     prev: ?ValueBinding,
@@ -66,7 +64,6 @@ pub const LowerContext = struct {
     expr_type_override_stack: List(ExprTypeOverrideFrame) = .{},
     pattern_binding_names: List(ast.StrId) = .{},
     binding_snapshots: List(EnvBindingSnapshot) = .{},
-    // Scratch buffers to reduce allocs in hot loops
     mlir_scratch_pieces: List(tir.MlirPieceId) = .{},
     mlir_scratch_values: List(tir.ValueId) = .{},
 
@@ -2049,7 +2046,7 @@ fn lowerAssign(
     }
 }
 
-fn lowerStmt(
+pub fn lowerStmt(
     self: *LowerTir,
     ctx: *LowerContext,
     a: *ast.Ast,
@@ -2311,8 +2308,7 @@ fn resolveFieldAccessName(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, fiel
     const pkg_name = self.context.interner.get(ast_ty.pkg_name);
     const filepath = self.context.interner.get(ast_ty.filepath);
 
-    const pkg = self.context.compilation_unit.packages.getPtr(pkg_name) orelse unreachable;
-    const parent_unit = pkg.sources.getPtr(filepath) orelse unreachable;
+    const parent_unit = self.context.compilation_unit.findFileUnit(pkg_name, filepath) orelse unreachable;
     const imported_ast = parent_unit.ast orelse return field_access.field;
 
     const field_name = a.exprs.strs.get(field_access.field);
@@ -2615,6 +2611,9 @@ fn lowerCall(
 
     const row = a.exprs.get(.Call, id);
     const loc = optLoc(a, id);
+    if (ast.isTritonLaunchCall(a, row)) {
+        return try self.lowerTritonLaunch(ctx, a, env, f, blk, id, row, loc);
+    }
 
     if (expected) |ety| {
         const k = self.context.type_store.getKind(ety);
@@ -2845,6 +2844,151 @@ fn lowerCall(
         vals_list.items,
         loc,
     );
+}
+
+fn lowerTritonLaunch(
+    self: *LowerTir,
+    ctx: *LowerContext,
+    a: *ast.Ast,
+    env: *cf.Env,
+    f: *Builder.FunctionFrame,
+    blk: *Builder.BlockFrame,
+    id: ast.ExprId,
+    row: ast.Rows.Call,
+    loc: tir.OptLocId,
+) !tir.ValueId {
+    const ts = self.context.type_store;
+    const args = a.exprs.expr_pool.slice(row.args);
+
+    var positional: List(ast.ExprId) = .empty;
+    defer positional.deinit(self.gpa);
+    var named = std.AutoArrayHashMapUnmanaged(ast.StrId, ast.ExprId){};
+    defer named.deinit(self.gpa);
+
+    for (args) |arg| {
+        if (a.kind(arg) == .NamedArg) {
+            const na = a.exprs.get(.NamedArg, arg);
+            try named.put(self.gpa, na.name, na.value);
+        } else {
+            try positional.append(self.gpa, arg);
+        }
+    }
+
+    if (positional.items.len < 2) return error.LoweringBug;
+
+    const grid_key = a.exprs.strs.intern("grid");
+    const grid_expr = if (named.get(grid_key)) |g| g else positional.items[1];
+    const kernel_args_start: usize = if (named.get(grid_key) != null) 1 else 2;
+    const kernel_args = positional.items[kernel_args_start..];
+
+    const launch_info = a.type_info.getTritonLaunchInfo(id) orelse return error.LoweringBug;
+
+    const ptr_void_ty = ts.mkPtr(ts.tVoid(), false);
+    const opt_ptr_void_ty = ts.mkOptional(ptr_void_ty);
+    const ptr_ptr_void_ty = ts.mkPtr(ptr_void_ty, false);
+    const opt_ptr_ptr_void_ty = ts.mkOptional(ptr_ptr_void_ty);
+    const u64_ty = ts.tU64();
+    const ptr_u8_const = ts.mkPtr(ts.tU8(), true);
+    const kernel_name_str = blk.builder.tirValue(.ConstString, blk, ts.tString(), loc, .{ .text = launch_info.spec_name });
+    const kernel_name_ptr = blk.builder.extractField(blk, ptr_u8_const, kernel_name_str, 0, loc);
+    const kernel_name_len = blk.builder.extractField(blk, ts.tUsize(), kernel_name_str, 1, loc);
+
+    var cur_blk = blk;
+
+    // Build kernel params array [N + 2]*void
+    const params_len = kernel_args.len + 2;
+    const params_array_ty = ts.mkArray(ptr_void_ty, params_len);
+    const params_slot = cur_blk.builder.tirValue(.Alloca, cur_blk, params_array_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
+    const params_array_ptr_ty = ts.mkPtr(params_array_ty, false);
+    const params_ptr = cur_blk.builder.tirValue(.CastBit, cur_blk, params_array_ptr_ty, loc, .{ .value = params_slot });
+    const params_elem_ptr_ty = ts.mkPtr(ptr_void_ty, false);
+
+    for (kernel_args, 0..) |arg_id, i| {
+        const arg_ty = self.getExprType(ctx, a, arg_id);
+        const arg_val = try self.lowerExpr(ctx, a, env, f, cur_blk, arg_id, null, .rvalue);
+        const arg_slot = cur_blk.builder.tirValue(.Alloca, cur_blk, arg_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
+        _ = cur_blk.builder.tirValue(.Store, cur_blk, arg_ty, loc, .{ .ptr = arg_slot, .value = arg_val, .@"align" = 0 });
+        const arg_ptr_void = cur_blk.builder.tirValue(.CastBit, cur_blk, ptr_void_ty, loc, .{ .value = arg_slot });
+        const elem_ptr = cur_blk.builder.gep(cur_blk, params_elem_ptr_ty, params_ptr, &.{ cur_blk.builder.gepConst(0), cur_blk.builder.gepConst(@intCast(i)) }, loc);
+        _ = cur_blk.builder.tirValue(.Store, cur_blk, ptr_void_ty, loc, .{ .ptr = elem_ptr, .value = arg_ptr_void, .@"align" = 0 });
+    }
+
+    // Append scratch pointers (global, profile), initialized to 0
+    const zero_val = cur_blk.builder.tirValue(.ConstInt, cur_blk, u64_ty, loc, .{ .value = 0 });
+    for (0..2) |idx| {
+        const scratch = cur_blk.builder.tirValue(.Alloca, cur_blk, u64_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
+        _ = cur_blk.builder.tirValue(.Store, cur_blk, u64_ty, loc, .{ .ptr = scratch, .value = zero_val, .@"align" = 0 });
+        const scratch_ptr = cur_blk.builder.tirValue(.CastBit, cur_blk, ptr_void_ty, loc, .{ .value = scratch });
+        const slot = cur_blk.builder.gep(cur_blk, params_elem_ptr_ty, params_ptr, &.{ cur_blk.builder.gepConst(0), cur_blk.builder.gepConst(@intCast(kernel_args.len + idx)) }, loc);
+        _ = cur_blk.builder.tirValue(.Store, cur_blk, ptr_void_ty, loc, .{ .ptr = slot, .value = scratch_ptr, .@"align" = 0 });
+    }
+
+    const params_base = cur_blk.builder.gep(cur_blk, ptr_ptr_void_ty, params_ptr, &.{ cur_blk.builder.gepConst(0), cur_blk.builder.gepConst(0) }, loc);
+    const params_ptr_opt = cur_blk.builder.tirValue(.CastBit, cur_blk, opt_ptr_ptr_void_ty, loc, .{ .value = params_base });
+
+    // Grid dimensions
+    const grid_val = try self.lowerExpr(ctx, a, env, f, cur_blk, grid_expr, null, .rvalue);
+    const grid_ty = self.getExprType(ctx, a, grid_expr);
+    const grid_elems = ts.type_pool.slice(ts.get(.Tuple, grid_ty).elems);
+    const i32_ty = ts.tI32();
+    var grid_x = cur_blk.builder.extractField(cur_blk, grid_elems[0], grid_val, 0, loc);
+    var grid_y = cur_blk.builder.extractField(cur_blk, grid_elems[1], grid_val, 1, loc);
+    var grid_z = cur_blk.builder.extractField(cur_blk, grid_elems[2], grid_val, 2, loc);
+    if (!grid_elems[0].eq(i32_ty)) grid_x = self.emitCoerce(cur_blk, grid_x, grid_elems[0], i32_ty, loc);
+    if (!grid_elems[1].eq(i32_ty)) grid_y = self.emitCoerce(cur_blk, grid_y, grid_elems[1], i32_ty, loc);
+    if (!grid_elems[2].eq(i32_ty)) grid_z = self.emitCoerce(cur_blk, grid_z, grid_elems[2], i32_ty, loc);
+
+    // Block dimensions (optional)
+    var block_x = cur_blk.builder.tirValue(.ConstInt, cur_blk, i32_ty, loc, .{ .value = 1 });
+    var block_y = cur_blk.builder.tirValue(.ConstInt, cur_blk, i32_ty, loc, .{ .value = 1 });
+    var block_z = cur_blk.builder.tirValue(.ConstInt, cur_blk, i32_ty, loc, .{ .value = 1 });
+
+    if (named.get(a.exprs.strs.intern("block"))) |block_expr| {
+        const block_ty = self.getExprType(ctx, a, block_expr);
+        if (ts.getKind(block_ty) == .Tuple) {
+            const block_val = try self.lowerExpr(ctx, a, env, f, cur_blk, block_expr, null, .rvalue);
+            const block_elems = ts.type_pool.slice(ts.get(.Tuple, block_ty).elems);
+            block_x = cur_blk.builder.extractField(cur_blk, block_elems[0], block_val, 0, loc);
+            block_y = cur_blk.builder.extractField(cur_blk, block_elems[1], block_val, 1, loc);
+            block_z = cur_blk.builder.extractField(cur_blk, block_elems[2], block_val, 2, loc);
+            if (!block_elems[0].eq(i32_ty)) block_x = self.emitCoerce(cur_blk, block_x, block_elems[0], i32_ty, loc);
+            if (!block_elems[1].eq(i32_ty)) block_y = self.emitCoerce(cur_blk, block_y, block_elems[1], i32_ty, loc);
+            if (!block_elems[2].eq(i32_ty)) block_z = self.emitCoerce(cur_blk, block_z, block_elems[2], i32_ty, loc);
+        } else {
+            block_x = try self.lowerExpr(ctx, a, env, f, cur_blk, block_expr, i32_ty, .rvalue);
+        }
+    } else if (launch_info.num_warps != null) {
+        const warps = launch_info.num_warps.?;
+        const tpw = launch_info.threads_per_warp orelse 32;
+        block_x = cur_blk.builder.tirValue(.ConstInt, cur_blk, i32_ty, loc, .{ .value = @as(u64, @intCast(warps * tpw)) });
+    }
+
+    // Shared memory and stream
+    var shared_mem = cur_blk.builder.tirValue(.ConstInt, cur_blk, i32_ty, loc, .{ .value = 0 });
+    if (named.get(a.exprs.strs.intern("shared_mem"))) |sm_expr| {
+        shared_mem = try self.lowerExpr(ctx, a, env, f, cur_blk, sm_expr, i32_ty, .rvalue);
+    }
+
+    var stream_val = cur_blk.builder.constNull(cur_blk, opt_ptr_void_ty, loc);
+    if (named.get(a.exprs.strs.intern("stream"))) |st_expr| {
+        stream_val = try self.lowerExpr(ctx, a, env, f, cur_blk, st_expr, opt_ptr_void_ty, .rvalue);
+    }
+
+    _ = cur_blk.builder.call(cur_blk, ts.tI32(), ts.strs.intern("rt_triton_launch"), &.{
+        kernel_name_ptr,
+        kernel_name_len,
+        params_ptr_opt,
+        grid_x,
+        grid_y,
+        grid_z,
+        block_x,
+        block_y,
+        block_z,
+        shared_mem,
+        stream_val,
+    }, loc);
+
+    return self.safeUndef(cur_blk, self.getExprType(ctx, a, id), loc);
 }
 
 /// Lower the remaining argument expressions, injecting a packed tuple for `any` trailing parameters.
@@ -3331,9 +3475,19 @@ fn lowerLiteral(
         ty0;
 
     var literal_ty = base_ty;
+    const want_ty = expected_ty orelse ty0;
+    const want_base = if (self.context.type_store.getKind(want_ty) == .Optional)
+        self.context.type_store.get(.Optional, want_ty).elem
+    else
+        want_ty;
     const v = switch (lit.kind) {
         .int => blk_int: {
             if (lit.data != .int or !lit.data.int.valid) break :blk_int blk.builder.tirValue(.ConstUndef, blk, base_ty, loc, .{});
+            const want_kind = self.context.type_store.getKind(want_base);
+            if (want_kind == .F32 or want_kind == .F64) {
+                literal_ty = want_base;
+                break :blk_int blk.builder.tirValue(.ConstFloat, blk, want_base, loc, .{ .value = @as(f64, @floatFromInt(lit.data.int.value)) });
+            }
             break :blk_int blk.builder.tirValue(.ConstInt, blk, base_ty, loc, .{ .value = @as(u64, @intCast(lit.data.int.value)) });
         },
         .imaginary => blk_img: {
@@ -3357,7 +3511,6 @@ fn lowerLiteral(
         .char => blk.builder.tirValue(.ConstInt, blk, base_ty, loc, .{ .value = @as(u64, @intCast(lit.data.char)) }),
     };
 
-    const want_ty = expected_ty orelse ty0;
     return if (!want_ty.eq(literal_ty)) self.emitCoerce(blk, v, literal_ty, want_ty, loc) else v;
 }
 
@@ -4381,7 +4534,7 @@ fn tryLowerImportedModuleMember(
 }
 
 /// Lower identifier expressions, resolving globals/locals/types/slots and emitting loads.
-fn lowerIdentAddrByName(
+pub fn lowerIdentAddrByName(
     self: *LowerTir,
     a: *ast.Ast,
     env: *cf.Env,
@@ -4422,7 +4575,7 @@ fn lowerIdentAddrByName(
     return error.LoweringBug;
 }
 
-fn lowerIdent(
+pub fn lowerIdent(
     self: *LowerTir,
     ctx: *LowerContext,
     a: *ast.Ast,
@@ -4643,6 +4796,10 @@ fn lowerBinary(
     } else if (self.context.type_store.getKind(r_ty_promo) == .Simd and isScalarNumeric(self.context.type_store.getKind(l_ty_promo))) {
         const elem = self.context.type_store.get(.Simd, r_ty_promo).elem;
         l = blk.builder.tirValue(.Broadcast, blk, r_ty_promo, loc, .{ .value = self.emitCoerce(blk, l, l_ty_promo, elem, loc) });
+    } else if (self.context.type_store.getKind(l_ty_promo) == .Tensor and isScalarNumeric(self.context.type_store.getKind(r_ty_promo))) {
+        r = self.emitCoerce(blk, r, r_ty_promo, l_ty_promo, loc);
+    } else if (self.context.type_store.getKind(r_ty_promo) == .Tensor and isScalarNumeric(self.context.type_store.getKind(l_ty_promo))) {
+        l = self.emitCoerce(blk, l, l_ty_promo, r_ty_promo, loc);
     }
 
     // Optional Equality
@@ -5111,6 +5268,7 @@ pub fn lowerExpr(
         },
         .If => cf.lowerIf(self, ctx, a, env, f, blk, id, expected_ty),
         .Call => self.lowerCall(ctx, a, env, f, blk, id, expected_ty, mode),
+        .NamedArg => return error.LoweringBug,
         .Closure => if (mode == .lvalue_addr) error.LoweringBug else try self.lowerClosureExpr(ctx, a, env, f, blk, id, expected_ty),
         .Cast => self.lowerCast(ctx, a, env, f, blk, id, expected_ty),
         .OptionalUnwrap => cf.lowerOptionalUnwrap(self, ctx, a, env, f, blk, id, expected_ty),
@@ -5432,7 +5590,7 @@ pub fn getExprType(self: *const LowerTir, ctx: *LowerContext, a: *ast.Ast, id: a
 }
 
 /// Return the recorded type for declaration `did`, if the checker produced one.
-fn getDeclType(a: *ast.Ast, did: ast.DeclId) ?types.TypeId {
+pub fn getDeclType(a: *ast.Ast, did: ast.DeclId) ?types.TypeId {
     const i = did.toRaw();
     std.debug.assert(i < a.type_info.decl_types.items.len);
     return a.type_info.decl_types.items[i];

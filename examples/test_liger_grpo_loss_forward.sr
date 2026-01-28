@@ -1,0 +1,192 @@
+package main
+
+liger_grpo_loss :: import "vendor/liger_grpo_loss"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+math :: import "std/math"
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    B: i32 = 2
+    L: i32 = 3
+    N: i32 = 64
+    logits_size := B.(usize) * (L + 1).(usize) * N.(usize) * 4
+    ids_size := B.(usize) * L.(usize) * 4
+    out_size := B.(usize) * L.(usize) * 4
+    adv_size := B.(usize) * 4
+
+    logits_h_ptr := alloc.alloc(logits_size) orelse return
+    logits_h := logits_h_ptr.^*f32
+    ids_h_ptr := alloc.alloc(ids_size) orelse return
+    ids_h := ids_h_ptr.^*i32
+    old_logp_h_ptr := alloc.alloc(out_size) orelse return
+    old_logp_h := old_logp_h_ptr.^*f32
+    ref_logp_h_ptr := alloc.alloc(out_size) orelse return
+    ref_logp_h := ref_logp_h_ptr.^*f32
+    adv_h_ptr := alloc.alloc(adv_size) orelse return
+    adv_h := adv_h_ptr.^*f32
+    loss_h_ptr := alloc.alloc(out_size) orelse return
+    loss_h := loss_h_ptr.^*f32
+    lse_h_ptr := alloc.alloc(out_size) orelse return
+    lse_h := lse_h_ptr.^*f32
+    clipped_h_ptr := alloc.alloc(out_size) orelse return
+    clipped_h := clipped_h_ptr.^*i32
+    mask_h_ptr := alloc.alloc(ids_size) orelse return
+    mask_h := mask_h_ptr.^*i32
+
+    i: i32 = 0
+    total_logits: i32 = B * (L + 1) * N
+    while i < total_logits {
+        logits_h[i] = ((i % 97) - 48).(f32) * 0.01
+        i = i + 1
+    }
+    i = 0
+    while i < B * L {
+        ids_h[i] = (i * 7) % N
+        mask_h[i] = 1
+        i = i + 1
+    }
+    i = 0
+    while i < B {
+        adv_h[i] = if (i % 2 == 0) { 0.5 } else { -0.25 }
+        i = i + 1
+    }
+
+    // CPU reference for old_logp, ref_logp, loss (beta=0).
+    ref_loss_ptr := alloc.alloc(out_size) orelse return
+    ref_loss := ref_loss_ptr.^*f32
+    b: i32 = 0
+    while b < B {
+        l: i32 = 0
+        while l < L {
+            base := b * (L + 1) * N + l * N
+            maxv := logits_h[base]
+            c: i32 = 1
+            while c < N {
+                v := logits_h[base + c]
+                if v > maxv { maxv = v }
+                c = c + 1
+            }
+            sum_exp: f32 = 0.0
+            c = 0
+            while c < N {
+                sum_exp = sum_exp + math.expf(logits_h[base + c] - maxv)
+                c = c + 1
+            }
+            lse := maxv + math.logf(sum_exp)
+            idx := ids_h[b * L + l]
+            x := logits_h[base + idx]
+            logp := x - lse
+            old_logp_h[b * L + l] = logp
+            ref_logp_h[b * L + l] = logp
+            ref_loss[b * L + l] = -adv_h[b]
+            lse_h[b * L + l] = lse
+            l = l + 1
+        }
+        b = b + 1
+    }
+
+    logits_d: cuda.CUdeviceptr = 0
+    old_logp_d: cuda.CUdeviceptr = 0
+    ref_logp_d: cuda.CUdeviceptr = 0
+    ids_d: cuda.CUdeviceptr = 0
+    adv_d: cuda.CUdeviceptr = 0
+    mask_d: cuda.CUdeviceptr = 0
+    loss_d: cuda.CUdeviceptr = 0
+    lse_d: cuda.CUdeviceptr = 0
+    clipped_d: cuda.CUdeviceptr = 0
+
+    _ = cuda.cuMemAlloc(&logits_d, logits_size)
+    _ = cuda.cuMemAlloc(&old_logp_d, out_size)
+    _ = cuda.cuMemAlloc(&ref_logp_d, out_size)
+    _ = cuda.cuMemAlloc(&ids_d, ids_size)
+    _ = cuda.cuMemAlloc(&adv_d, adv_size)
+    _ = cuda.cuMemAlloc(&mask_d, ids_size)
+    _ = cuda.cuMemAlloc(&loss_d, out_size)
+    _ = cuda.cuMemAlloc(&lse_d, out_size)
+    _ = cuda.cuMemAlloc(&clipped_d, out_size)
+
+    _ = cuda.cuMemcpyHtoD(logits_d, logits_h.^?*void, logits_size)
+    _ = cuda.cuMemcpyHtoD(old_logp_d, old_logp_h.^?*void, out_size)
+    _ = cuda.cuMemcpyHtoD(ref_logp_d, ref_logp_h.^?*void, out_size)
+    _ = cuda.cuMemcpyHtoD(ids_d, ids_h.^?*void, ids_size)
+    _ = cuda.cuMemcpyHtoD(adv_d, adv_h.^?*void, adv_size)
+    _ = cuda.cuMemcpyHtoD(mask_d, mask_h.^?*void, ids_size)
+
+    triton.launch(
+        liger_grpo_loss.grpo_loss_fwd_kernel,
+        grid = (B, L, 1),
+        block = (1, 1, 1),
+        BLOCK_N = 64,
+        HAS_MASK = 1,
+        logits_d,
+        old_logp_d,
+        ref_logp_d,
+        ids_d,
+        mask_d,
+        adv_d,
+        loss_d,
+        lse_d,
+        clipped_d,
+        1.0,
+        0.0,
+        0.2,
+        0.2,
+        L,
+        N,
+    )
+
+    _ = cuda.cuMemcpyDtoH(loss_h.^?*void, loss_d, out_size)
+    _ = cuda.cuMemcpyDtoH(clipped_h.^?*void, clipped_d, out_size)
+
+    success := true
+    epsilon: f32 = 1.e-3
+    i = 0
+    while i < B * L {
+        diff := loss_h[i] - ref_loss[i]
+        if diff < 0 { diff = -diff }
+        if diff > epsilon {
+            io.println("loss mismatch at %d: expected %f got %f", i, ref_loss[i], loss_h[i])
+            success = false
+            break
+        }
+        if clipped_h[i] != 0 {
+            io.println("clip flag mismatch at %d: expected 0 got %d", i, clipped_h[i])
+            success = false
+            break
+        }
+        i = i + 1
+    }
+    if success { io.println("GRPO loss forward verification passed", ()) }
+
+    _ = cuda.cuMemFree(logits_d)
+    _ = cuda.cuMemFree(old_logp_d)
+    _ = cuda.cuMemFree(ref_logp_d)
+    _ = cuda.cuMemFree(ids_d)
+    _ = cuda.cuMemFree(adv_d)
+    _ = cuda.cuMemFree(mask_d)
+    _ = cuda.cuMemFree(loss_d)
+    _ = cuda.cuMemFree(lse_d)
+    _ = cuda.cuMemFree(clipped_d)
+}

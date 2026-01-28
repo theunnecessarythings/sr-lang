@@ -1,0 +1,92 @@
+package liger_dyt
+
+triton :: import "vendor/triton"
+
+PtrF32 :: triton.Ptr(f32)
+
+/// DyT forward kernel (tanh(alpha * x) * gamma + beta).
+dyt_fwd_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    x_ptr: PtrF32,
+    y_ptr: PtrF32,
+    alpha_ptr: PtrF32,
+    gamma_ptr: PtrF32,
+    beta_ptr: PtrF32,
+    have_beta: i32,
+    n_cols: i32,
+    comptime BLOCK_SIZE: i32 = 1024,
+) {
+    row_id := triton.program_id(0)
+    offs := triton.make_range(0, BLOCK_SIZE)
+    mask := offs < triton.splat(n_cols, BLOCK_SIZE)
+
+    x_ptrs := x_ptr + (offs + triton.splat(row_id * n_cols, BLOCK_SIZE))
+    y_ptrs := y_ptr + (offs + triton.splat(row_id * n_cols, BLOCK_SIZE))
+
+    alpha_vec := triton.load(alpha_ptr + offs, offs < 1.(i32), triton.splat(0.(f32), BLOCK_SIZE))
+    alpha := triton.reduce_sum(f32, alpha_vec, 0)
+    alpha_b := triton.splat(alpha, BLOCK_SIZE)
+
+    gamma := triton.load(gamma_ptr + offs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+    x := triton.load(x_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+
+    tanh_x := triton.tanh(alpha_b * x)
+    y := tanh_x * gamma
+
+    // Avoid control-flow by selecting beta contribution via a mask.
+    beta := triton.load(beta_ptr + offs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+    beta_mask := triton.splat(have_beta, BLOCK_SIZE) > triton.splat(0.(i32), BLOCK_SIZE)
+    y = y + triton.where(beta_mask, beta, triton.splat(0.(f32), BLOCK_SIZE))
+
+    triton.store(y_ptrs, y, mask)
+}
+
+/// DyT backward kernel (scalar per element, writes dx, dgamma, dbeta, dalpha).
+dyt_bwd_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    dy_ptr: PtrF32,
+    dx_ptr: PtrF32,
+    da_ptr: PtrF32,
+    dg_ptr: PtrF32,
+    db_ptr: PtrF32,
+    x_ptr: PtrF32,
+    alpha_ptr: PtrF32,
+    gamma_ptr: PtrF32,
+    have_beta: i32,
+    n_cols: i32,
+    comptime BLOCK_SIZE: i32 = 1,
+) {
+    row_id := triton.program_id(0)
+    col_id := triton.program_id(1)
+
+    offs := triton.make_range(0, BLOCK_SIZE)
+    mask := triton.splat(col_id, BLOCK_SIZE) < triton.splat(n_cols, BLOCK_SIZE)
+
+    idx := row_id * n_cols + col_id
+
+    alpha_vec := triton.load(alpha_ptr + offs, offs < 1.(i32), triton.splat(0.(f32), BLOCK_SIZE))
+    alpha := triton.reduce_sum(f32, alpha_vec, 0)
+
+    gamma_vec := triton.load(gamma_ptr + (offs + triton.splat(col_id, BLOCK_SIZE)), mask, triton.splat(0.(f32), BLOCK_SIZE))
+    gamma := triton.reduce_sum(f32, gamma_vec, 0)
+
+    x_vec := triton.load(x_ptr + (offs + triton.splat(idx, BLOCK_SIZE)), mask, triton.splat(0.(f32), BLOCK_SIZE))
+    dy_vec := triton.load(dy_ptr + (offs + triton.splat(idx, BLOCK_SIZE)), mask, triton.splat(0.(f32), BLOCK_SIZE))
+    x := triton.reduce_sum(f32, x_vec, 0)
+    dy := triton.reduce_sum(f32, dy_vec, 0)
+
+    tanh_x := triton.tanh(triton.splat(alpha, BLOCK_SIZE) * triton.splat(x, BLOCK_SIZE))
+    tanh_val := triton.reduce_sum(f32, tanh_x, 0)
+
+    tmp := (1.0.(f32) - tanh_val * tanh_val) * dy * gamma
+    dx := alpha * tmp
+
+    triton.store(dx_ptr + (offs + triton.splat(idx, BLOCK_SIZE)), triton.splat(dx, BLOCK_SIZE), mask)
+    triton.store(dg_ptr + (offs + triton.splat(idx, BLOCK_SIZE)), triton.splat(dy * tanh_val, BLOCK_SIZE), mask)
+
+    // Avoid control-flow by selecting db contribution via a mask.
+    db_mask := triton.splat(have_beta, BLOCK_SIZE) > triton.splat(0.(i32), BLOCK_SIZE)
+    db_val := triton.where(db_mask, triton.splat(dy, BLOCK_SIZE), triton.splat(0.(f32), BLOCK_SIZE))
+    triton.store(db_ptr + (offs + triton.splat(idx, BLOCK_SIZE)), db_val, mask)
+
+    // Accumulate dalpha elementwise into da (scalar array length n_cols).
+    triton.store(da_ptr + (offs + triton.splat(col_id, BLOCK_SIZE)), triton.splat(x * tmp, BLOCK_SIZE), mask)
+}

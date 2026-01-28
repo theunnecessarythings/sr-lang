@@ -637,7 +637,6 @@ fn respondInitialize(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void
         },
         positionEncoding: []const u8 = "utf-8",
     };
-    // Response envelope for the `initialize` request containing capabilities.
     const Resp = struct {
         jsonrpc: []const u8 = "2.0",
         id: u64,
@@ -676,14 +675,11 @@ fn onDidChange(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore
 
 /// Handle `textDocument/didClose` by removing the cached document.
 fn onDidClose(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, params: json.Value) !void {
-    // JSON parameters for `textDocument/didClose`.
-    // Parameters payload for `textDocument/didClose` notifications.
     var p = try json.parseFromValue(TextDocumentParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
     const uri = p.value.textDocument.uri;
     docs.remove(uri);
     analysis.remove(uri);
-    // Notification payload sent to acknowledge diagnostics removal.
     const Msg = struct {
         jsonrpc: []const u8 = "2.0",
         method: []const u8 = "textDocument/publishDiagnostics",
@@ -1183,8 +1179,6 @@ const SymbolResolver = struct {
 
 /// Respond to hover requests by computing `HoverInfo` at the caret.
 fn onHover(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
-    // JSON parameters for hover requests.
-    // Parameters payload for `textDocument/hover` requests.
     var p = try json.parseFromValue(TextDocumentPositionParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
@@ -1192,8 +1186,6 @@ fn onHover(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, an
     const doc = try requireDocumentOrRespondNull(out, gpa, docs, uri, id) orelse return;
     const text = doc.text;
 
-    // Response payload sent for semantic token requests.
-    // Response envelope for the hover request.
     const Resp = struct {
         jsonrpc: []const u8 = "2.0",
         id: u64,
@@ -1226,9 +1218,7 @@ fn onHover(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, an
 }
 
 /// Handle go-to-definition requests by locating the symbol at the caret.
-fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
-    // JSON parameters for `textDocument/definition`.
-    // Parameters payload for `textDocument/definition` requests.
+fn onGoToDefinition(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
     var p = try json.parseFromValue(TextDocumentPositionParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
@@ -1496,8 +1486,6 @@ fn computeDocumentSymbols(gpa: std.mem.Allocator, ast_unit: *ast.Ast, doc: *cons
 
 /// Handle rename requests by recomputing AST and emitting edits.
 fn onRename(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
-    // Rename request JSON payload describing the document and caret.
-    // Parameters payload for `textDocument/rename` requests.
     var p = try json.parseFromValue(RenameParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
@@ -1805,8 +1793,6 @@ fn onCodeAction(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStor
 
 /// Provide completion items in response to client requests.
 fn onCompletion(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
-    // Completion request payload describing the document and cursor position.
-    // Parameters payload for completion requests.
     var p = try json.parseFromValue(TextDocumentPositionParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
@@ -1930,13 +1916,10 @@ fn addPatternBindingsToCompletions(
 
 /// Generate a full semantic token response for the given document.
 fn onSemanticTokensFull(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
-    // Semantic tokens request payload describing the document to highlight.
-    // Parameters payload used for full semantic tokens requests.
     var p = try json.parseFromValue(TextDocumentParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
     const uri = p.value.textDocument.uri;
-    // Response payload delivered for semantic token queries.
     const Resp = struct {
         jsonrpc: []const u8 = "2.0",
         id: u64,
@@ -1960,15 +1943,12 @@ fn onSemanticTokensFull(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docu
 
 /// Produce formatting edits for the document at `uri`.
 fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, _: *AnalysisCache, id: u64, params: json.Value) !void {
-    // Formatting request payload specifying the document URI.
-    // Parameters payload for `textDocument/formatting` requests.
     var p = try json.parseFromValue(TextDocumentParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
     const uri = p.value.textDocument.uri;
 
     const doc = docs.get(uri) orelse {
-        // Response payload emitted when formatting cannot read the document.
         const Resp = struct {
             jsonrpc: []const u8 = "2.0",
             id: u64,
@@ -1987,7 +1967,6 @@ fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStor
 
     const formatted = lib.formatter.formatSource(gpa, source_z, path) catch |err| {
         std.debug.print("[lsp] formatter failed: {s}\n", .{@errorName(err)});
-        // Response payload emitted when the formatter fails.
         const Resp = struct {
             jsonrpc: []const u8 = "2.0",
             id: u64,
@@ -2000,12 +1979,12 @@ fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStor
 
     const edit = TextEdit{ .range = fullRange(source, doc.line_starts), .newText = formatted };
     const edits = [_]TextEdit{edit};
-    // Response payload containing the formatting edits.
     const Resp = struct {
         jsonrpc: []const u8 = "2.0",
         id: u64,
         result: []const TextEdit,
     };
+
     try writeJson(out, gpa, Resp{ .id = id, .result = edits[0..] });
 }
 
@@ -2025,7 +2004,6 @@ fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docume
     const text: []const u8 = doc.text;
 
     const entry = try analysis.ensure(uri, doc) orelse {
-        // Notification payload used when no diagnostics are available.
         const Msg = struct {
             jsonrpc: []const u8 = "2.0",
             method: []const u8 = "textDocument/publishDiagnostics",
@@ -2106,7 +2084,6 @@ fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docume
         try diags.append(gpa, diag);
     }
 
-    // Notification payload used to publish diagnostics to the editor.
     const Msg = struct {
         jsonrpc: []const u8 = "2.0",
         method: []const u8 = "textDocument/publishDiagnostics",

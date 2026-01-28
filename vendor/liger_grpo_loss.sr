@@ -1,0 +1,271 @@
+package liger_grpo_loss
+
+triton :: import "vendor/triton"
+
+PtrF32 :: triton.Ptr(f32)
+PtrI32 :: triton.Ptr(i32)
+
+/// Selective log-softmax: computes logp for a single token in each row.
+selective_log_softmax_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    logits_ptr: PtrF32,
+    input_ids_ptr: PtrI32,
+    logp_ptr: PtrF32,
+    mask_ptr: PtrI32,
+    temperature: f32,
+    stride_input_ids_b: i32,
+    L: i32,
+    N: i32,
+    comptime BLOCK_N: i32 = 2048,
+    comptime HAS_MASK: i32 = 0,
+) {
+    off_b := triton.program_id(0)
+    off_l := triton.program_id(1)
+
+    // logits shape: [B, L+1, N], input_ids: [B, L]
+    offs := triton.make_range(0, BLOCK_N)
+    logits_base := triton.splat(off_b * (L + 1) * N + off_l * N, BLOCK_N)
+    input_ids_base := triton.splat(off_b * stride_input_ids_b + off_l, BLOCK_N)
+    logp_base := triton.splat(off_b * L + off_l, BLOCK_N)
+
+    if HAS_MASK != 0 {
+        mask_base := triton.splat(off_b * stride_input_ids_b + off_l, BLOCK_N)
+        mvec := triton.load(mask_ptr + mask_base, offs < 1.(i32), triton.splat(0.(i32), BLOCK_N))
+        mval := triton.reduce_sum_i32(mvec, 0)
+        if mval == 0 {
+            return
+        }
+    }
+
+    n_b := triton.splat(N, BLOCK_N)
+
+    m_i: f32 = -3.4028235e38.(f32)
+    l_i: f32 = 0.0
+    start: i32 = 0
+    while start < N {
+        cols := offs + triton.splat(start, BLOCK_N)
+        mask := cols < n_b
+        logits := triton.load(logits_ptr + (logits_base + cols), mask, triton.splat(-3.4028235e38.(f32), BLOCK_N))
+        logits = logits / triton.splat(temperature, BLOCK_N)
+
+        block_max := triton.reduce_max(f32, logits, 0)
+        new_m := triton.maximum(block_max, m_i)
+        alpha := triton.exp(m_i - new_m)
+        l_i = l_i * alpha + triton.reduce_sum(f32, triton.exp(logits - triton.splat(new_m, BLOCK_N)), 0)
+        m_i = new_m
+
+        start = start + BLOCK_N
+    }
+
+    lse := m_i + triton.log(l_i)
+
+    // Load target index (scalar) and corresponding logit
+    id_vec := triton.load(input_ids_ptr + input_ids_base, offs < 1.(i32), triton.splat(0.(i32), BLOCK_N))
+    idx := triton.reduce_sum_i32(id_vec, 0)
+
+    idx_b := triton.splat(idx, BLOCK_N)
+    x_vec := triton.load(logits_ptr + (logits_base + idx_b), offs < 1.(i32), triton.splat(0.(f32), BLOCK_N))
+    x := triton.reduce_sum(f32, x_vec, 0) / temperature
+
+    logp := x - lse
+    zero_b := triton.splat(0.(i32), BLOCK_N)
+    triton.store(logp_ptr + (logp_base + zero_b), triton.splat(logp, BLOCK_N), offs < 1.(i32))
+}
+
+/// GRPO loss forward kernel (simplified: no REF_LOGP contribution when BETA==0).
+grpo_loss_fwd_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    logits_ptr: PtrF32,
+    old_logp_ptr: PtrF32,
+    ref_logp_ptr: PtrF32,
+    input_ids_ptr: PtrI32,
+    completion_mask_ptr: PtrI32,
+    advantages_ptr: PtrF32,
+    loss_ptr: PtrF32,
+    lse_ptr: PtrF32,
+    is_clipped_ptr: PtrI32,
+    temperature: f32,
+    beta: f32,
+    eps_low: f32,
+    eps_high: f32,
+    L: i32,
+    N: i32,
+    comptime BLOCK_N: i32 = 2048,
+    comptime HAS_MASK: i32 = 0,
+) {
+    off_b := triton.program_id(0)
+    off_l := triton.program_id(1)
+
+    if HAS_MASK != 0 {
+        mask_base := triton.splat(off_b * L + off_l, BLOCK_N)
+        mvec := triton.load(completion_mask_ptr + mask_base, triton.make_range(0, BLOCK_N) < 1.(i32), triton.splat(0.(i32), BLOCK_N))
+        mval := triton.reduce_sum_i32(mvec, 0)
+        if mval == 0 {
+            return
+        }
+    }
+
+    offs := triton.make_range(0, BLOCK_N)
+    logits_base := triton.splat(off_b * (L + 1) * N + off_l * N, BLOCK_N)
+    ids_base := triton.splat(off_b * L + off_l, BLOCK_N)
+
+    // Compute logsumexp
+    m_i: f32 = -3.4028235e38.(f32)
+    l_i: f32 = 0.0
+    start: i32 = 0
+    while start < N {
+        cols := offs + triton.splat(start, BLOCK_N)
+        mask := cols < triton.splat(N, BLOCK_N)
+        logits := triton.load(logits_ptr + (logits_base + cols), mask, triton.splat(-3.4028235e38.(f32), BLOCK_N))
+        logits = logits / triton.splat(temperature, BLOCK_N)
+
+        block_max := triton.reduce_max(f32, logits, 0)
+        new_m := triton.maximum(block_max, m_i)
+        alpha := triton.exp(m_i - new_m)
+        l_i = l_i * alpha + triton.reduce_sum(f32, triton.exp(logits - triton.splat(new_m, BLOCK_N)), 0)
+        m_i = new_m
+        start = start + BLOCK_N
+    }
+    lse := m_i + triton.log(l_i)
+
+    // Gather token logp
+    id_vec := triton.load(input_ids_ptr + ids_base, offs < 1.(i32), triton.splat(0.(i32), BLOCK_N))
+    idx := triton.reduce_sum_i32(id_vec, 0)
+    idx_b := triton.splat(idx, BLOCK_N)
+    x_vec := triton.load(logits_ptr + (logits_base + idx_b), offs < 1.(i32), triton.splat(0.(f32), BLOCK_N))
+    x := triton.reduce_sum(f32, x_vec, 0) / temperature
+    logp := x - lse
+
+    // Load old logp and advantage
+    old_vec := triton.load(old_logp_ptr + ids_base, offs < 1.(i32), triton.splat(0.(f32), BLOCK_N))
+    old_logp := triton.reduce_sum(f32, old_vec, 0)
+
+    adv_base := triton.splat(off_b, BLOCK_N)
+    adv_vec := triton.load(advantages_ptr + adv_base, offs < 1.(i32), triton.splat(0.(f32), BLOCK_N))
+    advantage := triton.reduce_sum(f32, adv_vec, 0)
+
+    coef1 := triton.exp(logp - old_logp)
+    low := 1.0.(f32) - eps_low
+    high := 1.0.(f32) + eps_high
+    coef2 := triton.minimum(triton.maximum(coef1, low), high)
+
+    loss1 := coef1 * advantage
+    loss2 := coef2 * advantage
+    per_token_loss := -triton.minimum(loss1, loss2)
+
+    // clipped flags
+    low_flag := triton.where(coef1 < low, 1.(i32), 0.(i32))
+    high_flag := triton.where(coef1 > high, 1.(i32), 0.(i32))
+    adv_neg := triton.where(advantage < 0.0.(f32), 1.(i32), 0.(i32))
+    adv_pos := triton.where(advantage > 0.0.(f32), 1.(i32), 0.(i32))
+    low_clip_i := low_flag * adv_neg
+    high_clip_i := high_flag * adv_pos
+    any_clip := (low_clip_i + high_clip_i) > 0.(i32)
+
+    if beta != 0.0.(f32) {
+        ref_vec := triton.load(ref_logp_ptr + ids_base, offs < 1.(i32), triton.splat(0.(f32), BLOCK_N))
+        ref_logp := triton.reduce_sum(f32, ref_vec, 0)
+        kl := triton.exp(ref_logp - logp) - (ref_logp - logp) - 1.0.(f32)
+        per_token_loss = per_token_loss + beta * kl
+    }
+
+    zero_b := triton.splat(0.(i32), BLOCK_N)
+    triton.store(loss_ptr + (ids_base + zero_b), triton.splat(per_token_loss, BLOCK_N), offs < 1.(i32))
+    triton.store(lse_ptr + (ids_base + zero_b), triton.splat(lse, BLOCK_N), offs < 1.(i32))
+
+    clipped_i := triton.where(any_clip, 1.(i32), 0.(i32))
+    triton.store(is_clipped_ptr + (ids_base + zero_b), triton.splat(clipped_i, BLOCK_N), offs < 1.(i32))
+}
+
+/// GRPO loss backward kernel (simplified: expects lse/logp buffers, beta optional).
+grpo_loss_bwd_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    dloss_ptr: PtrF32,
+    dlogits_ptr: PtrF32,
+    logits_ptr: PtrF32,
+    old_logp_ptr: PtrF32,
+    ref_logp_ptr: PtrF32,
+    input_ids_ptr: PtrI32,
+    advantages_ptr: PtrF32,
+    completion_mask_ptr: PtrI32,
+    lse_ptr: PtrF32,
+    temperature: f32,
+    beta: f32,
+    eps_low: f32,
+    eps_high: f32,
+    L: i32,
+    N: i32,
+    comptime BLOCK_N: i32 = 2048,
+    comptime HAS_MASK: i32 = 0,
+) {
+    off_b := triton.program_id(0)
+    off_l := triton.program_id(1)
+
+    offs := triton.make_range(0, BLOCK_N)
+    dlogits_base := triton.splat(off_b * (L + 1) * N + off_l * N, BLOCK_N)
+
+    if HAS_MASK != 0 {
+        mask_base := triton.splat(off_b * L + off_l, BLOCK_N)
+        mvec := triton.load(completion_mask_ptr + mask_base, offs < 1.(i32), triton.splat(0.(i32), BLOCK_N))
+        mval := triton.reduce_sum_i32(mvec, 0)
+        if mval == 0 {
+            start0: i32 = 0
+            while start0 < N {
+                cols0 := offs + triton.splat(start0, BLOCK_N)
+                mask0 := cols0 < triton.splat(N, BLOCK_N)
+                triton.store(dlogits_ptr + (dlogits_base + cols0), triton.splat(0.(f32), BLOCK_N), mask0)
+                start0 = start0 + BLOCK_N
+            }
+            return
+        }
+    }
+
+    logits_base := triton.splat(off_b * (L + 1) * N + off_l * N, BLOCK_N)
+    ids_base := triton.splat(off_b * L + off_l, BLOCK_N)
+
+    dloss_vec := triton.load(dloss_ptr + ids_base, offs < 1.(i32), triton.splat(0.(f32), BLOCK_N))
+    dloss := triton.reduce_sum(f32, dloss_vec, 0)
+
+    lse_vec := triton.load(lse_ptr + ids_base, offs < 1.(i32), triton.splat(0.(f32), BLOCK_N))
+    lse := triton.reduce_sum(f32, lse_vec, 0)
+
+    id_vec := triton.load(input_ids_ptr + ids_base, offs < 1.(i32), triton.splat(0.(i32), BLOCK_N))
+    idx := triton.reduce_sum_i32(id_vec, 0)
+    idx_b := triton.splat(idx, BLOCK_N)
+
+    x_vec := triton.load(logits_ptr + (logits_base + idx_b), offs < 1.(i32), triton.splat(0.(f32), BLOCK_N))
+    x := triton.reduce_sum(f32, x_vec, 0) / temperature
+    logp := x - lse
+
+    old_vec := triton.load(old_logp_ptr + ids_base, offs < 1.(i32), triton.splat(0.(f32), BLOCK_N))
+    old_logp := triton.reduce_sum(f32, old_vec, 0)
+
+    adv_base := triton.splat(off_b, BLOCK_N)
+    adv_vec := triton.load(advantages_ptr + adv_base, offs < 1.(i32), triton.splat(0.(f32), BLOCK_N))
+    advantage := triton.reduce_sum(f32, adv_vec, 0)
+
+    coef1 := triton.exp(logp - old_logp)
+    _ = eps_low
+    _ = eps_high
+    loss1 := coef1 * advantage
+    dlogp := -loss1
+
+    if beta != 0.0.(f32) {
+        ref_vec := triton.load(ref_logp_ptr + ids_base, offs < 1.(i32), triton.splat(0.(f32), BLOCK_N))
+        ref_logp := triton.reduce_sum(f32, ref_vec, 0)
+        dlogp = dlogp + beta * (1.0.(f32) - triton.exp(ref_logp - logp))
+    }
+
+    dlogp = dlogp * dloss / temperature
+
+    start: i32 = 0
+    while start < N {
+        cols := offs + triton.splat(start, BLOCK_N)
+        mask := cols < triton.splat(N, BLOCK_N)
+        logits := triton.load(logits_ptr + (logits_base + cols), mask, triton.splat(-3.4028235e38.(f32), BLOCK_N))
+        logits = logits / triton.splat(temperature, BLOCK_N)
+        probs := triton.exp(logits - triton.splat(lse, BLOCK_N))
+        is_idx := cols == idx_b
+        dlogits := triton.where(is_idx, triton.splat(1.0.(f32), BLOCK_N) - probs, -probs)
+        dlogits = dlogits * triton.splat(dlogp, BLOCK_N)
+        triton.store(dlogits_ptr + (dlogits_base + cols), dlogits, mask)
+        start = start + BLOCK_N
+    }
+}

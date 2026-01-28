@@ -1,0 +1,49 @@
+package main
+
+// Chapter 10: Error Handling
+//
+// Using Error Unions (`!`) instead of exceptions.
+
+io :: import "std/io"
+
+// Define an error set.
+FileSystemError :: error {
+    NotFound,
+    PermissionDenied,
+}
+
+// A function that can fail returns `ResultType ! ErrorType`.
+read_file :: fn(path: string) string!FileSystemError {
+    if path == "bad.txt" {
+        return FileSystemError.NotFound
+    }
+    return "File Content"
+}
+
+// Propagating errors with `!`
+// If `read_file` fails, `read_config` immediately returns the error.
+read_config :: fn() string!FileSystemError {
+    data := read_file("config.txt")!
+    return data
+}
+
+main :: proc() {
+    io.println("--- Error Handling ---", 0)
+
+    // 1. Handling with `catch`
+    // `catch` provides a value or executes a block on error.
+    res := read_file("bad.txt") catch |err| {
+        io.println("Failed to read: error code %d", err)
+        return // Return from main
+    }
+    io.println("Read: %s", res)
+
+    // 2. Default value with `catch` (or `orelse` if implemented)
+    // Here we just use catch to provide a fallback.
+    safe_res := read_file("missing") catch "Default Config"
+    io.println("Config: %s", safe_res)
+
+    // 3. Success path
+    ok := read_file("good.txt") catch "Error"
+    io.println("Success: %s", ok)
+}

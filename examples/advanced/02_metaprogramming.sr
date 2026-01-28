@@ -1,0 +1,34 @@
+package main
+
+// Chapter 13: Metaprogramming
+//
+// Code that runs at compile time.
+
+io :: import "std/io"
+
+main :: proc() {
+    io.println("--- Metaprogramming ---", 0)
+
+    // 1. Comptime Blocks
+    // The code inside `comptime { ... }` is executed by the compiler.
+    // The result is embedded into the program as a constant.
+    X :: comptime {
+        sum := 0
+        for i in 0..10 {
+            sum = sum + i
+        }
+        sum // Returns 45
+    }
+
+    io.println("Computed at compile time: %d", X)
+
+    // 2. Compile-Time assertions
+    comptime {
+        if X != 45 {
+            // This would stop compilation
+            // panic("Math is broken!")
+        }
+    }
+    
+    io.println("Compilation checks passed.", 0)
+}

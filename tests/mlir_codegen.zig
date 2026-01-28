@@ -30,17 +30,17 @@ fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !Lowered {
 
     const src0 = try std.mem.concatWithSentinel(gpa, u8, &.{src}, 0);
     defer gpa.free(src0);
-    var parser = compiler.parser.Parser.init(gpa, src0, 0, context); // Pass file_id and context
+    var parser = compiler.parser.Parser.init(gpa, src0, 0, context);
     var cst = try parser.parse();
     defer cst.deinit();
 
-    var lower1 = try compiler.lower_to_ast.Lower.init(gpa, &cst, context, 0); // Pass context
+    var lower1 = try compiler.lower_to_ast.Lower.init(gpa, &cst, context, 0);
     defer lower1.deinit();
     const result = try lower1.run();
     defer result.deinit();
     const hir = result.ast_unit;
 
-    var pipeline = compiler.pipeline.Pipeline.init(gpa, context); // Create pipeline
+    var pipeline = compiler.pipeline.Pipeline.init(gpa, context);
     const chk = try gpa.create(compiler.checker.Checker);
     chk.* = compiler.checker.Checker.init(gpa, context, &pipeline);
     errdefer {
@@ -48,9 +48,9 @@ fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !Lowered {
         gpa.destroy(chk);
     }
     try chk.runAst(hir);
-    if (context.diags.anyErrors()) return error.SemanticErrors; // Use context.diags
+    if (context.diags.anyErrors()) return error.SemanticErrors;
 
-    var lt = compiler.lower_tir.LowerTir.init(gpa, context, &pipeline, chk); // Pass context and pipeline
+    var lt = compiler.lower_tir.LowerTir.init(gpa, context, &pipeline, chk);
     defer lt.deinit();
     const t = try lt.runAst(hir);
     return .{ .tir = t, .checker = chk, .type_info = &chk.type_info, .context = context };

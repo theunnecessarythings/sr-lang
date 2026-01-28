@@ -1,0 +1,74 @@
+package liger_multi_token_attention
+
+triton :: import "vendor/triton"
+
+PtrF32 :: triton.Ptr(f32)
+
+/// Mask forward kernel (1D tile per row).
+mask_fwd_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    scores_ptr: PtrF32,
+    out_ptr: PtrF32,
+    stride_b: i32,
+    stride_m: i32,
+    stride_n: i32,
+    L: i32,
+    mask_val: f32,
+    comptime BLOCK_SIZE: i32 = 128,
+) {
+    row_id := triton.program_id(0)
+    batch_id := triton.program_id(1)
+    offs := triton.make_range(0, BLOCK_SIZE)
+
+    row_base := triton.splat(batch_id * stride_b + row_id * stride_m, BLOCK_SIZE)
+    stride_n_b := triton.splat(stride_n, BLOCK_SIZE)
+    l_b := triton.splat(L, BLOCK_SIZE)
+    row_b := triton.splat(row_id, BLOCK_SIZE)
+    mask_val_b := triton.splat(mask_val, BLOCK_SIZE)
+
+    col_base: i32 = 0
+    while col_base < L {
+        col_offsets := offs + triton.splat(col_base, BLOCK_SIZE)
+        mask := col_offsets < l_b
+        ptrs := scores_ptr + (row_base + (col_offsets * stride_n_b))
+        vals := triton.load(ptrs, mask, mask_val_b)
+        future := col_offsets > row_b
+        out_vals := triton.where(future, mask_val_b, vals)
+        out_ptrs := out_ptr + (row_base + (col_offsets * stride_n_b))
+        triton.store(out_ptrs, out_vals, mask)
+        col_base = col_base + BLOCK_SIZE
+    }
+}
+
+/// Mask backward kernel (zero out future positions).
+mask_bwd_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    grad_in_ptr: PtrF32,
+    out_ptr: PtrF32,
+    stride_b: i32,
+    stride_m: i32,
+    stride_n: i32,
+    L: i32,
+    comptime BLOCK_SIZE: i32 = 128,
+) {
+    row_id := triton.program_id(0)
+    batch_id := triton.program_id(1)
+    offs := triton.make_range(0, BLOCK_SIZE)
+
+    row_base := triton.splat(batch_id * stride_b + row_id * stride_m, BLOCK_SIZE)
+    stride_n_b := triton.splat(stride_n, BLOCK_SIZE)
+    l_b := triton.splat(L, BLOCK_SIZE)
+    row_b := triton.splat(row_id, BLOCK_SIZE)
+    zero_b := triton.splat(0.(f32), BLOCK_SIZE)
+
+    col_base: i32 = 0
+    while col_base < L {
+        col_offsets := offs + triton.splat(col_base, BLOCK_SIZE)
+        mask := col_offsets < l_b
+        ptrs := grad_in_ptr + (row_base + (col_offsets * stride_n_b))
+        vals := triton.load(ptrs, mask, zero_b)
+        future := col_offsets > row_b
+        out_vals := triton.where(future, zero_b, vals)
+        out_ptrs := out_ptr + (row_base + (col_offsets * stride_n_b))
+        triton.store(out_ptrs, out_vals, mask)
+        col_base = col_base + BLOCK_SIZE
+    }
+}

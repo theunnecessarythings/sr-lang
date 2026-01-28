@@ -557,7 +557,6 @@ pub const Interpreter = struct {
             }
         }
         const val = try self.evalExpr(expr);
-        // defer val.destroy // REMOVED
         const s = self.store();
         return if (s.kind(val) == .Type) s.get(.Type, val).ty else Error.InvalidType;
     }
@@ -1689,8 +1688,8 @@ pub const Interpreter = struct {
 
     fn resolveImportMember(self: *Interpreter, at: types.Rows.Ast, field: ast.StrId) !Value {
         const unit = self.compilation_unit orelse return Error.InvalidFieldAccess;
-        const pkg = unit.packages.getPtr(self.ast.exprs.strs.get(at.pkg_name)) orelse return Error.InvalidFieldAccess;
-        const pu = pkg.sources.getPtr(self.ast.exprs.strs.get(at.filepath)) orelse return Error.InvalidFieldAccess;
+        const pu = unit.findFileUnit(self.ast.exprs.strs.get(at.pkg_name), self.ast.exprs.strs.get(at.filepath)) orelse
+            return Error.InvalidFieldAccess;
         const other_ast = pu.ast orelse return Error.InvalidFieldAccess;
         const target_sid = other_ast.exprs.strs.intern(self.ast.exprs.strs.get(field));
 

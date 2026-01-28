@@ -112,6 +112,7 @@ fn makeMethodKey(owner: TypeId, name: ast.StrId) MethodKey {
 
 const StoredComptimeBinding = struct { ty: TypeId, value: comp.ValueId };
 pub const ComptimeBindingVisitor = fn (?*anyopaque, ast.StrId, *comp.ValueStore, comp.ValueId, TypeId) anyerror!void;
+pub const TritonLaunchInfo = struct { spec_name: ast.StrId, num_warps: ?i32, threads_per_warp: ?i32, num_ctas: ?i32 };
 
 pub const TypeInfo = struct {
     arena: *std.heap.ArenaAllocator,
@@ -140,6 +141,7 @@ pub const TypeInfo = struct {
     specialized_calls: std.AutoArrayHashMapUnmanaged(u32, call_resolution.FunctionDeclContext) = .{},
     spread_ranges: std.AutoArrayHashMapUnmanaged(u32, void) = .{},
     call_specializations: std.AutoArrayHashMapUnmanaged(u32, CallSpecialization) = .{},
+    triton_launch_info: std.AutoArrayHashMapUnmanaged(u32, TritonLaunchInfo) = .{},
     synthetic_decls: std.ArrayListUnmanaged(u32) = .{},
     closure_captures: std.AutoArrayHashMapUnmanaged(u32, ClosureCaptureList) = .{},
 
@@ -178,6 +180,14 @@ pub const TypeInfo = struct {
 
     pub fn getClosureCaptures(self: *const TypeInfo, expr_id: ast.ExprId) ?ClosureCaptureList {
         return self.closure_captures.get(expr_id.toRaw());
+    }
+
+    pub fn setTritonLaunchInfo(self: *TypeInfo, expr_id: ast.ExprId, info: TritonLaunchInfo) !void {
+        try self.triton_launch_info.put(self.gpa, expr_id.toRaw(), info);
+    }
+
+    pub fn getTritonLaunchInfo(self: *const TypeInfo, expr_id: ast.ExprId) ?TritonLaunchInfo {
+        return self.triton_launch_info.get(expr_id.toRaw());
     }
 
     pub fn print(self: *TypeInfo) void {
@@ -485,7 +495,6 @@ pub const TypeStore = struct {
     index: StoreIndex(TypeKind) = .{},
     method_table: std.AutoArrayHashMapUnmanaged(MethodKey, MethodEntry) = .{},
 
-    // Table storage
     Void: Table(Rows.Void) = .{},
     Bool: Table(Rows.Bool) = .{},
     I8: Table(Rows.I8) = .{},
@@ -540,7 +549,6 @@ pub const TypeStore = struct {
     strs: *StringInterner,
     type_names: std.AutoArrayHashMapUnmanaged(TypeId, StrId) = .{},
 
-    // Cached primitive IDs
     t_void: ?TypeId = null,
     t_bool: ?TypeId = null,
     t_i32: ?TypeId = null,
@@ -643,7 +651,9 @@ pub const TypeStore = struct {
     }
 
     pub fn getKind(self: *const TypeStore, id: TypeId) TypeKind {
-        return self.index.kinds.items[id.toRaw()];
+        const raw = id.toRaw();
+        if (raw >= self.index.kinds.items.len) return .TypeError;
+        return self.index.kinds.items[raw];
     }
 
     pub fn get(self: *TypeStore, comptime K: TypeKind, id: TypeId) RowT(K) {

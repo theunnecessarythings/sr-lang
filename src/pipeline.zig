@@ -138,7 +138,7 @@ pub const Pipeline = struct {
         if (!mod.getOperation().verify()) try self.context.diags.addError(.{ .file_id = fid, .start = 0, .end = 0 }, .mlir_verification_failed, .{gen.diagnostic_data.msg orelse ""});
         if (self.context.diags.anyErrors()) return error.MlirCodegenFailed;
 
-        if (gen.has_triton_fns) try self.runTritonPipeline(&dep_lvls);
+        if (gen.has_triton_fns and self.context.triton_launches.items.len > 0) try self.runTritonPipeline(&dep_lvls);
 
         if (mode == .mlir) {
             mod.getOperation().dump();
@@ -341,39 +341,50 @@ pub const Pipeline = struct {
     }
 
     fn runTritonPipeline(self: *Pipeline, deps: *compile.DependencyLevels) !void {
-        var tgen = codegen.Codegen.init(self.gpa, self.context, &self.mlir_ctx.?, true);
-        defer tgen.deinit();
-        var tmod = tgen.emitTritonModule(deps) catch |e| return if (e == error.CompilationFailed) error.MlirCodegenFailed else e;
+        if (self.context.triton_launches.items.len == 0) return;
 
-        try self.dumpMlir(tmod, "out/triton_kernels.mlir");
+        std.fs.cwd().makePath("out/triton_kernels") catch |e| if (e != error.PathAlreadyExists) return e;
 
-        // Arena for driver args to avoid manual cleanup of multiple strings
-        var arena = std.heap.ArenaAllocator.init(self.gpa);
-        defer arena.deinit();
-        const aa = arena.allocator();
-        var args = std.ArrayList([]const u8){};
-        defer args.deinit(self.gpa);
+        for (self.context.triton_launches.items) |launch| {
+            var tgen = codegen.Codegen.init(self.gpa, self.context, &self.mlir_ctx.?, true);
+            defer tgen.deinit();
+            var tmod = tgen.emitTritonModuleForKernel(deps, launch.spec_name) catch |e|
+                return if (e == error.CompilationFailed) error.MlirCodegenFailed else e;
 
-        try args.append(self.gpa, "third-party/triton/build/cmake.linux-x86_64-cpython-3.13/bin/triton_mlir_driver");
-        try args.append(self.gpa, try std.fmt.allocPrint(aa, "--input={s}", .{"out/triton_kernels.mlir"}));
-        try args.append(self.gpa, try std.fmt.allocPrint(aa, "--emit-ptx={s}", .{"out/triton_kernels.ptx"}));
+            const kernel_name = self.context.type_store.strs.get(launch.spec_name);
+            var arena = std.heap.ArenaAllocator.init(self.gpa);
+            defer arena.deinit();
+            const aa = arena.allocator();
 
-        var mop = tmod.getOperation();
-        if (getStrAttr(&mop, "ttg.target")) |s| if (std.mem.startsWith(u8, s, "cuda:")) try args.append(self.gpa, try std.fmt.allocPrint(aa, "--sm={s}", .{s["cuda:".len..]}));
-        if (getIntAttr(&mop, "ttg.num-warps")) |v| try args.append(self.gpa, try std.fmt.allocPrint(aa, "--num-warps={d}", .{v}));
-        if (getIntAttr(&mop, "ttg.threads-per-warp")) |v| try args.append(self.gpa, try std.fmt.allocPrint(aa, "--threads-per-warp={d}", .{v}));
-        if (getIntAttr(&mop, "ttg.ptx-version")) |v| try args.append(self.gpa, try std.fmt.allocPrint(aa, "--ptx-version={d}", .{v}));
-        if (getIntAttr(&mop, "ttg.num-ctas")) |v|
-            try args.append(self.gpa, try std.fmt.allocPrint(aa, "--num-ctas={d}", .{v}))
-        else
-            try args.append(self.gpa, "--num-ctas=1");
+            const mlir_path = try std.fmt.allocPrint(aa, "out/triton_kernels/{s}.mlir", .{kernel_name});
+            const ptx_path = try std.fmt.allocPrint(aa, "out/triton_kernels/{s}.ptx", .{kernel_name});
+            try self.dumpMlir(tmod, mlir_path);
 
-        var child = std.process.Child.init(args.items, self.gpa);
-        child.cwd = ".";
-        const term = try child.spawnAndWait();
-        switch (term) {
-            .Exited => |code| if (code != 0) return error.TritonDriverFailed,
-            else => return error.TritonDriverFailed,
+            // Arena for driver args to avoid manual cleanup of multiple strings
+            var args = std.ArrayList([]const u8){};
+            defer args.deinit(self.gpa);
+
+            try args.append(self.gpa, "third-party/triton/build/cmake.linux-x86_64-cpython-3.13/bin/triton_mlir_driver");
+            try args.append(self.gpa, try std.fmt.allocPrint(aa, "--input={s}", .{mlir_path}));
+            try args.append(self.gpa, try std.fmt.allocPrint(aa, "--emit-ptx={s}", .{ptx_path}));
+
+            var mop = tmod.getOperation();
+            if (getStrAttr(&mop, "ttg.target")) |s| if (std.mem.startsWith(u8, s, "cuda:")) try args.append(self.gpa, try std.fmt.allocPrint(aa, "--sm={s}", .{s["cuda:".len..]}));
+            if (getIntAttr(&mop, "ttg.num-warps")) |v| try args.append(self.gpa, try std.fmt.allocPrint(aa, "--num-warps={d}", .{v}));
+            if (getIntAttr(&mop, "ttg.threads-per-warp")) |v| try args.append(self.gpa, try std.fmt.allocPrint(aa, "--threads-per-warp={d}", .{v}));
+            if (getIntAttr(&mop, "ttg.ptx-version")) |v| try args.append(self.gpa, try std.fmt.allocPrint(aa, "--ptx-version={d}", .{v}));
+            if (getIntAttr(&mop, "ttg.num-ctas")) |v|
+                try args.append(self.gpa, try std.fmt.allocPrint(aa, "--num-ctas={d}", .{v}))
+            else
+                try args.append(self.gpa, "--num-ctas=1");
+
+            var child = std.process.Child.init(args.items, self.gpa);
+            child.cwd = ".";
+            const term = try child.spawnAndWait();
+            switch (term) {
+                .Exited => |code| if (code != 0) return error.TritonDriverFailed,
+                else => return error.TritonDriverFailed,
+            }
         }
     }
 

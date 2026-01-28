@@ -1,0 +1,118 @@
+package main
+
+liger_softmax :: import "vendor/liger_softmax"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+math :: import "std/math"
+
+PtrF32 :: triton.Ptr(f32)
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    n_rows: i32 = 64
+    n_cols: i32 = 2048
+    size := n_rows.(usize) * n_cols.(usize) * 4
+
+    x_h_ptr := alloc.alloc(size) orelse return
+    x_h := x_h_ptr.^*f32
+
+    out_h_ptr := alloc.alloc(size) orelse return
+    out_h := out_h_ptr.^*f32
+
+    i: i32 = 0
+    total: i32 = n_rows * n_cols
+    while i < total {
+        x_h[i] = ((i % n_cols) - 512).(f32) * 0.01
+        i = i + 1
+    }
+
+    x_d: cuda.CUdeviceptr = 0
+    out_d: cuda.CUdeviceptr = 0
+
+    _ = cuda.cuMemAlloc(&x_d, size)
+    _ = cuda.cuMemAlloc(&out_d, size)
+    _ = cuda.cuMemcpyHtoD(x_d, x_h.^?*void, size)
+
+    input_row_stride: i32 = n_cols
+    output_row_stride: i32 = n_cols
+
+    triton.launch(
+        liger_softmax.softmax_multi_block_forward_kernel,
+        grid = (n_rows, 1, 1),
+        block = (128, 1, 1),
+        BLOCK_SIZE = 1024,
+        out_d,
+        output_row_stride,
+        x_d,
+        input_row_stride,
+        n_cols,
+    )
+
+    _ = cuda.cuMemcpyDtoH(out_h.^?*void, out_d, size)
+
+    success := true
+    epsilon: f32 = 1.e-3
+    row: i32 = 0
+    while row < n_rows and success {
+        row_base := row * n_cols
+        row_max := x_h[row_base]
+        col: i32 = 1
+        while col < n_cols {
+            v := x_h[row_base + col]
+            if v > row_max { row_max = v }
+            col = col + 1
+        }
+
+        sum_exp: f32 = 0
+        col = 0
+        while col < n_cols {
+            v := x_h[row_base + col]
+            sum_exp = sum_exp + math.expf(v - row_max)
+            col = col + 1
+        }
+
+        col = 0
+        while col < n_cols {
+            v := x_h[row_base + col]
+            expected := math.expf(v - row_max) / sum_exp
+            actual := out_h[row_base + col]
+            diff := actual - expected
+            if diff < 0 { diff = -diff }
+            if diff > epsilon {
+                io.println("Mismatch at row %d col %d: expected %f got %f", row, col, expected, actual)
+                success = false
+                break
+            }
+
+            col = col + 1
+        }
+
+        row = row + 1
+    }
+
+    if success { io.println("Liger softmax multi-block forward verification passed", ()) }
+
+    _ = cuda.cuMemFree(x_d)
+    _ = cuda.cuMemFree(out_d)
+}

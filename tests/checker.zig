@@ -11,16 +11,14 @@ const SymbolStore = compiler.symbols.SymbolStore;
 const gpa = testing.allocator;
 
 fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void {
-    var context = compiler.compile.Context.init(gpa); // Create context
+    var context = compiler.compile.Context.init(gpa);
     defer context.deinit();
 
-    // Step 1: Parse
-    var parser = Parser.init(gpa, src, 0, context.diags, &context); // Pass file_id and context
+    var parser = Parser.init(gpa, src, 0, context.diags, &context);
     var cst = try parser.parse();
     defer cst.deinit();
-    if (context.diags.count() != 0) { // Use context.diags
-        // print tokens for debugging
-        var tokenizer = compiler.lexer.Tokenizer.init(src, 0, .semi); // Add file_id
+    if (context.diags.count() != 0) {
+        var tokenizer = compiler.lexer.Tokenizer.init(src, 0, .semi);
         while (true) {
             const token = tokenizer.next();
             if (token.tag == .eof) break;
@@ -33,14 +31,12 @@ fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void 
     }
     try testing.expectEqual(0, context.diags.count());
 
-    // Step 2: Lower to AST
     var lower = try Lower.init(gpa, &cst, &context, 0);
     defer lower.deinit();
     var result = try (&lower).run();
     defer result.deinit(gpa);
     const ast = result.ast_unit;
 
-    // Step 3: Type Check
     var pipeline = compiler.pipeline.Pipeline.init(gpa, &context);
     const ctx_ptr = try gpa.create(Checker.CheckerContext);
     ctx_ptr.* = Checker.CheckerContext{
@@ -48,7 +44,6 @@ fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void 
         .spec_arena = std.heap.ArenaAllocator.init(gpa),
         .temp_arena = std.heap.ArenaAllocator.init(gpa),
     };
-    // No defer ctx_ptr.deinit() or gpa.destroy(ctx_ptr) - Checker.deinit will handle it.
 
     var checker = Checker.init(gpa, &context, &pipeline);
     defer checker.deinit();

@@ -1,0 +1,65 @@
+package main
+
+// Chapter 3: Control Flow
+//
+// How to control the execution path of your program.
+
+io :: import "std/io"
+
+main :: proc() {
+    io.println("--- Control Flow ---", 0)
+
+    // 1. If-Else
+    // Conditions must be booleans. Parentheses around the condition are optional.
+    x := 10
+    if x > 5 {
+        io.println("x is greater than 5", 0)
+    } else {
+        io.println("x is small", 0)
+    }
+
+    // If as an expression
+    // `if` can return a value. Both branches must return the same type.
+    status := if x > 0 { "Positive" } else { "Non-positive" }
+    io.println("Status: %s", status)
+
+    // 2. While Loop
+    // Runs as long as the condition is true.
+    count := 3
+    io.println("Countdown:", 0)
+    while count > 0 {
+        io.println("%d...", count)
+        count = count - 1
+    }
+    io.println("Liftoff!", 0)
+
+    // 3. For Loop
+    // Iterates over a range. `0..5` is inclusive of 0, exclusive of 5 (0, 1, 2, 3, 4).
+    // Use `0..=5` for inclusive range.
+    io.print("Range 0..3: ")
+    for i in 0..3 {
+        io.print("%d ", i)
+    }
+    io.print("\n", 0)
+
+    // 4. Break and Continue
+    io.print("Break/Continue: ")
+    for i in 0..10 {
+        if i == 2 { continue } // Skip 2
+        if i == 5 { break }    // Stop at 5
+        io.print("%d ", i)
+    }
+    io.print("\n", 0) // Expected: 0 1 3 4
+
+    // 5. Labeled Loops
+    // You can label loops to break/continue from nested contexts.
+    io.println("Labeled break:", 0)
+    outer: for i in 0..3 {
+        for j in 0..3 {
+            if i == 1 and j == 1 {
+                io.println("Breaking outer at i=%d, j=%d", (i, j))
+                break :outer
+            }
+        }
+    }
+}

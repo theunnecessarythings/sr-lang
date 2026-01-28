@@ -83,7 +83,7 @@ pub const LiteralKind = enum(u8) { int, float, bool, string, char, imaginary };
 pub const UnaryOp = enum(u8) { pos, neg, address_of, logical_not };
 pub const BinaryOp = enum(u8) { add, sub, mul, div, mod, shl, shr, bit_and, bit_or, bit_xor, eq, neq, lt, lte, gt, gte, logical_and, logical_or, @"orelse", contains };
 pub const VariantPayloadKind = enum(u2) { none, tuple, @"struct" };
-pub const ExprKind = enum(u16) { Literal, Ident, Splice, Unary, Binary, Range, Deref, ArrayLit, TupleLit, MapLit, Call, IndexAccess, FieldAccess, StructLit, FunctionLit, Block, ComptimeBlock, CodeBlock, AsyncBlock, MlirBlock, Insert, Return, If, While, For, Match, Break, Continue, Unreachable, NullLit, UndefLit, Defer, ErrDefer, ErrUnwrap, OptionalUnwrap, Await, Closure, Cast, Catch, Import, TypeOf, TupleType, ArrayType, DynArrayType, MapType, SliceType, OptionalType, ErrorSetType, ErrorType, StructType, EnumType, VariantType, UnionType, PointerType, SimdType, ComplexType, TensorType, TypeType, AnyType, NoreturnType };
+pub const ExprKind = enum(u16) { Literal, Ident, Splice, Unary, Binary, Range, Deref, ArrayLit, TupleLit, MapLit, Call, NamedArg, IndexAccess, FieldAccess, StructLit, FunctionLit, Block, ComptimeBlock, CodeBlock, AsyncBlock, MlirBlock, Insert, Return, If, While, For, Match, Break, Continue, Unreachable, NullLit, UndefLit, Defer, ErrDefer, ErrUnwrap, OptionalUnwrap, Await, Closure, Cast, Catch, Import, TypeOf, TupleType, ArrayType, DynArrayType, MapType, SliceType, OptionalType, ErrorSetType, ErrorType, StructType, EnumType, VariantType, UnionType, PointerType, SimdType, ComplexType, TensorType, TypeType, AnyType, NoreturnType };
 pub const StmtKind = enum(u8) { Expr, Decl, Assign, Insert, Return, Break, Continue, Unreachable, Defer, ErrDefer };
 pub const PatternKind = enum(u16) { Wildcard, Literal, Path, Binding, Tuple, Slice, Struct, VariantTuple, VariantStruct, Range, Or, At };
 
@@ -111,6 +111,7 @@ pub const Rows = struct {
     pub const MapLit = struct { entries: RangeKeyValue, loc: LocId };
     pub const KeyValue = struct { key: ExprId, value: ExprId, loc: LocId };
     pub const Call = struct { callee: ExprId, args: RangeExpr, loc: LocId };
+    pub const NamedArg = struct { name: StrId, value: ExprId, loc: LocId };
     pub const IndexAccess = struct { collection: ExprId, index: ExprId, loc: LocId };
     pub const FieldAccess = struct { parent: ExprId, field: StrId, is_tuple: bool, loc: LocId };
     pub const StructFieldValue = struct { name: OptStrId, value: ExprId, loc: LocId };
@@ -235,6 +236,7 @@ pub const ExprStore = struct {
     MapLit: Table(Rows.MapLit) = .{},
     KeyValue: Table(Rows.KeyValue) = .{},
     Call: Table(Rows.Call) = .{},
+    NamedArg: Table(Rows.NamedArg) = .{},
     IndexAccess: Table(Rows.IndexAccess) = .{},
     FieldAccess: Table(Rows.FieldAccess) = .{},
     StructFieldValue: Table(Rows.StructFieldValue) = .{},
@@ -445,6 +447,17 @@ pub fn structFieldSpreadExpr(a: *Ast, sfv_id: StructFieldValueId) ?ExprId {
     const r = a.exprs.get(.Range, sfv.value);
     if (!r.start.isNone() or r.end.isNone() or r.inclusive_right) return null;
     return r.end.unwrap();
+}
+
+pub fn isTritonLaunchCall(a: *Ast, call: Rows.Call) bool {
+    if (a.kind(call.callee) != .FieldAccess) return false;
+    const fa = a.exprs.get(.FieldAccess, call.callee);
+    const field_name = a.exprs.strs.get(fa.field);
+    if (!std.mem.eql(u8, field_name, "launch")) return false;
+    if (a.kind(fa.parent) != .Ident) return false;
+    const idr = a.exprs.get(.Ident, fa.parent);
+    const parent_name = a.exprs.strs.get(idr.name);
+    return std.mem.eql(u8, parent_name, "triton");
 }
 
 // --- Printers ---

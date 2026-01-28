@@ -17,7 +17,6 @@ var g_passes_registered: bool = false;
 pub const SourceManager = struct {
     gpa: std.mem.Allocator,
     files: std.ArrayList(Entry) = .empty,
-    /// Maps file path string to index for O(1) lookup.
     lookup_cache: std.StringHashMap(u32),
 
     const Entry = struct {
@@ -147,6 +146,8 @@ pub const Context = struct {
     load_imports: bool = true,
     mutex: std.Thread.Mutex = .{},
     parse_worklist: std.ArrayList(ParseRequest) = .{},
+    triton_launches: std.ArrayList(TritonLaunch) = .{},
+    triton_launch_meta: TritonLaunchMeta = .{ .num_warps = null, .threads_per_warp = null, .num_ctas = null },
 
     const ParseRequest = struct {
         path: []const u8,
@@ -177,10 +178,13 @@ pub const Context = struct {
             .type_store = type_store,
             .compilation_unit = .init(gpa),
             .global_func_map = .init(gpa),
+            .triton_launches = .{},
+            .triton_launch_meta = .{ .num_warps = null, .threads_per_warp = null, .num_ctas = null },
         };
     }
 
     pub fn deinit(self: *Context) void {
+        self.triton_launches.deinit(self.gpa);
         self.compilation_unit.deinit();
         self.global_func_map.deinit();
         self.source_manager.deinit();
@@ -195,6 +199,9 @@ pub const Context = struct {
         self.gpa.destroy(self.type_store);
     }
 };
+
+pub const TritonLaunch = struct { spec_name: tir.StrId, num_warps: ?i32, threads_per_warp: ?i32, num_ctas: ?i32 };
+pub const TritonLaunchMeta = struct { num_warps: ?i32, threads_per_warp: ?i32, num_ctas: ?i32 };
 
 pub const DependencyLevels = struct {
     allocator: std.mem.Allocator,
@@ -547,9 +554,14 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const 
     const exe_dir = try std.fs.selfExeDirPathAlloc(alloc);
     const rt_path = try std.fs.path.join(alloc, &.{ exe_dir[0 .. exe_dir.len - 4], "lib/libsr_runtime.a" });
     try cmd.append(alloc, rt_path);
+    const triton_rt_path = try std.fs.path.join(alloc, &.{ exe_dir[0 .. exe_dir.len - 4], "lib/libsr_triton_runtime.a" });
     try cmd.appendSlice(alloc, &[_][]const u8{ "-Wl,-rpath,./out", "-Lout" });
 
     var op = mlir.Operation{ .handle = mlir.c.mlirModuleGetOperation(module) };
+    if (!op.getDiscardableAttributeByName(mlir.StringRef.from("sr.has_triton")).isNull()) {
+        try cmd.append(alloc, triton_rt_path);
+        try cmd.append(alloc, "-lcuda");
+    }
     if (!op.getDiscardableAttributeByName(mlir.StringRef.from("sr.has_async")).isNull()) {
         try cmd.appendSlice(alloc, &[_][]const u8{ "-L/usr/local/lib", "-Wl,-rpath,/usr/local/lib", "-lmlir_async_runtime" });
     }

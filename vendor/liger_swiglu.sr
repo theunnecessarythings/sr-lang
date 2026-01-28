@@ -1,0 +1,75 @@
+package liger_swiglu
+
+triton :: import "vendor/triton"
+
+PtrF32 :: triton.Ptr(f32)
+
+/// SwiGLU forward kernel using SiLU (x * sigmoid(x)).
+swiglu_forward_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    a_ptr: PtrF32,
+    b_ptr: PtrF32,
+    c_ptr: PtrF32,
+    stride: i32,
+    n_cols: i32,
+    comptime BLOCK_SIZE: i32 = 1024,
+) {
+    pid := triton.program_id(0)
+    offs := triton.make_range(0, BLOCK_SIZE)
+    mask := offs < triton.splat(n_cols, BLOCK_SIZE)
+
+    row_offset := pid * stride
+    row_offset_b := triton.splat(row_offset, BLOCK_SIZE)
+
+    a_ptrs := a_ptr + (offs + row_offset_b)
+    b_ptrs := b_ptr + (offs + row_offset_b)
+
+    zero := triton.splat(0.(f32), BLOCK_SIZE)
+    a_row := triton.load(a_ptrs, mask, zero)
+    b_row := triton.load(b_ptrs, mask, zero)
+
+    one := triton.splat(1.0.(f32), BLOCK_SIZE)
+    neg_a := zero - a_row
+    sig := one / (one + triton.exp(neg_a))
+    silu := a_row * sig
+    c_row := silu * b_row
+
+    c_ptrs := c_ptr + (offs + row_offset_b)
+    triton.store(c_ptrs, c_row, mask)
+}
+
+/// SwiGLU backward kernel using SiLU (x * sigmoid(x)).
+swiglu_backward_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    dc_ptr: PtrF32,
+    a_ptr: PtrF32,
+    b_ptr: PtrF32,
+    stride: i32,
+    n_cols: i32,
+    comptime BLOCK_SIZE: i32 = 1024,
+) {
+    pid := triton.program_id(0)
+    offs := triton.make_range(0, BLOCK_SIZE)
+    mask := offs < triton.splat(n_cols, BLOCK_SIZE)
+
+    row_offset := pid * stride
+    row_offset_b := triton.splat(row_offset, BLOCK_SIZE)
+
+    dc_ptrs := dc_ptr + (offs + row_offset_b)
+    a_ptrs := a_ptr + (offs + row_offset_b)
+    b_ptrs := b_ptr + (offs + row_offset_b)
+
+    zero := triton.splat(0.(f32), BLOCK_SIZE)
+    dc_row := triton.load(dc_ptrs, mask, zero)
+    a_row := triton.load(a_ptrs, mask, zero)
+    b_row := triton.load(b_ptrs, mask, zero)
+
+    one := triton.splat(1.0.(f32), BLOCK_SIZE)
+    neg_a := zero - a_row
+    sig := one / (one + triton.exp(neg_a))
+    silu := a_row * sig
+
+    db_row := dc_row * silu
+    da_row := dc_row * (silu * (one - sig) + sig) * b_row
+
+    triton.store(a_ptrs, da_row, mask)
+    triton.store(b_ptrs, db_row, mask)
+}

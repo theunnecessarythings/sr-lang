@@ -1,0 +1,126 @@
+package main
+
+liger_swiglu :: import "vendor/liger_swiglu"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+math :: import "std/math"
+
+PtrF32 :: triton.Ptr(f32)
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    n_rows: i32 = 64
+    n_cols: i32 = 1024
+    stride: i32 = n_cols
+    size := n_rows.(usize) * n_cols.(usize) * 4
+
+    a_h_ptr := alloc.alloc(size) orelse return
+    a_h := a_h_ptr.^*f32
+    b_h_ptr := alloc.alloc(size) orelse return
+    b_h := b_h_ptr.^*f32
+    dc_h_ptr := alloc.alloc(size) orelse return
+    dc_h := dc_h_ptr.^*f32
+    da_h_ptr := alloc.alloc(size) orelse return
+    da_h := da_h_ptr.^*f32
+    db_h_ptr := alloc.alloc(size) orelse return
+    db_h := db_h_ptr.^*f32
+
+    i: i32 = 0
+    total: i32 = n_rows * n_cols
+    while i < total {
+        a_h[i] = ((i % 31) - 15).(f32) * 0.02
+        b_h[i] = ((i % 17) - 8).(f32) * 0.03
+        dc_h[i] = ((i % 13) - 6).(f32) * 0.05
+        i = i + 1
+    }
+
+    da_ref_ptr := alloc.alloc(size) orelse return
+    da_ref := da_ref_ptr.^*f32
+    db_ref_ptr := alloc.alloc(size) orelse return
+    db_ref := db_ref_ptr.^*f32
+
+    i = 0
+    while i < total {
+        a := a_h[i]
+        b := b_h[i]
+        dc := dc_h[i]
+        sig := 1.0.(f32) / (1.0.(f32) + math.expf(-a))
+        silu := a * sig
+        db_ref[i] = dc * silu
+        da_ref[i] = dc * (silu * (1.0.(f32) - sig) + sig) * b
+        i = i + 1
+    }
+
+    a_d: cuda.CUdeviceptr = 0
+    b_d: cuda.CUdeviceptr = 0
+    dc_d: cuda.CUdeviceptr = 0
+
+    _ = cuda.cuMemAlloc(&a_d, size)
+    _ = cuda.cuMemAlloc(&b_d, size)
+    _ = cuda.cuMemAlloc(&dc_d, size)
+    _ = cuda.cuMemcpyHtoD(a_d, a_h.^?*void, size)
+    _ = cuda.cuMemcpyHtoD(b_d, b_h.^?*void, size)
+    _ = cuda.cuMemcpyHtoD(dc_d, dc_h.^?*void, size)
+
+    triton.launch(
+        liger_swiglu.swiglu_backward_kernel,
+        grid = (n_rows, 1, 1),
+        block = (128, 1, 1),
+        BLOCK_SIZE = 1024,
+        dc_d,
+        a_d,
+        b_d,
+        stride,
+        n_cols,
+    )
+
+    _ = cuda.cuMemcpyDtoH(da_h.^?*void, a_d, size)
+    _ = cuda.cuMemcpyDtoH(db_h.^?*void, b_d, size)
+
+    success := true
+    epsilon: f32 = 1.e-3
+    i = 0
+    while i < total {
+        diff_a := da_h[i] - da_ref[i]
+        if diff_a < 0 { diff_a = -diff_a }
+        if diff_a > epsilon {
+            io.println("da mismatch at %d: expected %f got %f", i, da_ref[i], da_h[i])
+            success = false
+            break
+        }
+        diff_b := db_h[i] - db_ref[i]
+        if diff_b < 0 { diff_b = -diff_b }
+        if diff_b > epsilon {
+            io.println("db mismatch at %d: expected %f got %f", i, db_ref[i], db_h[i])
+            success = false
+            break
+        }
+        i = i + 1
+    }
+    if success { io.println("SwiGLU backward verification passed", ()) }
+
+    _ = cuda.cuMemFree(a_d)
+    _ = cuda.cuMemFree(b_d)
+    _ = cuda.cuMemFree(dc_d)
+}

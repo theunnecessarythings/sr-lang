@@ -1,0 +1,58 @@
+package liger_embedding
+
+triton :: import "vendor/triton"
+
+PtrF32 :: triton.Ptr(f32)
+PtrI32 :: triton.Ptr(i32)
+
+/// Embedding forward kernel (1D block over embedding_dim).
+embedding_forward_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    embeddings_ptr: PtrF32,
+    indices_ptr: PtrI32,
+    output_ptr: PtrF32,
+    n_elements: i32,
+    embedding_dim: i32,
+    comptime BLOCK_SIZE: i32 = 128,
+) {
+    pid := triton.program_id(0)
+    if pid >= n_elements { return }
+
+    offs := triton.make_range(0, BLOCK_SIZE)
+    mask := offs < triton.splat(embedding_dim, BLOCK_SIZE)
+
+    idx_vec := triton.load(indices_ptr + offs, offs < 1.(i32), triton.splat(0.(i32), BLOCK_SIZE))
+    idx := triton.reduce_sum_i32(idx_vec, 0)
+
+    base := triton.splat(idx * embedding_dim, BLOCK_SIZE)
+    out_base := triton.splat(pid * embedding_dim, BLOCK_SIZE)
+    cols := base + offs
+    out_cols := out_base + offs
+
+    vals := triton.load(embeddings_ptr + cols, mask, triton.splat(0.(f32), BLOCK_SIZE))
+    triton.store(output_ptr + out_cols, vals, mask)
+}
+
+/// Embedding backward kernel (assumes unique indices; no atomics).
+embedding_backward_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    grad_output_ptr: PtrF32,
+    grad_weight_ptr: PtrF32,
+    indices_ptr: PtrI32,
+    n_elements: i32,
+    embedding_dim: i32,
+    comptime BLOCK_SIZE: i32 = 128,
+) {
+    pid := triton.program_id(0)
+    if pid >= n_elements { return }
+
+    offs := triton.make_range(0, BLOCK_SIZE)
+    mask := offs < triton.splat(embedding_dim, BLOCK_SIZE)
+
+    idx_vec := triton.load(indices_ptr + offs, offs < 1.(i32), triton.splat(0.(i32), BLOCK_SIZE))
+    idx := triton.reduce_sum_i32(idx_vec, 0)
+
+    out_base := triton.splat(pid * embedding_dim, BLOCK_SIZE)
+    w_base := triton.splat(idx * embedding_dim, BLOCK_SIZE)
+
+    grad := triton.load(grad_output_ptr + (out_base + offs), mask, triton.splat(0.(f32), BLOCK_SIZE))
+    triton.store(grad_weight_ptr + (w_base + offs), grad, mask)
+}

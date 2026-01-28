@@ -1,0 +1,120 @@
+package main
+
+liger_sparsemax :: import "vendor/liger_sparsemax"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+
+PtrF32 :: triton.Ptr(f32)
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    n_rows: i32 = 2
+    n_cols: i32 = 16
+    stride: i32 = n_cols
+    size := n_rows.(usize) * n_cols.(usize) * 4
+
+    out_h_ptr := alloc.alloc(size) orelse return
+    out_h := out_h_ptr.^*f32
+    go_h_ptr := alloc.alloc(size) orelse return
+    go_h := go_h_ptr.^*f32
+    gi_h_ptr := alloc.alloc(size) orelse return
+    gi_h := gi_h_ptr.^*f32
+
+    i: i32 = 0
+    total: i32 = n_rows * n_cols
+    while i < total {
+        out_h[i] = if (i % 5 == 0) { 0.2 } else { 0.0 }
+        go_h[i] = ((i % 7) - 3).(f32) * 0.1
+        i = i + 1
+    }
+
+    gi_ref_ptr := alloc.alloc(size) orelse return
+    gi_ref := gi_ref_ptr.^*f32
+    r: i32 = 0
+    while r < n_rows {
+        base := r * n_cols
+        sum: f32 = 0.0
+        cnt: f32 = 0.0
+        c: i32 = 0
+        while c < n_cols {
+            if out_h[base + c] > 0.0 {
+                sum = sum + go_h[base + c]
+                cnt = cnt + 1.0
+            }
+            c = c + 1
+        }
+        if cnt < 1.0 { cnt = 1.0 }
+        mean := sum / cnt
+        c = 0
+        while c < n_cols {
+            gi_ref[base + c] = if out_h[base + c] > 0.0 { go_h[base + c] - mean } else { 0.0 }
+            c = c + 1
+        }
+        r = r + 1
+    }
+
+    out_d: cuda.CUdeviceptr = 0
+    go_d: cuda.CUdeviceptr = 0
+    gi_d: cuda.CUdeviceptr = 0
+
+    _ = cuda.cuMemAlloc(&out_d, size)
+    _ = cuda.cuMemAlloc(&go_d, size)
+    _ = cuda.cuMemAlloc(&gi_d, size)
+
+    _ = cuda.cuMemcpyHtoD(out_d, out_h.^?*void, size)
+    _ = cuda.cuMemcpyHtoD(go_d, go_h.^?*void, size)
+
+    triton.launch(
+        liger_sparsemax.sparsemax_backward_kernel,
+        grid = (n_rows, 1, 1),
+        block = (128, 1, 1),
+        BLOCK_SIZE = 16,
+        out_d,
+        go_d,
+        gi_d,
+        stride,
+        n_cols,
+    )
+
+    _ = cuda.cuMemcpyDtoH(gi_h.^?*void, gi_d, size)
+
+    success := true
+    epsilon: f32 = 1.e-6
+    i = 0
+    while i < total {
+        diff := gi_h[i] - gi_ref[i]
+        if diff < 0 { diff = -diff }
+        if diff > epsilon {
+            io.println("gi mismatch at %d: expected %f got %f", i, gi_ref[i], gi_h[i])
+            success = false
+            break
+        }
+        i = i + 1
+    }
+    if success { io.println("Sparsemax backward verification passed", ()) }
+
+    _ = cuda.cuMemFree(out_d)
+    _ = cuda.cuMemFree(go_d)
+    _ = cuda.cuMemFree(gi_d)
+}

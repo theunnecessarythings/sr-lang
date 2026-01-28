@@ -9,27 +9,17 @@ const List = std.ArrayList;
 
 pub const Parser = @This();
 
-/// Allocator used for CST storage, interner operations, and diagnostics.
 gpa: std.mem.Allocator,
-/// Source buffer currently parsed.
 src: []const u8,
-/// Tokenizer instance producing lexical tokens.
 lex: Lexer,
-/// Current token being consumed.
 cur: Token,
-/// Lookahead token.
 nxt: Token,
-/// Counter used to synthesize unique names for `test` declarations.
 test_counter: usize = 0,
 
-/// CST being built/returned to the caller.
 cst_u: cst.CST,
-/// Shared compilation context for access to interner/locations.
 context: *compile.Context,
-/// Diagnostic sink for parser errors, warnings, notes.
 diags: *diag.Diagnostics,
 
-/// Contextual parsing mode for Pratt table recursion (expressions vs type expressions).
 const ParseMode = enum { expr, type, expr_no_struct };
 
 // ---------- lifecycle ----------
@@ -1082,14 +1072,26 @@ fn parseField(self: *Parser, parent: cst.ExprId) !cst.ExprId {
 }
 
 /// Parse comma-separated expressions until `end_tag`, returning range + trailing flag.
-fn parseCommaExprListUntil(self: *Parser, comptime end_tag: Token.Tag) anyerror!struct { range: cst.RangeOf(cst.ExprId), trailing: bool } {
+const ArgList = struct { range: cst.RangeOf(cst.ExprId), trailing: bool };
+
+fn parseCommaExprListUntil(self: *Parser, comptime end_tag: Token.Tag, comptime allow_named: bool) anyerror!ArgList {
     var items: List(cst.ExprId) = .empty;
     defer items.deinit(self.gpa);
 
     var trailing = false;
     if (self.cur.tag != end_tag) {
         while (true) {
-            try items.append(self.gpa, try self.parseExpr(0, .expr));
+            const arg_loc = self.cur.loc;
+            if (allow_named and (self.cur.tag == .identifier or self.cur.tag == .raw_identifier) and self.nxt.tag == .equal) {
+                const name_id = self.intern(self.slice(self.cur));
+                self.advance();
+                _ = self.expect(.equal) catch |err| return err;
+                const value = try self.parseExpr(0, .expr);
+                const named = self.addExpr(.NamedArg, .{ .name = name_id, .value = value, .loc = self.toLocId(arg_loc) });
+                try items.append(self.gpa, named);
+            } else {
+                try items.append(self.gpa, try self.parseExpr(0, .expr));
+            }
             trailing = self.consumeIf(.comma);
             if (!trailing or self.cur.tag == end_tag) break;
         }
@@ -1105,8 +1107,27 @@ fn parseCommaExprListUntil(self: *Parser, comptime end_tag: Token.Tag) anyerror!
 /// Parse a call expression with previously parsed `callee`.
 fn parseCall(self: *Parser, callee: cst.ExprId) !cst.ExprId {
     const loc = self.toLocId(self.cur.loc);
-    const args = try self.parseCommaExprListUntil(.rparen);
+    // Since `allow_named` must be comptime-known, and `isTritonLaunchCallee` is runtime (depends on CST content),
+    // we cannot pass the result of `isTritonLaunchCallee` directly to `parseCommaExprListUntil` if it's a comptime parameter.
+    // However, in Zig `comptime` parameters can be passed runtime values if the function is inline? No.
+    // We must branch.
+    const args = if (self.isTritonLaunchCallee(callee))
+        try self.parseCommaExprListUntil(.rparen, true)
+    else
+        try self.parseCommaExprListUntil(.rparen, false);
+
     return self.addExpr(.Call, .{ .callee = callee, .args = args.range, .trailing_arg_comma = args.trailing, .loc = loc });
+}
+
+fn isTritonLaunchCallee(self: *Parser, callee: cst.ExprId) bool {
+    if (self.cst_u.kind(callee) != .FieldAccess) return false;
+    const fa = self.cst_u.exprs.get(.FieldAccess, callee);
+    const field_name = self.cst_u.exprs.strs.get(fa.field);
+    if (!std.mem.eql(u8, field_name, "launch")) return false;
+    if (self.cst_u.kind(fa.parent) != .Ident) return false;
+    const idr = self.cst_u.exprs.get(.Ident, fa.parent);
+    const parent_name = self.cst_u.exprs.strs.get(idr.name);
+    return std.mem.eql(u8, parent_name, "triton");
 }
 
 // ================================
@@ -2672,7 +2693,7 @@ fn parseMlir(self: *Parser) !cst.ExprId {
     var args_range = cst.OptRangeOf(cst.ExprId).none();
     if (self.cur.tag == .lparen) {
         self.advance();
-        args_range = .some((try self.parseCommaExprListUntil(.rparen)).range);
+        args_range = .some((try self.parseCommaExprListUntil(.rparen, false)).range);
     }
 
     const lcurly_tok = self.cur;

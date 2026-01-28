@@ -1,0 +1,408 @@
+package liger_fused_neighborhood_attention
+
+triton :: import "vendor/triton"
+
+PtrF32 :: triton.Ptr(f32)
+
+/// Neighborhood attention mask kernel (per-row).
+neighborhood_mask_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    mask_ptr: PtrF32,
+    seq_len: i32,
+    kernel_size: i32,
+    dilation: i32,
+    comptime BLOCK_SIZE: i32 = 128,
+) {
+    row_id := triton.program_id(0)
+    offs := triton.make_range(0, BLOCK_SIZE)
+
+    half_kernel := kernel_size / 2
+    start: i32 = row_id - half_kernel * dilation
+    if start < 0 { start = 0 }
+    end: i32 = row_id + half_kernel * dilation + 1
+    if end > seq_len { end = seq_len }
+
+    row_b := triton.splat(row_id, BLOCK_SIZE)
+    start_b := triton.splat(start, BLOCK_SIZE)
+    end_b := triton.splat(end, BLOCK_SIZE)
+    seq_b := triton.splat(seq_len, BLOCK_SIZE)
+
+    col_offsets := offs
+    in_bounds := col_offsets < seq_b
+    valid_neighbors := triton.band(col_offsets >= start_b, col_offsets < end_b)
+
+    // Dilation handling without control flow (dilation == 1 => all true).
+    dil_b := triton.splat(dilation, BLOCK_SIZE)
+    rel := col_offsets - row_b
+    valid_dilation := triton.rem(rel, dil_b) == triton.splat(0.(i32), BLOCK_SIZE)
+    valid_neighbors = triton.band(valid_neighbors, valid_dilation)
+
+    ones := triton.splat(1.0.(f32), BLOCK_SIZE)
+    zeros := triton.splat(0.0.(f32), BLOCK_SIZE)
+    mask_vals := triton.where(triton.band(valid_neighbors, in_bounds), ones, zeros)
+
+    base := triton.splat(row_id * seq_len, BLOCK_SIZE)
+    ptrs := mask_ptr + (base + col_offsets)
+    triton.store(ptrs, mask_vals, in_bounds)
+}
+
+/// Fused neighborhood attention QK kernel (per-row, vectorized over cols).
+fused_neighborhood_attention_qk_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    q_ptr: PtrF32,
+    k_ptr: PtrF32,
+    qk_ptr: PtrF32,
+    mask_ptr: PtrF32,
+    q_batch_stride: i32,
+    q_head_stride: i32,
+    q_seq_stride: i32,
+    q_dim_stride: i32,
+    k_batch_stride: i32,
+    k_head_stride: i32,
+    k_seq_stride: i32,
+    k_dim_stride: i32,
+    qk_batch_stride: i32,
+    qk_head_stride: i32,
+    qk_seq_stride: i32,
+    qk_seq2_stride: i32,
+    num_heads: i32,
+    seq_len: i32,
+    head_dim: i32,
+    scale: f32,
+    comptime BLOCK_SIZE: i32 = 1,
+) {
+    batch_head_id := triton.program_id(0)
+    row_id := triton.program_id(1)
+    col_id := triton.program_id(2)
+
+    head_id := batch_head_id % num_heads
+    batch_id := batch_head_id / num_heads
+
+    offs := triton.make_range(0, BLOCK_SIZE)
+    mask0 := offs < 1.(i32)
+
+    row_mask := triton.splat(row_id, BLOCK_SIZE) < triton.splat(seq_len, BLOCK_SIZE)
+    col_mask := triton.splat(col_id, BLOCK_SIZE) < triton.splat(seq_len, BLOCK_SIZE)
+    full_mask := triton.band(row_mask, col_mask)
+
+    q_row_base := batch_id * q_batch_stride + head_id * q_head_stride + row_id * q_seq_stride
+    k_row_base := batch_id * k_batch_stride + head_id * k_head_stride + col_id * k_seq_stride
+    qk_row_base := batch_id * qk_batch_stride + head_id * qk_head_stride + row_id * qk_seq_stride + col_id * qk_seq2_stride
+    mask_row_base := row_id * seq_len + col_id
+
+    acc: f32 = 0.0.(f32)
+    d: i32 = 0
+    while d < head_dim {
+        q_ptrs := q_ptr + triton.splat(q_row_base + d * q_dim_stride, BLOCK_SIZE)
+        q_vec := triton.load(q_ptrs, row_mask, triton.splat(0.(f32), BLOCK_SIZE))
+        q_val := triton.reduce_sum(f32, q_vec, 0)
+
+        k_ptrs := k_ptr + triton.splat(k_row_base + d * k_dim_stride, BLOCK_SIZE)
+        k_vec := triton.load(k_ptrs, col_mask, triton.splat(0.(f32), BLOCK_SIZE))
+        k_val := triton.reduce_sum(f32, k_vec, 0)
+
+        acc = acc + q_val * k_val
+        d = d + 1
+    }
+
+    acc = acc * scale
+
+    mask_ptrs := mask_ptr + triton.splat(mask_row_base, BLOCK_SIZE)
+    mask_vec := triton.load(mask_ptrs, full_mask, triton.splat(0.(f32), BLOCK_SIZE))
+    mask_val := triton.reduce_sum(f32, mask_vec, 0)
+
+    out_val := acc
+    if mask_val <= 0.0.(f32) { out_val = -3.4028235e38.(f32) }
+
+    out_ptrs := qk_ptr + triton.splat(qk_row_base, BLOCK_SIZE)
+    triton.store(out_ptrs, triton.splat(out_val, BLOCK_SIZE), full_mask)
+}
+
+/// Fused neighborhood attention AV kernel (scalar per output element).
+fused_neighborhood_attention_av_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    attn_ptr: PtrF32,
+    v_ptr: PtrF32,
+    out_ptr: PtrF32,
+    attn_batch_stride: i32,
+    attn_head_stride: i32,
+    attn_seq_stride: i32,
+    attn_seq2_stride: i32,
+    v_batch_stride: i32,
+    v_head_stride: i32,
+    v_seq_stride: i32,
+    v_dim_stride: i32,
+    out_batch_stride: i32,
+    out_head_stride: i32,
+    out_seq_stride: i32,
+    out_dim_stride: i32,
+    num_heads: i32,
+    seq_len: i32,
+    head_dim: i32,
+    comptime BLOCK_SIZE: i32 = 1,
+) {
+    batch_head_id := triton.program_id(0)
+    row_id := triton.program_id(1)
+    dim_id := triton.program_id(2)
+
+    head_id := batch_head_id % num_heads
+    batch_id := batch_head_id / num_heads
+
+    offs := triton.make_range(0, BLOCK_SIZE)
+    row_mask := triton.splat(row_id, BLOCK_SIZE) < triton.splat(seq_len, BLOCK_SIZE)
+    dim_mask := triton.splat(dim_id, BLOCK_SIZE) < triton.splat(head_dim, BLOCK_SIZE)
+    out_mask := triton.band(row_mask, dim_mask)
+
+    attn_row_base := batch_id * attn_batch_stride + head_id * attn_head_stride + row_id * attn_seq_stride
+    v_head_base := batch_id * v_batch_stride + head_id * v_head_stride
+    out_base := batch_id * out_batch_stride + head_id * out_head_stride + row_id * out_seq_stride + dim_id * out_dim_stride
+
+    acc: f32 = 0.0.(f32)
+    k: i32 = 0
+    while k < seq_len {
+        attn_ptrs := attn_ptr + triton.splat(attn_row_base + k * attn_seq2_stride, BLOCK_SIZE)
+        attn_vec := triton.load(attn_ptrs, row_mask, triton.splat(0.(f32), BLOCK_SIZE))
+        attn_val := triton.reduce_sum(f32, attn_vec, 0)
+
+        v_ptrs := v_ptr + triton.splat(v_head_base + k * v_seq_stride + dim_id * v_dim_stride, BLOCK_SIZE)
+        v_vec := triton.load(v_ptrs, dim_mask, triton.splat(0.(f32), BLOCK_SIZE))
+        v_val := triton.reduce_sum(f32, v_vec, 0)
+
+        acc = acc + attn_val * v_val
+        k = k + 1
+    }
+
+    out_ptrs := out_ptr + triton.splat(out_base, BLOCK_SIZE)
+    triton.store(out_ptrs, triton.splat(acc, BLOCK_SIZE), out_mask)
+}
+
+/// Fused neighborhood attention grad Q kernel (scalar per output element).
+fused_neighborhood_attention_grad_qk_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    grad_attn_ptr: PtrF32,
+    k_ptr: PtrF32,
+    grad_q_ptr: PtrF32,
+    grad_attn_batch_stride: i32,
+    grad_attn_head_stride: i32,
+    grad_attn_seq_stride: i32,
+    grad_attn_seq2_stride: i32,
+    k_batch_stride: i32,
+    k_head_stride: i32,
+    k_seq_stride: i32,
+    k_dim_stride: i32,
+    grad_q_batch_stride: i32,
+    grad_q_head_stride: i32,
+    grad_q_seq_stride: i32,
+    grad_q_dim_stride: i32,
+    num_heads: i32,
+    seq_len: i32,
+    head_dim: i32,
+    scale: f32,
+    comptime BLOCK_SIZE: i32 = 1,
+) {
+    batch_head_id := triton.program_id(0)
+    row_id := triton.program_id(1)
+    dim_id := triton.program_id(2)
+
+    head_id := batch_head_id % num_heads
+    batch_id := batch_head_id / num_heads
+
+    offs := triton.make_range(0, BLOCK_SIZE)
+    row_mask := triton.splat(row_id, BLOCK_SIZE) < triton.splat(seq_len, BLOCK_SIZE)
+    dim_mask := triton.splat(dim_id, BLOCK_SIZE) < triton.splat(head_dim, BLOCK_SIZE)
+    out_mask := triton.band(row_mask, dim_mask)
+
+    grad_attn_row_base := batch_id * grad_attn_batch_stride + head_id * grad_attn_head_stride + row_id * grad_attn_seq_stride
+    k_head_base := batch_id * k_batch_stride + head_id * k_head_stride
+    grad_q_base := batch_id * grad_q_batch_stride + head_id * grad_q_head_stride + row_id * grad_q_seq_stride + dim_id * grad_q_dim_stride
+
+    acc: f32 = 0.0.(f32)
+    k: i32 = 0
+    while k < seq_len {
+        grad_attn_ptrs := grad_attn_ptr + triton.splat(grad_attn_row_base + k * grad_attn_seq2_stride, BLOCK_SIZE)
+        grad_attn_vec := triton.load(grad_attn_ptrs, row_mask, triton.splat(0.(f32), BLOCK_SIZE))
+        grad_attn_val := triton.reduce_sum(f32, grad_attn_vec, 0)
+
+        k_ptrs := k_ptr + triton.splat(k_head_base + k * k_seq_stride + dim_id * k_dim_stride, BLOCK_SIZE)
+        k_vec := triton.load(k_ptrs, dim_mask, triton.splat(0.(f32), BLOCK_SIZE))
+        k_val := triton.reduce_sum(f32, k_vec, 0)
+
+        acc = acc + grad_attn_val * k_val
+        k = k + 1
+    }
+
+    acc = acc * scale
+
+    grad_q_ptrs := grad_q_ptr + triton.splat(grad_q_base, BLOCK_SIZE)
+    triton.store(grad_q_ptrs, triton.splat(acc, BLOCK_SIZE), out_mask)
+}
+
+/// Fused neighborhood attention grad K kernel (scalar per output element).
+fused_neighborhood_attention_grad_k_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    grad_attn_ptr: PtrF32,
+    q_ptr: PtrF32,
+    grad_k_ptr: PtrF32,
+    grad_attn_batch_stride: i32,
+    grad_attn_head_stride: i32,
+    grad_attn_seq_stride: i32,
+    grad_attn_seq2_stride: i32,
+    q_batch_stride: i32,
+    q_head_stride: i32,
+    q_seq_stride: i32,
+    q_dim_stride: i32,
+    grad_k_batch_stride: i32,
+    grad_k_head_stride: i32,
+    grad_k_seq_stride: i32,
+    grad_k_dim_stride: i32,
+    num_heads: i32,
+    seq_len: i32,
+    head_dim: i32,
+    scale: f32,
+    comptime BLOCK_SIZE: i32 = 1,
+) {
+    batch_head_id := triton.program_id(0)
+    row_id := triton.program_id(1)
+    dim_id := triton.program_id(2)
+
+    head_id := batch_head_id % num_heads
+    batch_id := batch_head_id / num_heads
+
+    offs := triton.make_range(0, BLOCK_SIZE)
+    row_mask := triton.splat(row_id, BLOCK_SIZE) < triton.splat(seq_len, BLOCK_SIZE)
+    dim_mask := triton.splat(dim_id, BLOCK_SIZE) < triton.splat(head_dim, BLOCK_SIZE)
+    out_mask := triton.band(row_mask, dim_mask)
+
+    grad_attn_col_base := batch_id * grad_attn_batch_stride + head_id * grad_attn_head_stride + row_id * grad_attn_seq2_stride
+    q_head_base := batch_id * q_batch_stride + head_id * q_head_stride
+    grad_k_base := batch_id * grad_k_batch_stride + head_id * grad_k_head_stride + row_id * grad_k_seq_stride + dim_id * grad_k_dim_stride
+
+    acc: f32 = 0.0.(f32)
+    r: i32 = 0
+    while r < seq_len {
+        grad_attn_ptrs := grad_attn_ptr + triton.splat(grad_attn_col_base + r * grad_attn_seq_stride, BLOCK_SIZE)
+        grad_attn_vec := triton.load(grad_attn_ptrs, row_mask, triton.splat(0.(f32), BLOCK_SIZE))
+        grad_attn_val := triton.reduce_sum(f32, grad_attn_vec, 0)
+
+        q_ptrs := q_ptr + triton.splat(q_head_base + r * q_seq_stride + dim_id * q_dim_stride, BLOCK_SIZE)
+        q_vec := triton.load(q_ptrs, dim_mask, triton.splat(0.(f32), BLOCK_SIZE))
+        q_val := triton.reduce_sum(f32, q_vec, 0)
+
+        acc = acc + grad_attn_val * q_val
+        r = r + 1
+    }
+
+    acc = acc * scale
+
+    grad_k_ptrs := grad_k_ptr + triton.splat(grad_k_base, BLOCK_SIZE)
+    triton.store(grad_k_ptrs, triton.splat(acc, BLOCK_SIZE), out_mask)
+}
+
+/// Fused neighborhood attention grad V kernel (scalar per output element).
+fused_neighborhood_attention_grad_v_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    attn_ptr: PtrF32,
+    grad_out_ptr: PtrF32,
+    grad_v_ptr: PtrF32,
+    attn_batch_stride: i32,
+    attn_head_stride: i32,
+    attn_seq_stride: i32,
+    attn_seq2_stride: i32,
+    grad_out_batch_stride: i32,
+    grad_out_head_stride: i32,
+    grad_out_seq_stride: i32,
+    grad_out_dim_stride: i32,
+    grad_v_batch_stride: i32,
+    grad_v_head_stride: i32,
+    grad_v_seq_stride: i32,
+    grad_v_dim_stride: i32,
+    num_heads: i32,
+    seq_len: i32,
+    head_dim: i32,
+    comptime BLOCK_SIZE: i32 = 1,
+) {
+    batch_head_id := triton.program_id(0)
+    row_id := triton.program_id(1)
+    dim_id := triton.program_id(2)
+
+    head_id := batch_head_id % num_heads
+    batch_id := batch_head_id / num_heads
+
+    offs := triton.make_range(0, BLOCK_SIZE)
+    row_mask := triton.splat(row_id, BLOCK_SIZE) < triton.splat(seq_len, BLOCK_SIZE)
+    dim_mask := triton.splat(dim_id, BLOCK_SIZE) < triton.splat(head_dim, BLOCK_SIZE)
+    out_mask := triton.band(row_mask, dim_mask)
+
+    attn_col_base := batch_id * attn_batch_stride + head_id * attn_head_stride + row_id * attn_seq2_stride
+    grad_out_head_base := batch_id * grad_out_batch_stride + head_id * grad_out_head_stride
+    grad_v_base := batch_id * grad_v_batch_stride + head_id * grad_v_head_stride + row_id * grad_v_seq_stride + dim_id * grad_v_dim_stride
+
+    acc: f32 = 0.0.(f32)
+    r: i32 = 0
+    while r < seq_len {
+        attn_ptrs := attn_ptr + triton.splat(attn_col_base + r * attn_seq_stride, BLOCK_SIZE)
+        attn_vec := triton.load(attn_ptrs, row_mask, triton.splat(0.(f32), BLOCK_SIZE))
+        attn_val := triton.reduce_sum(f32, attn_vec, 0)
+
+        grad_out_ptrs := grad_out_ptr + triton.splat(grad_out_head_base + r * grad_out_seq_stride + dim_id * grad_out_dim_stride, BLOCK_SIZE)
+        grad_out_vec := triton.load(grad_out_ptrs, dim_mask, triton.splat(0.(f32), BLOCK_SIZE))
+        grad_out_val := triton.reduce_sum(f32, grad_out_vec, 0)
+
+        acc = acc + attn_val * grad_out_val
+        r = r + 1
+    }
+
+    grad_v_ptrs := grad_v_ptr + triton.splat(grad_v_base, BLOCK_SIZE)
+    triton.store(grad_v_ptrs, triton.splat(acc, BLOCK_SIZE), out_mask)
+}
+
+/// Fused neighborhood attention grad attn kernel (scalar per output element).
+fused_neighborhood_attention_grad_attn_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    grad_out_ptr: PtrF32,
+    v_ptr: PtrF32,
+    grad_attn_ptr: PtrF32,
+    grad_out_batch_stride: i32,
+    grad_out_head_stride: i32,
+    grad_out_seq_stride: i32,
+    grad_out_dim_stride: i32,
+    v_batch_stride: i32,
+    v_head_stride: i32,
+    v_seq_stride: i32,
+    v_dim_stride: i32,
+    grad_attn_batch_stride: i32,
+    grad_attn_head_stride: i32,
+    grad_attn_seq_stride: i32,
+    grad_attn_seq2_stride: i32,
+    num_heads: i32,
+    seq_len: i32,
+    head_dim: i32,
+    comptime BLOCK_SIZE: i32 = 1,
+) {
+    batch_head_id := triton.program_id(0)
+    row_id := triton.program_id(1)
+    col_id := triton.program_id(2)
+
+    head_id := batch_head_id % num_heads
+    batch_id := batch_head_id / num_heads
+
+    offs := triton.make_range(0, BLOCK_SIZE)
+    row_mask := triton.splat(row_id, BLOCK_SIZE) < triton.splat(seq_len, BLOCK_SIZE)
+    col_mask := triton.splat(col_id, BLOCK_SIZE) < triton.splat(seq_len, BLOCK_SIZE)
+    out_mask := triton.band(row_mask, col_mask)
+
+    grad_out_head_base := batch_id * grad_out_batch_stride + head_id * grad_out_head_stride + row_id * grad_out_seq_stride
+    v_head_base := batch_id * v_batch_stride + head_id * v_head_stride + col_id * v_seq_stride
+    grad_attn_base := batch_id * grad_attn_batch_stride + head_id * grad_attn_head_stride + row_id * grad_attn_seq_stride + col_id * grad_attn_seq2_stride
+
+    acc: f32 = 0.0.(f32)
+    d: i32 = 0
+    while d < head_dim {
+        grad_out_ptrs := grad_out_ptr + triton.splat(grad_out_head_base + d * grad_out_dim_stride, BLOCK_SIZE)
+        grad_out_vec := triton.load(grad_out_ptrs, row_mask, triton.splat(0.(f32), BLOCK_SIZE))
+        grad_out_val := triton.reduce_sum(f32, grad_out_vec, 0)
+
+        v_ptrs := v_ptr + triton.splat(v_head_base + d * v_dim_stride, BLOCK_SIZE)
+        v_vec := triton.load(v_ptrs, col_mask, triton.splat(0.(f32), BLOCK_SIZE))
+        v_val := triton.reduce_sum(f32, v_vec, 0)
+
+        acc = acc + grad_out_val * v_val
+        d = d + 1
+    }
+
+    grad_attn_ptrs := grad_attn_ptr + triton.splat(grad_attn_base, BLOCK_SIZE)
+    triton.store(grad_attn_ptrs, triton.splat(acc, BLOCK_SIZE), out_mask)
+}

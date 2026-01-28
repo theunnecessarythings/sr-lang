@@ -1,0 +1,247 @@
+package main
+
+liger_group_norm :: import "vendor/liger_group_norm"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+math :: import "std/math"
+
+PtrF32 :: triton.Ptr(f32)
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    n_rows: i32 = 1
+    n_groups: i32 = 2
+    channels_per_group: i32 = 2
+    hidden_size_per_channel: i32 = 8
+    hidden_size: i32 = channels_per_group * hidden_size_per_channel
+
+    row_stride: i32 = n_groups * hidden_size
+    col_stride: i32 = hidden_size
+
+    size := n_rows.(usize) * row_stride.(usize) * 4
+
+    x_h_ptr := alloc.alloc(size) orelse return
+    x_h := x_h_ptr.^*f32
+    dy_h_ptr := alloc.alloc(size) orelse return
+    dy_h := dy_h_ptr.^*f32
+    dx_h_ptr := alloc.alloc(size) orelse return
+    dx_h := dx_h_ptr.^*f32
+
+    w_h_ptr := alloc.alloc((n_groups * channels_per_group).(usize) * 4) orelse return
+    w_h := w_h_ptr.^*f32
+    dw_h_ptr := alloc.alloc((n_groups * channels_per_group).(usize) * 4) orelse return
+    dw_h := dw_h_ptr.^*f32
+    b_h_ptr := alloc.alloc((n_groups * channels_per_group).(usize) * 4) orelse return
+    b_h := b_h_ptr.^*f32
+    db_h_ptr := alloc.alloc((n_groups * channels_per_group).(usize) * 4) orelse return
+    db_h := db_h_ptr.^*f32
+
+    mean_h_ptr := alloc.alloc((n_rows * n_groups).(usize) * 4) orelse return
+    mean_h := mean_h_ptr.^*f32
+    rstd_h_ptr := alloc.alloc((n_rows * n_groups).(usize) * 4) orelse return
+    rstd_h := rstd_h_ptr.^*f32
+
+    i: i32 = 0
+    total: i32 = n_rows * row_stride
+    while i < total {
+        x_h[i] = ((i % 31) - 15).(f32) * 0.02
+        dy_h[i] = ((i % 13) - 6).(f32) * 0.05
+        i = i + 1
+    }
+
+    i = 0
+    while i < n_groups * channels_per_group {
+        w_h[i] = ((i % 7) - 3).(f32) * 0.1 + 1.0
+        b_h[i] = ((i % 5) - 2).(f32) * 0.05
+        i = i + 1
+    }
+
+    eps: f32 = 1.e-5
+
+    // Compute mean/rstd per group for row 0
+    g: i32 = 0
+    while g < n_groups {
+        base := g * hidden_size
+        sum: f32 = 0.0
+        c: i32 = 0
+        while c < hidden_size {
+            sum = sum + x_h[base + c]
+            c = c + 1
+        }
+        mean := sum / hidden_size.(f32)
+        mean_h[g] = mean
+        var_sum: f32 = 0.0
+        c = 0
+        while c < hidden_size {
+            v := x_h[base + c] - mean
+            var_sum = var_sum + v * v
+            c = c + 1
+        }
+        var := var_sum / hidden_size.(f32)
+        rstd_h[g] = 1.0.(f32) / math.sqrtf(var + eps)
+        g = g + 1
+    }
+
+    dx_ref_ptr := alloc.alloc(size) orelse return
+    dx_ref := dx_ref_ptr.^*f32
+    dw_ref_ptr := alloc.alloc((n_groups * channels_per_group).(usize) * 4) orelse return
+    dw_ref := dw_ref_ptr.^*f32
+    db_ref_ptr := alloc.alloc((n_groups * channels_per_group).(usize) * 4) orelse return
+    db_ref := db_ref_ptr.^*f32
+
+    i = 0
+    while i < n_groups * channels_per_group {
+        dw_ref[i] = 0.0
+        db_ref[i] = 0.0
+        i = i + 1
+    }
+
+    g = 0
+    while g < n_groups {
+        base := g * hidden_size
+        mean := mean_h[g]
+        rstd := rstd_h[g]
+
+        c1: f32 = 0.0
+        c2: f32 = 0.0
+        c: i32 = 0
+        while c < hidden_size {
+            ch := c / hidden_size_per_channel
+            w := w_h[g * channels_per_group + ch]
+            x_hat := (x_h[base + c] - mean) * rstd
+            wdy := w * dy_h[base + c]
+            c1 = c1 + x_hat * wdy
+            c2 = c2 + wdy
+            c = c + 1
+        }
+        c1 = c1 / hidden_size.(f32)
+        c2 = c2 / hidden_size.(f32)
+
+        c = 0
+        while c < hidden_size {
+            ch := c / hidden_size_per_channel
+            w := w_h[g * channels_per_group + ch]
+            x_hat := (x_h[base + c] - mean) * rstd
+            wdy := w * dy_h[base + c]
+            dx_ref[base + c] = (wdy - (x_hat * c1 + c2)) * rstd
+            dw_ref[g * channels_per_group + ch] = dw_ref[g * channels_per_group + ch] + dy_h[base + c] * x_hat
+            db_ref[g * channels_per_group + ch] = db_ref[g * channels_per_group + ch] + dy_h[base + c]
+            c = c + 1
+        }
+        g = g + 1
+    }
+
+    x_d: cuda.CUdeviceptr = 0
+    dy_d: cuda.CUdeviceptr = 0
+    dx_d: cuda.CUdeviceptr = 0
+    w_d: cuda.CUdeviceptr = 0
+    dw_d: cuda.CUdeviceptr = 0
+    db_d: cuda.CUdeviceptr = 0
+    mean_d: cuda.CUdeviceptr = 0
+    rstd_d: cuda.CUdeviceptr = 0
+
+    _ = cuda.cuMemAlloc(&x_d, size)
+    _ = cuda.cuMemAlloc(&dy_d, size)
+    _ = cuda.cuMemAlloc(&dx_d, size)
+    _ = cuda.cuMemAlloc(&w_d, (n_groups * channels_per_group).(usize) * 4)
+    _ = cuda.cuMemAlloc(&dw_d, (n_groups * channels_per_group).(usize) * 4)
+    _ = cuda.cuMemAlloc(&db_d, (n_groups * channels_per_group).(usize) * 4)
+    _ = cuda.cuMemAlloc(&mean_d, (n_rows * n_groups).(usize) * 4)
+    _ = cuda.cuMemAlloc(&rstd_d, (n_rows * n_groups).(usize) * 4)
+
+    _ = cuda.cuMemcpyHtoD(x_d, x_h.^?*void, size)
+    _ = cuda.cuMemcpyHtoD(dy_d, dy_h.^?*void, size)
+    _ = cuda.cuMemcpyHtoD(w_d, w_h.^?*void, (n_groups * channels_per_group).(usize) * 4)
+    _ = cuda.cuMemcpyHtoD(mean_d, mean_h.^?*void, (n_rows * n_groups).(usize) * 4)
+    _ = cuda.cuMemcpyHtoD(rstd_d, rstd_h.^?*void, (n_rows * n_groups).(usize) * 4)
+
+    triton.launch(
+        liger_group_norm.group_norm_backward_kernel,
+        grid = (n_rows, n_groups, 1),
+        block = (128, 1, 1),
+        BLOCK_SIZE = 32,
+        x_d,
+        row_stride,
+        col_stride,
+        w_d,
+        mean_d,
+        n_groups,
+        1,
+        rstd_d,
+        dx_d,
+        dw_d,
+        db_d,
+        dy_d,
+        hidden_size,
+        channels_per_group,
+    )
+
+    _ = cuda.cuMemcpyDtoH(dx_h.^?*void, dx_d, size)
+    _ = cuda.cuMemcpyDtoH(dw_h.^?*void, dw_d, (n_groups * channels_per_group).(usize) * 4)
+    _ = cuda.cuMemcpyDtoH(db_h.^?*void, db_d, (n_groups * channels_per_group).(usize) * 4)
+
+    success := true
+    epsilon: f32 = 1.e-3
+    i = 0
+    while i < total {
+        diff := dx_h[i] - dx_ref[i]
+        if diff < 0 { diff = -diff }
+        if diff > epsilon {
+            io.println("dx mismatch at %d: expected %f got %f", i, dx_ref[i], dx_h[i])
+            success = false
+            break
+        }
+        i = i + 1
+    }
+
+    i = 0
+    while i < n_groups * channels_per_group and success {
+        diffw := dw_h[i] - dw_ref[i]
+        if diffw < 0 { diffw = -diffw }
+        if diffw > 1.e-3 {
+            io.println("dw mismatch at %d: expected %f got %f", i, dw_ref[i], dw_h[i])
+            success = false
+            break
+        }
+        diffb := db_h[i] - db_ref[i]
+        if diffb < 0 { diffb = -diffb }
+        if diffb > 1.e-3 {
+            io.println("db mismatch at %d: expected %f got %f", i, db_ref[i], db_h[i])
+            success = false
+            break
+        }
+        i = i + 1
+    }
+
+    if success { io.println("GroupNorm backward verification passed", ()) }
+
+    _ = cuda.cuMemFree(x_d)
+    _ = cuda.cuMemFree(dy_d)
+    _ = cuda.cuMemFree(dx_d)
+    _ = cuda.cuMemFree(w_d)
+    _ = cuda.cuMemFree(dw_d)
+    _ = cuda.cuMemFree(db_d)
+    _ = cuda.cuMemFree(mean_d)
+    _ = cuda.cuMemFree(rstd_d)
+}

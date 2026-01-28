@@ -1,0 +1,56 @@
+package main
+
+// Chapter 4: Functions and Procedures
+//
+// Reusable blocks of code.
+
+io :: import "std/io"
+
+// --- Functions vs Procedures ---
+// `fn`: Pure(ish) functions. They typically calculate values and return them.
+// `proc`: Procedures. They can have side effects (I/O, modifying memory).
+
+// A simple function that adds two integers.
+// Arguments are named and typed. Return type follows the parameter list.
+add :: fn(a: i32, b: i32) i32 {
+    return a + b
+}
+
+// A procedure that prints a message.
+// It has no return type (implicitly `void`).
+greet :: proc(name: string) {
+    io.println("Hello, %s!", name)
+}
+
+// Default Arguments
+// Parameters can have default values.
+power :: fn(base: i32, exp: i32 = 2) i32 {
+    result: i32 = 1
+    for i in 0..exp {
+        result = result * base
+    }
+    return result
+}
+
+// Named Return Values (implicit in body, but explicit in signature)
+// Currently, standard return is just `return value`.
+
+main :: proc() {
+    io.println("--- Functions ---", 0)
+
+    sum := add(10, 5)
+    io.println("10 + 5 = %d", sum)
+
+    greet("Developer")
+
+    p1 := power(3)    // Uses default exp=2 -> 3^2 = 9
+    p2 := power(3, 3) // Overrides exp -> 3^3 = 27
+    io.println("3^2 = %d", p1)
+    io.println("3^3 = %d", p2)
+
+    // First-class functions
+    // Functions can be assigned to variables and passed around.
+    op := add
+    res := op(2, 2)
+    io.println("op(2, 2) = %d", res)
+}

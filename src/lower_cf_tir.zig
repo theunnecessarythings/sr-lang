@@ -3,6 +3,7 @@ const ast = @import("ast.zig");
 const tir = @import("tir.zig");
 const types = @import("types.zig");
 const std = @import("std");
+const call_resolution = @import("call_resolution.zig");
 const codegen = @import("codegen_main.zig");
 const List = std.ArrayList;
 const ValueBinding = LowerTir.ValueBinding;
@@ -167,18 +168,72 @@ pub fn lowerIf(
     expected_ty: ?types.TypeId,
 ) anyerror!tir.ValueId {
     const row = a.exprs.get(.If, id);
-    var then_blk = try f.builder.beginBlock(f);
-    var else_blk = try f.builder.beginBlock(f);
     const loc = LowerTir.optLoc(a, id);
+    const ts = self.context.type_store;
 
     // Evaluate Condition
-    const cond_v = try self.lowerExpr(ctx, a, env, f, blk, row.cond, self.context.type_store.tBool(), .rvalue);
-    const br_cond = self.forceLocalCond(blk, cond_v, loc);
-    try f.builder.condBr(blk, br_cond, then_blk.id, &.{}, else_blk.id, &.{}, loc);
-    try f.builder.endBlock(f, blk.*);
+    const cond_ty = self.getExprType(ctx, a, row.cond);
+    const cond_kind = ts.getKind(cond_ty);
+    const cond_v = try self.lowerExpr(ctx, a, env, f, blk, row.cond, ts.tBool(), .rvalue);
 
     const out_ty_guess = expected_ty orelse self.getExprType(ctx, a, id);
     const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
+
+    // If lowering would introduce control-flow with tensor/simd results, prefer select.
+    // This is primarily for Triton/GPU targets where divergence is expensive and
+    // execution is masked. For CPU, we must avoid eager evaluation of side effects.
+    const is_triton = f.builder.t.funcs.Function.get(f.id).is_triton_fn;
+    const out_kind = ts.getKind(out_ty_guess);
+    const wants_select = is_triton and produce_value and (out_kind == .Tensor or out_kind == .Simd);
+
+    if (wants_select) {
+        const cond_for_select = blk_sel: {
+            if (cond_kind == .Tensor or cond_kind == .Simd) break :blk_sel cond_v;
+
+            const bool_cond = self.forceLocalCond(blk, cond_v, loc);
+            if (out_kind == .Tensor) {
+                const ten = ts.get(.Tensor, out_ty_guess);
+                const cond_t = ts.mkTensor(ts.tBool(), ten.dims[0..ten.rank]);
+                break :blk_sel blk.builder.tirValue(.Broadcast, blk, cond_t, loc, .{ .value = bool_cond });
+            }
+            if (out_kind == .Simd) {
+                const simd = ts.get(.Simd, out_ty_guess);
+                const cond_t = ts.mkSimd(ts.tBool(), simd.lanes);
+                break :blk_sel blk.builder.tirValue(.Broadcast, blk, cond_t, loc, .{ .value = bool_cond });
+            }
+            break :blk_sel bool_cond;
+        };
+
+        var v_then = try self.lowerBlockExprValue(ctx, a, env, f, blk, row.then_block, out_ty_guess);
+        if (expected_ty) |want| v_then = self.emitCoerce(blk, v_then, self.getExprType(ctx, a, row.then_block), want, loc);
+
+        var v_else: tir.ValueId = undefined;
+        if (!row.else_block.isNone()) {
+            v_else = try self.lowerBlockExprValue(ctx, a, env, f, blk, row.else_block.unwrap(), out_ty_guess);
+            if (expected_ty) |want| v_else = self.emitCoerce(blk, v_else, self.getExprType(ctx, a, row.else_block.unwrap()), want, loc);
+        } else {
+            v_else = self.safeUndef(blk, out_ty_guess, loc);
+        }
+
+        return blk.builder.tirValue(.Select, blk, out_ty_guess, loc, .{
+            .cond = cond_for_select,
+            .then_value = v_then,
+            .else_value = v_else,
+        });
+    }
+
+    // Statement if: try to lower tensor/simd assignment into a select to avoid dominance issues.
+    if (is_triton and !produce_value) {
+        if (try lowerTensorIfAssignAsSelect(self, ctx, a, env, f, blk, row, cond_v, cond_kind, loc)) {
+            return self.safeUndef(blk, ts.tAny(), loc);
+        }
+    }
+
+    var then_blk = try f.builder.beginBlock(f);
+    var else_blk = try f.builder.beginBlock(f);
+    const br_cond = self.forceLocalCond(blk, cond_v, loc);
+    try f.builder.condBr(blk, br_cond, then_blk.id, &.{}, else_blk.id, &.{}, loc);
+    try f.builder.endBlock(f, blk.*);
 
     if (produce_value) {
         var join_blk = try f.builder.beginBlock(f);
@@ -225,6 +280,113 @@ pub fn lowerIf(
 
         blk.* = exit_blk;
         return self.safeUndef(blk, self.context.type_store.tAny(), loc);
+    }
+}
+
+fn lowerTensorIfAssignAsSelect(
+    self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
+    a: *ast.Ast,
+    env: *Env,
+    f: *tir.Builder.FunctionFrame,
+    blk: *tir.Builder.BlockFrame,
+    row: ast.Rows.If,
+    cond_v: tir.ValueId,
+    cond_kind: types.TypeKind,
+    loc: tir.OptLocId,
+) !bool {
+    const ts = self.context.type_store;
+
+    const assign_then = extractAssignBlockInfo(a, row.then_block) orelse return false;
+    const assign_else = if (!row.else_block.isNone()) extractAssignBlockInfo(a, row.else_block.unwrap()) else null;
+
+    if (assign_else) |ae| {
+        if (!ae.name.eq(assign_then.name)) return false;
+    }
+
+    const var_ty = resolveIdentType(self, a, env, assign_then.ident_expr) orelse return false;
+    const var_kind = ts.getKind(var_ty);
+    if (var_kind != .Tensor and var_kind != .Simd) return false;
+
+    const ptr = try self.lowerIdentAddrByName(a, env, f, blk, assign_then.name, var_ty, var_ty, loc);
+    const cur_val = try self.lowerIdent(ctx, a, env, f, blk, assign_then.ident_expr, var_ty, .rvalue);
+    try env.pushScope(self.gpa);
+    defer _ = env.popScope(self.gpa);
+    for (assign_then.pre_stmts) |sid| try self.lowerStmt(ctx, a, env, f, blk, sid);
+    var then_val = try self.lowerExpr(ctx, a, env, f, blk, assign_then.rhs, var_ty, .rvalue);
+    if (!self.getExprType(ctx, a, assign_then.rhs).eq(var_ty)) {
+        then_val = self.emitCoerce(blk, then_val, self.getExprType(ctx, a, assign_then.rhs), var_ty, loc);
+    }
+
+    var else_val: tir.ValueId = cur_val;
+    if (assign_else) |ae| {
+        try env.pushScope(self.gpa);
+        defer _ = env.popScope(self.gpa);
+        for (ae.pre_stmts) |sid| try self.lowerStmt(ctx, a, env, f, blk, sid);
+        else_val = try self.lowerExpr(ctx, a, env, f, blk, ae.rhs, var_ty, .rvalue);
+        if (!self.getExprType(ctx, a, ae.rhs).eq(var_ty)) {
+            else_val = self.emitCoerce(blk, else_val, self.getExprType(ctx, a, ae.rhs), var_ty, loc);
+        }
+    }
+
+    const cond_for_select = blk_sel: {
+        if (cond_kind == .Tensor or cond_kind == .Simd) break :blk_sel cond_v;
+
+        const bool_cond = self.forceLocalCond(blk, cond_v, loc);
+        if (var_kind == .Tensor) {
+            const ten = ts.get(.Tensor, var_ty);
+            const cond_t = ts.mkTensor(ts.tBool(), ten.dims[0..ten.rank]);
+            break :blk_sel blk.builder.tirValue(.Broadcast, blk, cond_t, loc, .{ .value = bool_cond });
+        }
+        if (var_kind == .Simd) {
+            const simd = ts.get(.Simd, var_ty);
+            const cond_t = ts.mkSimd(ts.tBool(), simd.lanes);
+            break :blk_sel blk.builder.tirValue(.Broadcast, blk, cond_t, loc, .{ .value = bool_cond });
+        }
+        break :blk_sel bool_cond;
+    };
+
+    const sel = blk.builder.tirValue(.Select, blk, var_ty, loc, .{
+        .cond = cond_for_select,
+        .then_value = then_val,
+        .else_value = else_val,
+    });
+    _ = f.builder.tirValue(.Store, blk, var_ty, loc, .{ .ptr = ptr, .value = sel, .@"align" = 0 });
+    return true;
+}
+
+fn resolveIdentType(_: *LowerTir, a: *ast.Ast, env: *Env, ident_expr: ast.ExprId) ?types.TypeId {
+    const row = a.exprs.get(.Ident, ident_expr);
+    if (env.lookup(row.name)) |bnd| return bnd.ty;
+    if (call_resolution.findDeclId(a, row.name)) |did| {
+        return LowerTir.getDeclType(a, did);
+    }
+    const raw = ident_expr.toRaw();
+    if (raw < a.type_info.expr_types.items.len) {
+        return a.type_info.expr_types.items[raw];
+    }
+    return null;
+}
+
+fn extractAssignBlockInfo(a: *ast.Ast, expr: ast.ExprId) ?struct { name: ast.StrId, ident_expr: ast.ExprId, rhs: ast.ExprId, pre_stmts: []const ast.StmtId } {
+    if (a.kind(expr) != .Block) return null;
+    const b = a.exprs.get(.Block, expr);
+    const stmts = a.stmts.stmt_pool.slice(b.items);
+    if (stmts.len == 0) return null;
+    const last = stmts[stmts.len - 1];
+    if (a.kind(last) != .Assign) return null;
+    const as = a.stmts.get(.Assign, last);
+    switch (as.left) {
+        .expr => |left_expr| {
+            if (a.kind(left_expr) != .Ident) return null;
+            const name = a.exprs.get(.Ident, left_expr).name;
+            var i: usize = 0;
+            while (i + 1 < stmts.len) : (i += 1) {
+                if (a.kind(stmts[i]) != .Decl) return null;
+            }
+            return .{ .name = name, .ident_expr = left_expr, .rhs = as.right, .pre_stmts = stmts[0 .. stmts.len - 1] };
+        },
+        else => return null,
     }
 }
 

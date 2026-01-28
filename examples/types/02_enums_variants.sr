@@ -1,0 +1,73 @@
+package main
+
+// Chapter 6: Enums and Variants
+//
+// Enums and Variants allow you to represent a value that is one of several possibilities.
+
+io :: import "std/io"
+
+// --- Enums ---
+// Simple C-style enums. Useful for states or flags.
+Status :: enum {
+    Pending,
+    Active,
+    Complete,
+}
+
+// Integer-backed enums. Explicitly control the underlying value.
+// `u8` here means the enum will take up 1 byte.
+HttpStatus :: enum(u16) {
+    Ok = 200,
+    NotFound = 404,
+    Error = 500,
+}
+
+// --- Variants (Sum Types) ---
+// Variants are like enums, but each case can hold different data.
+// This is incredibly powerful for representing complex states.
+Event :: variant {
+    // A variant with no data (unit-like)
+    Quit,
+    
+    // A variant holding a tuple of data
+    // KeyPress(char key, int modifier_mask)
+    KeyPress(char, i32),
+    
+    // A variant holding a struct-like payload
+    Click { x: i32, y: i32 },
+}
+
+main :: proc() {
+    io.println("--- Enums & Variants ---", 0)
+
+    // Using Enums
+    s := Status.Active
+    if s == Status.Active {
+        io.println("Status is Active", 0)
+    }
+
+    code := HttpStatus.NotFound
+    io.println("HTTP Code: %d", code.%u16) // Cast to underlying integer
+
+    // Using Variants
+    // We typically use `match` to handle variants safely.
+    e1 := Event.Quit
+    e2 := Event.Click{ x: 100, y: 200 }
+
+    handle_event(e1)
+    handle_event(e2)
+}
+
+handle_event :: proc(e: Event) {
+    match e {
+        Event.Quit => io.println("Quitting...", 0),
+        
+        Event.Click{ x, y } => {
+            io.println("Clicked at %d, %d", (x, y))
+        },
+        
+        Event.KeyPress(k, _) => {
+            io.println("Key pressed: %c", k)
+        },
+    }
+}

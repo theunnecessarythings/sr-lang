@@ -96,6 +96,18 @@ pub fn build(b: *std.Build) void {
     runtime_lib.root_module.link_libc = true;
     b.installArtifact(runtime_lib);
 
+    // Triton runtime (CUDA launch + caching), only linked for Triton programs
+    const triton_runtime_lib = b.addLibrary(.{
+        .name = "sr_triton_runtime",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("runtime/triton_runtime.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    triton_runtime_lib.root_module.link_libc = true;
+    b.installArtifact(triton_runtime_lib);
+
     b.installArtifact(exe);
     const exe_check = b.addExecutable(.{
         .name = "check",
@@ -139,8 +151,9 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     run_cmd.step.dependOn(b.getInstallStep());
-    // Ensure runtime library is built/installed before running compiler (which links against it)
+    // Ensure runtime libraries are built/installed before running compiler (which links against them)
     run_cmd.step.dependOn(&runtime_lib.step);
+    run_cmd.step.dependOn(&triton_runtime_lib.step);
 
     if (b.args) |args| {
         run_cmd.addArgs(args);

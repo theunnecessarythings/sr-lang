@@ -97,6 +97,8 @@ exec docker run --rm -it \
     "$ZIG_DIR/zig" build -Doptimize=ReleaseFast -Dllvm_home="$LLVM_LIB_DIR"
     rm -rf sr-lang-0.1.0
     mv zig-out sr-lang-0.1.0
+    cp -r /work/examples /work/sr-lang-0.1.0/
+    cp -r /work/docs /work/sr-lang-0.1.0/
     tar -czf sr-lang-0.1.0-linux-x86_64.tar.gz sr-lang-0.1.0
 
     cat > /work/_tmp_hello.sr << "EOF"

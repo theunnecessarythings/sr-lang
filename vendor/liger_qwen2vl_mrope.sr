@@ -1,0 +1,124 @@
+package liger_qwen2vl_mrope
+
+triton :: import "vendor/triton"
+
+PtrF32 :: triton.Ptr(f32)
+
+fn load_scalar(ptr: PtrF32, offset: i32) f32 {
+    offs := triton.splat(offset, 1)
+    ptrs := triton.addptr(triton.splat(ptr, 1), offs)
+    mask := triton.splat(0, 1) < triton.splat(1, 1)
+    v := triton.load(ptrs, mask, triton.splat(0.(f32), 1))
+    return triton.reduce_sum(f32, v, 0)
+}
+
+fn store_scalar(ptr: PtrF32, offset: i32, val: f32) void {
+    offs := triton.splat(offset, 1)
+    ptrs := triton.addptr(triton.splat(ptr, 1), offs)
+    mask := triton.splat(0, 1) < triton.splat(1, 1)
+    triton.store(ptrs, triton.splat(val, 1), mask)
+}
+
+/// Qwen2VL M-RoPE kernel (forward/backward via BACKWARD_PASS).
+triton_qwen2vl_mrope_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    q_ptr: PtrF32,
+    k_ptr: PtrF32,
+    cos_ptr: PtrF32,
+    sin_ptr: PtrF32,
+    sl: i32,
+    comptime BS: i32,
+    comptime N_QH: i32,
+    comptime N_KH: i32,
+    comptime HD: i32,
+    comptime PAD_N_QH: i32,
+    comptime PAD_N_KH: i32,
+    comptime PAD_HD: i32,
+    comptime MROPE_SECTION_T: i32,
+    comptime MROPE_SECTION_H: i32,
+    comptime BLOCK_SIZE: i32,
+    comptime BACKWARD_PASS: bool = false,
+) {
+    pid := triton.program_id(0)
+
+    q_base := triton.addptr(q_ptr, pid * (N_QH * HD))
+    k_base := triton.addptr(k_ptr, pid * (N_KH * HD))
+
+    t_end := MROPE_SECTION_T
+    h_end := t_end + MROPE_SECTION_H
+
+    // cos/sin base pointers for this token
+    t_cos := triton.addptr(cos_ptr, pid * HD)
+    h_cos := triton.addptr(t_cos, BS * SL * HD)
+    w_cos := triton.addptr(h_cos, BS * SL * HD)
+    t_sin := triton.addptr(sin_ptr, pid * HD)
+    h_sin := triton.addptr(t_sin, BS * SL * HD)
+    w_sin := triton.addptr(h_sin, BS * SL * HD)
+
+    // precompute cos/sin rows (scalarized)
+    d: i32 = 0
+    while d < (PAD_HD / 2) {
+        if d < (HD / 2) {
+            cos_val: f32 = 0.0
+            sin_val: f32 = 0.0
+            if d < t_end {
+                cos_val = cos_val + load_scalar(t_cos, d)
+                sin_val = sin_val + load_scalar(t_sin, d)
+            }
+            if d >= t_end and d < h_end {
+                cos_val = cos_val + load_scalar(h_cos, d)
+                sin_val = sin_val + load_scalar(h_sin, d)
+            }
+            if d >= h_end and d < (HD / 2) {
+                cos_val = cos_val + load_scalar(w_cos, d)
+                sin_val = sin_val + load_scalar(w_sin, d)
+            }
+
+            // Q heads
+            hq: i32 = 0
+            while hq < PAD_N_QH {
+                if hq < N_QH {
+                    first_off := hq * HD + d
+                    second_off := first_off + (HD / 2)
+                    q1 := load_scalar(q_base, first_off)
+                    q2 := load_scalar(q_base, second_off)
+                    if !BACKWARD_PASS {
+                        new_q1 := q1 * cos_val - q2 * sin_val
+                        new_q2 := q2 * cos_val + q1 * sin_val
+                        store_scalar(q_base, first_off, new_q1)
+                        store_scalar(q_base, second_off, new_q2)
+                    } else {
+                        new_q1 := q1 * cos_val + q2 * sin_val
+                        new_q2 := q2 * cos_val - q1 * sin_val
+                        store_scalar(q_base, first_off, new_q1)
+                        store_scalar(q_base, second_off, new_q2)
+                    }
+                }
+                hq = hq + 1
+            }
+
+            // K heads
+            hk: i32 = 0
+            while hk < PAD_N_KH {
+                if hk < N_KH {
+                    first_off := hk * HD + d
+                    second_off := first_off + (HD / 2)
+                    k1 := load_scalar(k_base, first_off)
+                    k2 := load_scalar(k_base, second_off)
+                    if !BACKWARD_PASS {
+                        new_k1 := k1 * cos_val - k2 * sin_val
+                        new_k2 := k2 * cos_val + k1 * sin_val
+                        store_scalar(k_base, first_off, new_k1)
+                        store_scalar(k_base, second_off, new_k2)
+                    } else {
+                        new_k1 := k1 * cos_val + k2 * sin_val
+                        new_k2 := k2 * cos_val - k1 * sin_val
+                        store_scalar(k_base, first_off, new_k1)
+                        store_scalar(k_base, second_off, new_k2)
+                    }
+                }
+                hk = hk + 1
+            }
+        }
+        d = d + 1
+    }
+}

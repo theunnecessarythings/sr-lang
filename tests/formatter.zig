@@ -94,19 +94,16 @@ test "complex structs and enums" {
         \\
         \\event := Event.Click{ x: 100, y: 50 }
         \\
-        \\// Struct definition
         \\Point :: struct {
         \\  x: i32,
         \\  y: i32,
         \\}
         \\
-        \\// Union definition
         \\IntOrFloat :: union {
         \\    i: i32,
         \\    f: f32,
         \\}
         \\
-        \\// C-style enum
         \\State :: enum {
         \\  Running,
         \\  Walking,
@@ -117,19 +114,16 @@ test "complex structs and enums" {
         \\
         \\event := Event.Click{ x: 100, y: 50 }
         \\
-        \\// Struct definition
         \\Point :: struct {
         \\    x: i32,
         \\    y: i32,
         \\}
         \\
-        \\// Union definition
         \\IntOrFloat :: union {
         \\    i: i32,
         \\    f: f32,
         \\}
         \\
-        \\// C-style enum
         \\State :: enum {
         \\    Running,
         \\    Walking,

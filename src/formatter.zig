@@ -641,6 +641,12 @@ const Formatter = struct {
                 }
                 try self.printLiteral("]");
             },
+            .NamedArg => {
+                const node = self.exprs.get(.NamedArg, id);
+                try self.printLiteral(self.s(node.name));
+                try self.printLiteral(" = ");
+                try self.printExpr(node.value);
+            },
             .Call => {
                 const node = self.exprs.get(.Call, id);
                 try self.printExpr(node.callee);

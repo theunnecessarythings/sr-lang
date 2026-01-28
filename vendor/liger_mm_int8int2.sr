@@ -1,0 +1,81 @@
+package liger_mm_int8int2
+
+triton :: import "vendor/triton"
+
+PtrI32 :: triton.Ptr(i32)
+
+/// Matmul kernel following Liger-Kernel's int8 x int2 algorithm (scalarized).
+matmul_int8int2_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    a_ptr: PtrI32,
+    b_ptr: PtrI32,
+    c_ptr: PtrI32,
+    M: i32,
+    N: i32,
+    K: i32,
+    stride_am: i32,
+    stride_ak: i32,
+    stride_bk: i32,
+    stride_bn: i32,
+    stride_cm: i32,
+    stride_cn: i32,
+    comptime BLOCK_SIZE_M: i32 = 128,
+    comptime BLOCK_SIZE_N: i32 = 256,
+    comptime BLOCK_SIZE_K: i32 = 64,
+    comptime GROUP_SIZE_M: i32 = 8,
+) {
+    // Runtime guard for the static assert in the original kernel.
+    if (triton.rem(K, 4 * BLOCK_SIZE_K) != 0) { return }
+
+    pid := triton.program_id(0)
+
+    num_pid_m := (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M
+    num_pid_n := (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N
+    num_pid_in_group := GROUP_SIZE_M * num_pid_n
+    group_id := pid / num_pid_in_group
+    first_pid_m := group_id * GROUP_SIZE_M
+    remaining_m := num_pid_m - first_pid_m
+    group_size_m := if remaining_m < GROUP_SIZE_M { remaining_m } else { GROUP_SIZE_M }
+    pid_m := first_pid_m + (pid % num_pid_in_group) % group_size_m
+    pid_n := (pid % num_pid_in_group) / group_size_m
+
+    m_off: i32 = 0
+    while m_off < BLOCK_SIZE_M {
+        n_off: i32 = 0
+        while n_off < BLOCK_SIZE_N {
+            m_idx := pid_m * BLOCK_SIZE_M + m_off
+            n_idx := pid_n * BLOCK_SIZE_N + n_off
+
+            if m_idx < M and n_idx < N {
+                acc: i32 = 0
+                k: i32 = 0
+                while k < K {
+                    a_offset := m_idx * stride_am + k * stride_ak
+                    a_ptrs := triton.addptr(triton.splat(a_ptr, 1), triton.splat(a_offset, 1))
+                    a_vec := triton.load(a_ptrs, triton.splat(0, 1) < triton.splat(1, 1), triton.splat(0.(i32), 1))
+                    a_val := triton.reduce_sum_i32(a_vec, 0)
+
+                    packed_k := k / 4
+                    b_offset := packed_k * stride_bk + n_idx * stride_bn
+                    b_ptrs := triton.addptr(triton.splat(b_ptr, 1), triton.splat(b_offset, 1))
+                    b_vec := triton.load(b_ptrs, triton.splat(0, 1) < triton.splat(1, 1), triton.splat(0.(i32), 1))
+                    b_val := triton.reduce_sum_i32(b_vec, 0)
+
+                    shift := triton.rem(k, 4.(i32)) * 2
+                    shifted := triton.shri(b_val, shift)
+                    w := triton.band(shifted, 3.(i32))
+                    w = w - 1
+
+                    acc = acc + a_val * w
+                    k = k + 1
+                }
+
+                c_offset := m_idx * stride_cm + n_idx * stride_cn
+                c_ptrs := triton.addptr(triton.splat(c_ptr, 1), triton.splat(c_offset, 1))
+                triton.store(c_ptrs, triton.splat(acc, 1), triton.splat(0, 1) < triton.splat(1, 1))
+            }
+
+            n_off = n_off + 1
+        }
+        m_off = m_off + 1
+    }
+}

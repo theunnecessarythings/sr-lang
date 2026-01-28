@@ -1,0 +1,36 @@
+package liger_fused_linear_jsd
+
+triton :: import "vendor/triton"
+
+PtrF32 :: triton.Ptr(f32)
+
+/// Elementwise multiply X by a scalar grad_output, in-place.
+/// This kernel is used by fused_linear_jsd backward.
+element_mul_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    x_ptr: PtrF32,
+    x_stride: i32,
+    grad_output_ptr: PtrF32,
+    n_cols: i32,
+    comptime BLOCK_SIZE: i32 = 1024,
+) {
+    pid := triton.program_id(0)
+    row_offset := pid * x_stride
+
+    offs := triton.make_range(0, BLOCK_SIZE)
+    mask1 := offs < triton.splat(1, BLOCK_SIZE)
+    grad_vec := triton.load(triton.splat(grad_output_ptr, BLOCK_SIZE), mask1, triton.splat(0.(f32), BLOCK_SIZE))
+    grad_val := triton.reduce_sum(f32, grad_vec, 0)
+    grad_b := triton.splat(grad_val, BLOCK_SIZE)
+
+    start: i32 = 0
+    while start < n_cols {
+        start_b := triton.splat(start, BLOCK_SIZE)
+        idx := offs + start_b
+        mask := idx < triton.splat(n_cols, BLOCK_SIZE)
+        base_ptrs := triton.addptr(triton.splat(x_ptr, BLOCK_SIZE), triton.splat(row_offset, BLOCK_SIZE))
+        x_ptrs := triton.addptr(base_ptrs, idx)
+        x_blk := triton.load(x_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+        triton.store(x_ptrs, x_blk * grad_b, mask)
+        start = start + BLOCK_SIZE
+    }
+}

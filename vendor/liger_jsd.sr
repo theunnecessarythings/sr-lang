@@ -1,0 +1,62 @@
+package liger_jsd
+
+triton :: import "vendor/triton"
+
+PtrF32 :: triton.Ptr(f32)
+
+/// JSD kernel (simplified: beta = 0.5, no labels).
+jsd_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    x_ptr: PtrF32,
+    x_stride: i32,
+    y_ptr: PtrF32,
+    y_stride: i32,
+    loss_ptr: PtrF32,
+    loss_stride: i32,
+    dx_ptr: PtrF32,
+    dx_stride: i32,
+    n_cols: i32,
+    n_non_ignore: f32,
+    comptime BLOCK_SIZE: i32 = 1024,
+) {
+    pid := triton.program_id(0)
+    offs := triton.make_range(0, BLOCK_SIZE)
+    mask := offs < triton.splat(n_cols, BLOCK_SIZE)
+
+    row_off_x := triton.splat(pid * x_stride, BLOCK_SIZE)
+    row_off_y := triton.splat(pid * y_stride, BLOCK_SIZE)
+    row_off_l := triton.splat(pid * loss_stride, BLOCK_SIZE)
+    row_off_dx := triton.splat(pid * dx_stride, BLOCK_SIZE)
+
+    x_ptrs := x_ptr + (row_off_x + offs)
+    y_ptrs := y_ptr + (row_off_y + offs)
+    x := triton.load(x_ptrs, mask, triton.splat(-3.4028235e38.(f32), BLOCK_SIZE))
+    y := triton.load(y_ptrs, mask, triton.splat(-3.4028235e38.(f32), BLOCK_SIZE))
+
+    max_xy := triton.reduce_max(f32, x, 0)
+    max_y := triton.reduce_max(f32, y, 0)
+    max_val := max_xy
+    if max_y > max_val { max_val = max_y }
+    max_b := triton.splat(max_val, BLOCK_SIZE)
+
+    x_shift := x - max_b
+    y_shift := y - max_b
+    exp_max := triton.exp(max_val)
+    q := triton.exp(x_shift) * triton.splat(exp_max, BLOCK_SIZE)
+    p := triton.exp(y_shift) * triton.splat(exp_max, BLOCK_SIZE)
+
+    beta: f32 = 0.5
+    beta_b := triton.splat(beta, BLOCK_SIZE)
+    one_b := triton.splat(1.0.(f32), BLOCK_SIZE)
+    m := beta_b * p + (one_b - beta_b) * q
+    log_m := triton.log(m)
+
+    loss_vec := beta_b * p * y + (one_b - beta_b) * q * x - m * log_m
+    scale := triton.splat(1.0.(f32) / n_non_ignore, BLOCK_SIZE)
+    loss_vec = loss_vec * scale
+    dx_vec := (one_b - beta_b) * q * (x - log_m) * scale
+
+    loss_ptrs := loss_ptr + (row_off_l + offs)
+    dx_ptrs := dx_ptr + (row_off_dx + offs)
+    triton.store(loss_ptrs, loss_vec, mask)
+    triton.store(dx_ptrs, dx_vec, mask)
+}

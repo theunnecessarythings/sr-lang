@@ -14,29 +14,19 @@ const List = std.ArrayList;
 
 /// Describes compile-time bindings introduced during type resolution (type/value).
 pub const Binding = union(enum) {
-    /// Type binding (name -> type id).
     Type: struct {
-        /// Identifier bound to a type.
         name: ast.StrId,
-        /// Assigned type for the identifier.
         ty: types.TypeId,
     },
-    /// Value binding (name -> constant value + type).
     Value: struct {
-        /// Identifier bound to a value.
         name: ast.StrId,
-        /// Constant value assigned to the identifier.
         value: comp.ValueId,
-        /// Type describing the stored value.
         ty: types.TypeId,
     },
 };
 
-/// View into pipeline source bindings optionally owning the buffer.
 const ComptimeBindingSlice = struct {
-    /// Array of pipeline bindings used to populate the interpreter.
     items: []ComptimeBinding,
-    /// Whether this slice owns the memory (needs freeing).
     owns: bool,
 };
 
@@ -1119,7 +1109,7 @@ fn evalLiteralToComptime(ast_unit: *ast.Ast, id: ast.ExprId) !?comp.ValueId {
     };
 }
 
-    fn resolveTensorType(
+fn resolveTensorType(
     self: *Checker,
     ctx: *Checker.CheckerContext,
     ast_unit: *ast.Ast,
@@ -1821,29 +1811,28 @@ pub fn typeFromTypeExprWithBindings(
                     const val_id = enum_field.value.unwrap();
                     var resolved = false;
                     const b_slice = enum_value_bindings.items;
-                if (ast_unit.kind(val_id) == .Ident) {
-                    const ident = ast_unit.exprs.get(.Ident, val_id);
-                    if (lookupValueBinding(b_slice, ident.name)) |bv| {
-                        const s = &ast_unit.type_info.val_store;
-                        if (s.kind(bv) == .Int) {
-                            current_value = s.get(.Int, bv).value;
+                    const s = &ast_unit.type_info.val_store;
+                    var val_result: ?comp.ValueId = null;
+
+                    if (ast_unit.kind(val_id) == .Ident) {
+                        const ident = ast_unit.exprs.get(.Ident, val_id);
+                        if (lookupValueBinding(b_slice, ident.name)) |bv| val_result = bv;
+                    }
+
+                    if (val_result == null) {
+                        val_result = evalComptimeValueWithBindings(self, ctx, ast_unit, val_id, b_slice) catch null;
+                    }
+
+                    if (val_result) |v| {
+                        if (s.kind(v) == .Int) {
+                            current_value = s.get(.Int, v).value;
                             resolved = true;
                         }
                     }
-                }
-                if (!resolved) {
-                    if (evalComptimeValueWithBindings(self, ctx, ast_unit, val_id, b_slice)) |v| {
-                        const s = &ast_unit.type_info.val_store;
-                        if (s.kind(v) == .Int) {
-                            current_value = s.get(.Int, v).value;
-                        } else {
-                            try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
-                            status = false;
-                        }
-                    } else |_| {
+
+                    if (!resolved) {
                         try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
                         status = false;
-                        }
                     }
                 }
                 member_buf[i] = .{ .name = enum_field.name, .value = @intCast(current_value) };
@@ -1996,11 +1985,10 @@ pub fn typeFromTypeExprWithBindings(
             break :blk_fa switch (self.typeKind(parent_ty)) {
                 .Ast => blk_ast: {
                     const ast_ty = ts.get(.Ast, parent_ty);
-                    const pkg = self.context.compilation_unit.packages.getPtr(self.context.interner.get(ast_ty.pkg_name)) orelse {
-                        try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .import_not_found, .{});
-                        break :blk_ast .{ false, ts.tTypeError() };
-                    };
-                    const parent_unit = pkg.sources.getPtr(self.context.interner.get(ast_ty.filepath)) orelse {
+                    const parent_unit = self.context.compilation_unit.findFileUnit(
+                        self.context.interner.get(ast_ty.pkg_name),
+                        self.context.interner.get(ast_ty.filepath),
+                    ) orelse {
                         try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .import_not_found, .{});
                         break :blk_ast .{ false, ts.tTypeError() };
                     };

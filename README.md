@@ -25,11 +25,11 @@ It prioritizes:
 If you’re looking for a polished or production-ready language, this is probably not it.
 If you’re interested in how languages are built — and rebuilt — this project is meant for that.
 
-## ✨ Features
+## Features
 
 The language is designed with a focus on modern language features, explicit control, and compiler extensibility.
 
-### 🚀 Core Language Constructs
+### Core Language Constructs
 
 - **Variables & Constants:** Flexible declarations with type inference (`:=`) or explicit typing (`:`), and compile-time constants (`::`).
 - **Literals:** Comprehensive support for integer (decimal, hex, octal, binary), floating-point, character, string (including raw and byte strings), and boolean literals.
@@ -46,7 +46,7 @@ The language is designed with a focus on modern language features, explicit cont
   - **Handling:** `catch` for error handling blocks and `orelse` for providing default values on error.
   - **Cleanup:** `defer` and `errdefer` statements for guaranteed resource cleanup on scope exit (success or error).
 
-### 📦 Data Structures & Types
+### Data Structures & Types
 
 - **Basic Types:** Built-in support for various integer widths (`i32`, `u64`), floating-point numbers (`f32`, `f64`), booleans, and strings.
 - **Aggregates:**
@@ -63,7 +63,7 @@ The language is designed with a focus on modern language features, explicit cont
 - **Pointers & Memory:** Raw pointers (`*T`), constant pointers (`*const T`), address-of operator (`&`), and dereference operator (`.*` or `*`).
 - **Type Casting:** Explicit postfix cast operators for normal (`.()`), bitwise (`.^`), saturating (`.|`), wrapping (`.%`), and checked (`.?`) conversions.
 
-### 🛠️ Advanced & Metaprogramming
+### Advanced & Metaprogramming
 
 - **Attributes:** Apply metadata to functions, types, and fields using `@[]` syntax.
 - **Closures & Higher-Order Functions:** Define anonymous functions (`|x|`) that can capture their environment, enabling functional programming patterns.
@@ -75,14 +75,14 @@ The language is designed with a focus on modern language features, explicit cont
 - **Reflection:** Support for both compile-time and runtime reflection to inspect and manipulate types and values.
 - **Compile-Time Polymorphism:** Achieved through static duck typing using the `any` type and compile-time functions as "concepts."
 
-### 🔗 Modularity
+### Modularity
 
 - **Packages:** Every `.sr` file declares a package at the top of the file (`package foo`).
   - Entry points (`zig build run -- path/to/app.sr`) must declare `package main`, mirroring Go/Odin executables.
   - When a directory is imported (for example `import "std/io"` or `import "vendor/raylib"`), the compiler loads `main.sr` from that directory and expects the package name to match the directory basename (e.g. `package io`).
 - **Imports:** Organize code into modules and import them using the `import` keyword with fully qualified package paths (e.g. `math :: import "examples/imports/math"`).
 
-## 🚀 Getting Started
+## Getting Started
 
 To build and run the compiler, you will need:
 
@@ -198,6 +198,13 @@ Release version (Why two different names? Because I can.):
 ```bash
 ./zig-out/bin/src examples/hello.sr
 ```
+
+### Triton Runtime Flags
+
+When launching Triton kernels, you can control the runtime cache with:
+
+- `SR_TRITON_NOCACHE=1` disables module/function caching (always reloads).
+- `SR_TRITON_RELOAD=1` reloads PTX if the file mtime changes; logs when a reload happens.
 
 ### Testing & Checks
 

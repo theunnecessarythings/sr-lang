@@ -1,0 +1,123 @@
+package main
+
+liger_embedding :: import "vendor/liger_embedding"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+
+PtrF32 :: triton.Ptr(f32)
+PtrI32 :: triton.Ptr(i32)
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    n_elements: i32 = 4
+    embedding_dim: i32 = 16
+    vocab_size: i32 = 8
+
+    emb_size := vocab_size.(usize) * embedding_dim.(usize) * 4
+    idx_size := n_elements.(usize) * 4
+    out_size := n_elements.(usize) * embedding_dim.(usize) * 4
+
+    emb_h_ptr := alloc.alloc(emb_size) orelse return
+    emb_h := emb_h_ptr.^*f32
+    idx_h_ptr := alloc.alloc(idx_size) orelse return
+    idx_h := idx_h_ptr.^*i32
+    out_h_ptr := alloc.alloc(out_size) orelse return
+    out_h := out_h_ptr.^*f32
+
+    i: i32 = 0
+    total: i32 = vocab_size * embedding_dim
+    while i < total {
+        emb_h[i] = (i % 23).(f32) * 0.01
+        i = i + 1
+    }
+    i = 0
+    while i < n_elements {
+        idx_h[i] = i
+        i = i + 1
+    }
+
+    ref_ptr := alloc.alloc(out_size) orelse return
+    ref := ref_ptr.^*f32
+    i = 0
+    while i < n_elements {
+        base_out := i * embedding_dim
+        base_emb := idx_h[i] * embedding_dim
+        j: i32 = 0
+        while j < embedding_dim {
+            ref[base_out + j] = emb_h[base_emb + j]
+            j = j + 1
+        }
+        i = i + 1
+    }
+
+    emb_d: cuda.CUdeviceptr = 0
+    idx_d: cuda.CUdeviceptr = 0
+    out_d: cuda.CUdeviceptr = 0
+
+    _ = cuda.cuMemAlloc(&emb_d, emb_size)
+    _ = cuda.cuMemAlloc(&idx_d, idx_size)
+    _ = cuda.cuMemAlloc(&out_d, out_size)
+
+    _ = cuda.cuMemcpyHtoD(emb_d, emb_h.^?*void, emb_size)
+    _ = cuda.cuMemcpyHtoD(idx_d, idx_h.^?*void, idx_size)
+
+    triton.launch(
+        liger_embedding.embedding_forward_kernel,
+        grid = (n_elements, 1, 1),
+        block = (128, 1, 1),
+        BLOCK_SIZE = 128,
+        emb_d,
+        idx_d,
+        out_d,
+        n_elements,
+        embedding_dim,
+    )
+
+    _ = cuda.cuMemcpyDtoH(out_h.^?*void, out_d, out_size)
+
+    success := true
+    epsilon: f32 = 1.e-4
+    i = 0
+    while i < n_elements {
+        base := i * embedding_dim
+        j: i32 = 0
+        while j < embedding_dim {
+            diff := out_h[base + j] - ref[base + j]
+            if diff < 0 { diff = -diff }
+            if diff > epsilon {
+                io.println("embedding fwd mismatch at %d,%d: expected %f got %f", i, j, ref[base + j], out_h[base + j])
+                success = false
+                break
+            }
+            j = j + 1
+        }
+        if !success { break }
+        i = i + 1
+    }
+    if success { io.println("Embedding forward verification passed", ()) }
+
+    _ = cuda.cuMemFree(emb_d)
+    _ = cuda.cuMemFree(idx_d)
+    _ = cuda.cuMemFree(out_d)
+}

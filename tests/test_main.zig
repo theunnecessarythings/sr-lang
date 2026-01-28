@@ -5,7 +5,6 @@ const alloc = std.testing.allocator;
 pub var link_lib: []const u8 = "-lm";
 
 pub fn runBehaviorTests() !void {
-    // remove old output
     _ = std.fs.cwd().deleteFile("out/output_program") catch {};
 
     const compile_result = try std.process.Child.run(.{
@@ -30,7 +29,6 @@ pub fn runBehaviorTests() !void {
         },
     }
 
-    // check output program exists
     _ = std.fs.cwd().statFile("out/output_program") catch |err| {
         std.debug.print("Error: {}\n", .{err});
         return error.CompilationFailed;

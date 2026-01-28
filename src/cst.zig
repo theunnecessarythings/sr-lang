@@ -400,6 +400,7 @@ pub const ExprKind = enum(u16) {
     Parenthesized,
     MapLit,
     Call,
+    NamedArg,
     IndexAccess,
     FieldAccess,
     StructLit,
@@ -463,6 +464,7 @@ pub const Rows = struct {
     pub const MapLit = struct { entries: RangeOf(KeyValueId), loc: LocId };
     pub const KeyValue = struct { key: ExprId, value: ExprId, loc: LocId };
     pub const Call = struct { callee: ExprId, args: RangeOf(ExprId), trailing_arg_comma: bool, loc: LocId };
+    pub const NamedArg = struct { name: StrId, value: ExprId, loc: LocId };
     pub const IndexAccess = struct { collection: ExprId, index: ExprId, loc: LocId };
     pub const FieldAccess = struct { parent: ExprId, field: StrId, is_tuple: bool, loc: LocId };
     pub const StructFieldValue = struct { name: OptStrId, value: ExprId, loc: LocId };
@@ -606,6 +608,7 @@ pub const ExprStore = struct {
     MapLit: Table(Rows.MapLit) = .{},
     KeyValue: Table(Rows.KeyValue) = .{},
     Call: Table(Rows.Call) = .{},
+    NamedArg: Table(Rows.NamedArg) = .{},
     IndexAccess: Table(Rows.IndexAccess) = .{},
     FieldAccess: Table(Rows.FieldAccess) = .{},
     StructFieldValue: Table(Rows.StructFieldValue) = .{},
@@ -867,6 +870,12 @@ pub const DodPrinter = struct {
             .Literal => {
                 const n = self.exprs.get(.Literal, id);
                 try self.leaf("(literal kind=#{d} \"{s}\")", .{ n.tag_small, self.s(n.value) });
+            },
+            .NamedArg => {
+                const n = self.exprs.get(.NamedArg, id);
+                try self.open("(named_arg \"{s}\"", .{self.s(n.name)});
+                try self.printExpr(n.value);
+                try self.close();
             },
             .Ident => {
                 const n = self.exprs.get(.Ident, id);

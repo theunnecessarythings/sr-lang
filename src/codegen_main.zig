@@ -165,11 +165,11 @@ current_func_sym: ?tir.StrId = null,
 i64_one_in_entry: ?mlir.Value = null,
 ret_join_block: ?mlir.Block = null,
 ret_has_value: bool = false,
-ret_type_cache: ?mlir.Type = null,
-current_func_is_async: bool = false,
-current_scope: ?mlir.Attribute = null,
-inline_mlir_counter: u32 = 0,
-
+    ret_type_cache: ?mlir.Type = null,
+    current_func_is_async: bool = false,
+    current_func_is_triton: bool = false,
+    current_scope: ?mlir.Attribute = null,
+    inline_mlir_counter: u32 = 0,
 // Diagnostics
 diagnostic_handler: mlir.c.MlirDiagnosticHandlerID,
 diagnostic_data: *DiagnosticData,
@@ -197,6 +197,15 @@ const TensorElemPtrInfo = struct {
     elem_ty: types.TypeId,
     indices: []TensorIndex,
 };
+
+fn isTritonKernel(_: *Codegen, t: *tir.TIR, f: *const tir.FuncRows.Function) bool {
+    const attr_ids = t.instrs.attribute_pool.slice(f.attrs);
+    for (attr_ids) |aid| {
+        const name = t.instrs.strs.get(t.instrs.Attribute.get(aid).name);
+        if (std.mem.eql(u8, name, "kernel") or std.mem.eql(u8, name, "triton_kernel")) return true;
+    }
+    return false;
+}
 
 fn freeTensorElemPtrInfo(self: *Codegen, info: *TensorElemPtrInfo) void {
     if (info.indices.len != 0) {
@@ -264,8 +273,6 @@ pub const OpBuilder = struct {
         return mlir.Operation.create(&st);
     }
 };
-
-
 
 fn appendMlirTypeText(self: *Codegen, buf: *ArrayList(u8), ty: mlir.Type) !void {
     try self.appendMlirPrintedText(buf, ty);
@@ -591,6 +598,17 @@ pub fn emit(self: *Codegen, levels: *const compile.DependencyLevels) !mlir.Modul
 }
 
 pub fn emitTritonModule(self: *Codegen, levels: *const compile.DependencyLevels) !mlir.Module {
+    return self.emitTritonModuleWithFilter(levels, null);
+}
+
+pub fn emitTritonModuleForKernel(self: *Codegen, levels: *const compile.DependencyLevels, kernel_name: tir.StrId) !mlir.Module {
+    var filter = std.AutoHashMap(tir.StrId, void).init(self.gpa);
+    defer filter.deinit();
+    _ = try filter.put(kernel_name, {});
+    return self.emitTritonModuleWithFilter(levels, &filter);
+}
+
+fn emitTritonModuleWithFilter(self: *Codegen, levels: *const compile.DependencyLevels, launch_filter: ?*std.AutoHashMap(tir.StrId, void)) !mlir.Module {
     self.emit_only_triton = true;
     var unit_by_file: std.AutoHashMap(u32, *package.FileUnit) = .init(self.gpa);
     defer unit_by_file.deinit();
@@ -607,6 +625,7 @@ pub fn emitTritonModule(self: *Codegen, levels: *const compile.DependencyLevels)
     var ttg_num_warps: ?i32 = null;
     var ttg_threads_per_warp: ?i32 = null;
     var ttg_ptx_version: ?i32 = null;
+    const filter = launch_filter;
 
     for (levels.levels.items) |level| {
         if (level.items.len == 0) continue;
@@ -627,6 +646,10 @@ pub fn emitTritonModule(self: *Codegen, levels: *const compile.DependencyLevels)
                 const fid = tir.FuncId.fromRaw(fid_raw);
                 const f = unit.tir.?.funcs.Function.get(fid);
                 if (!f.is_triton_fn) continue;
+                const is_kernel = self.isTritonKernel(unit.tir.?, &f);
+                if (is_kernel) {
+                    if (filter) |flt| if (!flt.contains(f.name)) continue;
+                }
 
                 // Check attributes
                 const attrs = unit.tir.?.instrs.attribute_pool.slice(f.attrs);
@@ -641,26 +664,14 @@ pub fn emitTritonModule(self: *Codegen, levels: *const compile.DependencyLevels)
                                 const okind = unit.tir.?.instrs.index.kinds.items[instr_id.toRaw()];
                                 const row_idx = unit.tir.?.instrs.index.rows.items[instr_id.toRaw()];
 
-                                if (std.mem.eql(u8, name, "triton_target")) {
-                                    if (okind == .ConstString) {
-                                        const row = unit.tir.?.instrs.ConstString.get(cst.Index(tir.Rows.ConstString).fromRaw(row_idx));
-                                        ttg_target = unit.tir.?.instrs.strs.get(row.text);
-                                    }
-                                } else if (std.mem.eql(u8, name, "triton_num_warps")) {
-                                    if (okind == .ConstInt) {
-                                        const row = unit.tir.?.instrs.ConstInt.get(cst.Index(tir.Rows.ConstInt).fromRaw(row_idx));
-                                        ttg_num_warps = @intCast(row.value);
-                                    }
-                                } else if (std.mem.eql(u8, name, "triton_threads_per_warp")) {
-                                    if (okind == .ConstInt) {
-                                        const row = unit.tir.?.instrs.ConstInt.get(cst.Index(tir.Rows.ConstInt).fromRaw(row_idx));
-                                        ttg_threads_per_warp = @intCast(row.value);
-                                    }
-                                } else if (std.mem.eql(u8, name, "triton_ptx_version")) {
-                                    if (okind == .ConstInt) {
-                                        const row = unit.tir.?.instrs.ConstInt.get(cst.Index(tir.Rows.ConstInt).fromRaw(row_idx));
-                                        ttg_ptx_version = @intCast(row.value);
-                                    }
+                                if (okind == .ConstInt) {
+                                    const val = @as(i32, @intCast(unit.tir.?.instrs.ConstInt.get(cst.Index(tir.Rows.ConstInt).fromRaw(row_idx)).value));
+                                    if (std.mem.eql(u8, name, "triton_num_warps")) ttg_num_warps = val
+                                    else if (std.mem.eql(u8, name, "triton_threads_per_warp")) ttg_threads_per_warp = val
+                                    else if (std.mem.eql(u8, name, "triton_ptx_version")) ttg_ptx_version = val;
+                                } else if (okind == .ConstString and std.mem.eql(u8, name, "triton_target")) {
+                                    const row = unit.tir.?.instrs.ConstString.get(cst.Index(tir.Rows.ConstString).fromRaw(row_idx));
+                                    ttg_target = unit.tir.?.instrs.strs.get(row.text);
                                 }
                             }
                         }
@@ -682,6 +693,10 @@ pub fn emitTritonModule(self: *Codegen, levels: *const compile.DependencyLevels)
         }
     }
 
+    if (self.context.triton_launch_meta.num_warps) |v| ttg_num_warps = v;
+    if (self.context.triton_launch_meta.threads_per_warp) |v| ttg_threads_per_warp = v;
+    if (self.context.triton_launch_meta.num_ctas) |_| {} // driver arg handles num-ctas
+
     var mod_op = self.module.getOperation();
     if (ttg_target) |t| {
         mod_op.setDiscardableAttributeByName(mlir.StringRef.from("ttg.target"), self.strAttr(t));
@@ -694,6 +709,9 @@ pub fn emitTritonModule(self: *Codegen, levels: *const compile.DependencyLevels)
     }
     if (ttg_ptx_version) |n| {
         mod_op.setDiscardableAttributeByName(mlir.StringRef.from("ttg.ptx-version"), mlir.Attribute.integerAttrGet(self.i32_ty, n));
+    }
+    if (self.context.triton_launch_meta.num_ctas) |n| {
+        mod_op.setDiscardableAttributeByName(mlir.StringRef.from("ttg.num-ctas"), mlir.Attribute.integerAttrGet(self.i32_ty, n));
     }
 
     for (levels.levels.items) |level| {
@@ -714,6 +732,10 @@ pub fn emitTritonModule(self: *Codegen, levels: *const compile.DependencyLevels)
                 const fid = tir.FuncId.fromRaw(fid_raw);
                 const f = unit.tir.?.funcs.Function.get(fid);
                 if (!f.is_triton_fn) continue;
+                const is_kernel = self.isTritonKernel(unit.tir.?, &f);
+                if (is_kernel) {
+                    if (filter) |flt| if (!flt.contains(f.name)) continue;
+                }
                 const params = unit.tir.?.funcs.param_pool.slice(f.params);
                 var has_any = self.context.type_store.getKind(f.result) == .Any;
                 for (params) |pid| {
@@ -773,10 +795,25 @@ pub fn emitModule(
         }
         break :blk false;
     };
+    const module_has_triton = blk: {
+        for (func_ids) |fid_raw| {
+            const fid = tir.FuncId.fromRaw(fid_raw);
+            const row = t.funcs.Function.get(fid);
+            if (row.is_triton_fn) break :blk true;
+        }
+        break :blk false;
+    };
     if (module_has_async) {
         var mod_op = self.module.getOperation();
         mod_op.setDiscardableAttributeByName(
             mlir.StringRef.from("sr.has_async"),
+            mlir.Attribute.unitAttrGet(self.mlir_ctx),
+        );
+    }
+    if (module_has_triton) {
+        var mod_op = self.module.getOperation();
+        mod_op.setDiscardableAttributeByName(
+            mlir.StringRef.from("sr.has_triton"),
             mlir.Attribute.unitAttrGet(self.mlir_ctx),
         );
     }
@@ -1290,11 +1327,13 @@ fn emitFunctionBodyWith(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR, sym_overr
     self.current_func_sym = func_sym;
     const is_async = async_override orelse f.is_async;
     self.current_func_is_async = is_async;
+    self.current_func_is_triton = f.is_triton_fn;
 
     defer {
         self.current_scope = null;
         self.current_func_sym = null;
         self.current_func_is_async = false;
+        self.current_func_is_triton = false;
         self.func_entry_block = null;
         self.ret_join_block = null;
         self.ret_type_cache = null;
@@ -1940,7 +1979,11 @@ fn emitConstInt(self: *Codegen, p: tir.Rows.ConstInt) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
     const ty = try self.llvmTypeOf(p.ty);
-    return if (ty.isAFloat()) self.constFloat(ty, @floatFromInt(p.value)) else self.constInt(ty, p.value);
+    var is_float = ty.isAFloat();
+    if (!is_float and (ty.isAVector() or ty.isATensor())) {
+        is_float = ty.getShapedElementType().isAFloat();
+    }
+    return if (is_float) self.constFloat(ty, @floatFromInt(p.value)) else self.constInt(ty, p.value);
 }
 
 /// Emit an MLIR constant floating-point value.
@@ -2016,12 +2059,7 @@ fn emitBinArithWithComplex(self: *Codegen, p: tir.Rows.Bin2, comptime op_kind: B
 /// Emit the MLIR representation of integer/floating point addition.
 fn emitAdd(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
     // Detect Triton context
-    var in_triton = self.emit_only_triton;
-    if (!in_triton) {
-        if (self.current_func_sym) |sym| if (self.func_syms.get(sym)) |cinfo| {
-            in_triton = std.mem.eql(u8, cinfo.op.getName().str().toSlice(), "tt.func");
-        };
-    }
+    const in_triton = self.emit_only_triton or self.current_func_is_triton;
 
     if (in_triton) {
         const res_kind = self.srKind(p.ty);
@@ -2846,10 +2884,7 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
     const want_has_res = !want_no_result and !self.void_ty.equal(want_res_mlir);
 
     // Call Type Dispatch
-    const caller_is_tt = if (self.current_func_sym) |sym| blk: {
-        if (self.func_syms.get(sym)) |cinfo| break :blk std.mem.eql(u8, cinfo.op.getName().str().toSlice(), "tt.func");
-        break :blk false;
-    } else false;
+    const caller_is_tt = self.emit_only_triton or self.current_func_is_triton;
 
     const callee_is_tt = std.mem.eql(u8, callee_op_name, "tt.func");
 
@@ -3812,7 +3847,25 @@ fn emitCmp(
     if (mlir.LLVM.isLLVMPointerType(lhs.getType())) lhs = self.emitUnaryValueOp("llvm.ptrtoint", lhs, self.i64_ty);
     if (mlir.LLVM.isLLVMPointerType(rhs.getType())) rhs = self.emitUnaryValueOp("llvm.ptrtoint", rhs, self.i64_ty);
 
-    if (lhs.getType().isAFloat()) {
+    var is_float = lhs.getType().isAFloat();
+    if (!is_float) {
+        const lhs_sr = self.srTypeOfValue(p.lhs);
+        switch (self.context.type_store.getKind(lhs_sr)) {
+            .Tensor => {
+                const elem = self.context.type_store.get(.Tensor, lhs_sr).elem;
+                const elem_kind = self.context.type_store.getKind(elem);
+                is_float = elem_kind == .F32 or elem_kind == .F64;
+            },
+            .Simd => {
+                const elem = self.context.type_store.get(.Simd, lhs_sr).elem;
+                const elem_kind = self.context.type_store.getKind(elem);
+                is_float = elem_kind == .F32 or elem_kind == .F64;
+            },
+            else => {},
+        }
+    }
+
+    if (is_float) {
         return self.emitBinaryValueOp("arith.cmpf", lhs, rhs, try self.llvmTypeOf(p.ty), &.{
             self.named("predicate", self.arithCmpFPredAttr(pred_f)),
         });
@@ -4544,7 +4597,45 @@ fn binArith(self: *Codegen, comptime op_kind: BinArithOp, p: tir.Rows.Bin2) !mli
         .mul => "arith.muli",
     };
 
-    return self.emitBinOp(p, op_name, ty);
+    var lhs = self.getVal(p.lhs);
+    var rhs = self.getVal(p.rhs);
+
+    // If the result is shaped, splat scalar operands to match the shaped type.
+    if (ty.isAShaped()) {
+        const lhs_shaped = lhs.getType().isAShaped();
+        const rhs_shaped = rhs.getType().isAShaped();
+        if (lhs_shaped != rhs_shaped) {
+            // Detect Triton context for tensor splats.
+            const in_triton = self.emit_only_triton or self.current_func_is_triton;
+
+            const target_elem = ty.getShapedElementType();
+            var scalar = if (lhs_shaped) rhs else lhs;
+            if (!scalar.getType().equal(target_elem)) {
+                const scalar_sr = if (lhs_shaped) self.srTypeOfValue(p.rhs) else self.srTypeOfValue(p.lhs);
+                const elem_sr = switch (self.srKind(p.ty)) {
+                    .Tensor => self.context.type_store.get(.Tensor, p.ty).elem,
+                    .Simd => self.context.type_store.get(.Simd, p.ty).elem,
+                    else => scalar_sr,
+                };
+                scalar = try self.coerceOnBranch(scalar, target_elem, elem_sr, scalar_sr);
+            }
+
+            const splat_op = if (in_triton)
+                "tt.splat"
+            else if (ty.isATensor())
+                "tensor.splat"
+            else
+                "vector.broadcast";
+            const splatted = self.emitOp(splat_op, EmitOpArgs{ .operands = &.{scalar}, .results = &.{ty} });
+            if (lhs_shaped) {
+                rhs = splatted;
+            } else {
+                lhs = splatted;
+            }
+        }
+    }
+
+    return self.emitBinaryValueOp(op_name, lhs, rhs, ty, null);
 }
 
 /// Extend or truncate `v` to `to_ty` respecting signedness.

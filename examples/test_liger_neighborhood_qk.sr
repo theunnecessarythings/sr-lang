@@ -1,0 +1,199 @@
+package main
+
+liger_neigh :: import "vendor/liger_fused_neighborhood_attention"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+math :: import "std/math"
+
+PtrF32 :: triton.Ptr(f32)
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    batch: i32 = 1
+    num_heads: i32 = 1
+    seq_len: i32 = 32
+    head_dim: i32 = 32
+    scale: f32 = 1.0.(f32) / math.sqrtf(head_dim.(f32))
+
+    q_stride_dim: i32 = 1
+    q_stride_seq: i32 = head_dim
+    q_stride_head: i32 = seq_len * head_dim
+    q_stride_batch: i32 = num_heads * q_stride_head
+
+    k_stride_dim: i32 = 1
+    k_stride_seq: i32 = head_dim
+    k_stride_head: i32 = seq_len * head_dim
+    k_stride_batch: i32 = num_heads * k_stride_head
+
+    qk_stride_seq2: i32 = 1
+    qk_stride_seq: i32 = seq_len
+    qk_stride_head: i32 = seq_len * seq_len
+    qk_stride_batch: i32 = num_heads * qk_stride_head
+
+    q_size := batch.(usize) * num_heads.(usize) * seq_len.(usize) * head_dim.(usize) * 4
+    k_size := q_size
+    qk_size := batch.(usize) * num_heads.(usize) * seq_len.(usize) * seq_len.(usize) * 4
+    mask_size := seq_len.(usize) * seq_len.(usize) * 4
+
+    q_h_ptr := alloc.alloc(q_size) orelse return
+    q_h := q_h_ptr.^*f32
+    k_h_ptr := alloc.alloc(k_size) orelse return
+    k_h := k_h_ptr.^*f32
+    mask_h_ptr := alloc.alloc(mask_size) orelse return
+    mask_h := mask_h_ptr.^*f32
+    qk_h_ptr := alloc.alloc(qk_size) orelse return
+    qk_h := qk_h_ptr.^*f32
+    ref_ptr := alloc.alloc(qk_size) orelse return
+    ref := ref_ptr.^*f32
+
+    i: i32 = 0
+    total_q: i32 = batch * num_heads * seq_len * head_dim
+    while i < total_q {
+        q_h[i] = ((i % 97) - 48).(f32) * 0.01
+        k_h[i] = ((i % 89) - 44).(f32) * 0.01
+        i = i + 1
+    }
+
+    // Build mask on CPU (same as neighborhood_mask_kernel in example).
+    kernel_size: i32 = 5
+    dilation: i32 = 2
+    r: i32 = 0
+    while r < seq_len {
+        c: i32 = 0
+        half := kernel_size / 2
+        start := r - half * dilation
+        if start < 0 { start = 0 }
+        end := r + half * dilation + 1
+        if end > seq_len { end = seq_len }
+        while c < seq_len {
+            idx := r * seq_len + c
+            v: f32 = 0.0.(f32)
+            if c >= start and c < end {
+                if dilation > 1 {
+                    if ((c - r) % dilation) == 0 { v = 1.0.(f32) }
+                } else {
+                    v = 1.0.(f32)
+                }
+            }
+            mask_h[idx] = v
+            c = c + 1
+        }
+        r = r + 1
+    }
+
+    // CPU reference QK
+    b: i32 = 0
+    while b < batch {
+        h: i32 = 0
+        while h < num_heads {
+            r = 0
+            while r < seq_len {
+                c: i32 = 0
+                while c < seq_len {
+                    sum: f32 = 0.0.(f32)
+                    d: i32 = 0
+                    while d < head_dim {
+                        q_idx := b * q_stride_batch + h * q_stride_head + r * q_stride_seq + d * q_stride_dim
+                        k_idx := b * k_stride_batch + h * k_stride_head + c * k_stride_seq + d * k_stride_dim
+                        sum = sum + q_h[q_idx] * k_h[k_idx]
+                        d = d + 1
+                    }
+                    out := sum * scale
+                    if mask_h[r * seq_len + c] == 0.0.(f32) { out = -3.4028235e38.(f32) }
+                    out_idx := b * qk_stride_batch + h * qk_stride_head + r * qk_stride_seq + c * qk_stride_seq2
+                    ref[out_idx] = out
+                    c = c + 1
+                }
+                r = r + 1
+            }
+            h = h + 1
+        }
+        b = b + 1
+    }
+
+    q_d: cuda.CUdeviceptr = 0
+    k_d: cuda.CUdeviceptr = 0
+    mask_d: cuda.CUdeviceptr = 0
+    qk_d: cuda.CUdeviceptr = 0
+
+    _ = cuda.cuMemAlloc(&q_d, q_size)
+    _ = cuda.cuMemAlloc(&k_d, k_size)
+    _ = cuda.cuMemAlloc(&mask_d, mask_size)
+    _ = cuda.cuMemAlloc(&qk_d, qk_size)
+
+    _ = cuda.cuMemcpyHtoD(q_d, q_h.^?*void, q_size)
+    _ = cuda.cuMemcpyHtoD(k_d, k_h.^?*void, k_size)
+    _ = cuda.cuMemcpyHtoD(mask_d, mask_h.^?*void, mask_size)
+
+    triton.launch(
+        liger_neigh.fused_neighborhood_attention_qk_kernel,
+        grid = (batch * num_heads, seq_len, seq_len),
+        block = (1, 1, 1),
+        BLOCK_SIZE = 1,
+        q_d,
+        k_d,
+        qk_d,
+        mask_d,
+        q_stride_batch,
+        q_stride_head,
+        q_stride_seq,
+        q_stride_dim,
+        k_stride_batch,
+        k_stride_head,
+        k_stride_seq,
+        k_stride_dim,
+        qk_stride_batch,
+        qk_stride_head,
+        qk_stride_seq,
+        qk_stride_seq2,
+        num_heads,
+        seq_len,
+        head_dim,
+        scale,
+    )
+
+    _ = cuda.cuMemcpyDtoH(qk_h.^?*void, qk_d, qk_size)
+
+    success := true
+    epsilon: f32 = 1.e-3
+    total_qk: i32 = batch * num_heads * seq_len * seq_len
+    i = 0
+    while i < total_qk {
+        diff := qk_h[i] - ref[i]
+        if diff < 0 { diff = -diff }
+        if diff > epsilon {
+            io.println("qk mismatch at %d: expected %f got %f", i, ref[i], qk_h[i])
+            success = false
+            break
+        }
+        i = i + 1
+    }
+
+    if success { io.println("Neighborhood QK verification passed", ()) }
+
+    _ = cuda.cuMemFree(q_d)
+    _ = cuda.cuMemFree(k_d)
+    _ = cuda.cuMemFree(mask_d)
+    _ = cuda.cuMemFree(qk_d)
+}

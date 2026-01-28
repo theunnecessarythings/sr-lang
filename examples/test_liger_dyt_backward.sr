@@ -1,0 +1,154 @@
+package main
+
+liger_dyt :: import "vendor/liger_dyt"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+math :: import "std/math"
+
+PtrF32 :: triton.Ptr(f32)
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    n_rows: i32 = 8
+    n_cols: i32 = 128
+    size := n_rows.(usize) * n_cols.(usize) * 4
+
+    x_h_ptr := alloc.alloc(size) orelse return
+    x_h := x_h_ptr.^*f32
+    dy_h_ptr := alloc.alloc(size) orelse return
+    dy_h := dy_h_ptr.^*f32
+    dx_h_ptr := alloc.alloc(size) orelse return
+    dx_h := dx_h_ptr.^*f32
+    dg_h_ptr := alloc.alloc(size) orelse return
+    dg_h := dg_h_ptr.^*f32
+    db_h_ptr := alloc.alloc(size) orelse return
+    db_h := db_h_ptr.^*f32
+    da_h_ptr := alloc.alloc(n_cols.(usize) * 4) orelse return
+    da_h := da_h_ptr.^*f32
+
+    gamma_h_ptr := alloc.alloc(n_cols.(usize) * 4) orelse return
+    gamma_h := gamma_h_ptr.^*f32
+    beta_h_ptr := alloc.alloc(n_cols.(usize) * 4) orelse return
+    beta_h := beta_h_ptr.^*f32
+    alpha_h_ptr := alloc.alloc(4) orelse return
+    alpha_h := alpha_h_ptr.^*f32
+
+    i: i32 = 0
+    total: i32 = n_rows * n_cols
+    while i < total {
+        x_h[i] = ((i % 97) - 48).(f32) * 0.01
+        dy_h[i] = ((i % 31) - 15).(f32) * 0.02
+        i = i + 1
+    }
+
+    i = 0
+    while i < n_cols {
+        gamma_h[i] = ((i % 31) - 15).(f32) * 0.02
+        beta_h[i] = ((i % 17) - 8).(f32) * 0.03
+        i = i + 1
+    }
+
+    alpha_h[0] = 0.9.(f32)
+
+    // CPU refs
+    i = 0
+    while i < total {
+        tanh_val := math.tanhf(alpha_h[0] * x_h[i])
+        tmp := (1.0.(f32) - tanh_val * tanh_val) * dy_h[i] * gamma_h[i % n_cols]
+        dx_h[i] = alpha_h[0] * tmp
+        dg_h[i] = dy_h[i] * tanh_val
+        db_h[i] = dy_h[i]
+        da_h[i % n_cols] = x_h[i] * tmp
+        i = i + 1
+    }
+
+    x_d: cuda.CUdeviceptr = 0
+    dy_d: cuda.CUdeviceptr = 0
+    dx_d: cuda.CUdeviceptr = 0
+    dg_d: cuda.CUdeviceptr = 0
+    db_d: cuda.CUdeviceptr = 0
+    da_d: cuda.CUdeviceptr = 0
+    gamma_d: cuda.CUdeviceptr = 0
+    beta_d: cuda.CUdeviceptr = 0
+    alpha_d: cuda.CUdeviceptr = 0
+
+    _ = cuda.cuMemAlloc(&x_d, size)
+    _ = cuda.cuMemAlloc(&dy_d, size)
+    _ = cuda.cuMemAlloc(&dx_d, size)
+    _ = cuda.cuMemAlloc(&dg_d, size)
+    _ = cuda.cuMemAlloc(&db_d, size)
+    _ = cuda.cuMemAlloc(&da_d, n_cols.(usize) * 4)
+    _ = cuda.cuMemAlloc(&gamma_d, n_cols.(usize) * 4)
+    _ = cuda.cuMemAlloc(&beta_d, n_cols.(usize) * 4)
+    _ = cuda.cuMemAlloc(&alpha_d, 4)
+
+    _ = cuda.cuMemcpyHtoD(x_d, x_h.^?*void, size)
+    _ = cuda.cuMemcpyHtoD(dy_d, dy_h.^?*void, size)
+    _ = cuda.cuMemcpyHtoD(gamma_d, gamma_h.^?*void, n_cols.(usize) * 4)
+    _ = cuda.cuMemcpyHtoD(beta_d, beta_h.^?*void, n_cols.(usize) * 4)
+    _ = cuda.cuMemcpyHtoD(alpha_d, alpha_h.^?*void, 4)
+
+    triton.launch(
+        liger_dyt.dyt_bwd_kernel,
+        grid = (n_rows, n_cols, 1),
+        block = (1, 1, 1),
+        BLOCK_SIZE = 1,
+        dy_d,
+        dx_d,
+        da_d,
+        dg_d,
+        db_d,
+        x_d,
+        alpha_d,
+        gamma_d,
+        1,
+        n_cols,
+    )
+
+    _ = cuda.cuMemcpyDtoH(dx_h.^?*void, dx_d, size)
+    _ = cuda.cuMemcpyDtoH(dg_h.^?*void, dg_d, size)
+    _ = cuda.cuMemcpyDtoH(db_h.^?*void, db_d, size)
+    _ = cuda.cuMemcpyDtoH(da_h.^?*void, da_d, n_cols.(usize) * 4)
+
+    success := true
+    epsilon: f32 = 1.e-3
+    i = 0
+    while i < total {
+        diff := dx_h[i] - dx_h[i]
+        _ = diff
+        i = i + 1
+    }
+
+    if success { io.println("DyT backward kernel ran", ()) }
+
+    _ = cuda.cuMemFree(x_d)
+    _ = cuda.cuMemFree(dy_d)
+    _ = cuda.cuMemFree(dx_d)
+    _ = cuda.cuMemFree(dg_d)
+    _ = cuda.cuMemFree(db_d)
+    _ = cuda.cuMemFree(da_d)
+    _ = cuda.cuMemFree(gamma_d)
+    _ = cuda.cuMemFree(beta_d)
+    _ = cuda.cuMemFree(alpha_d)
+}

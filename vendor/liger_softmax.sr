@@ -1,0 +1,197 @@
+package liger_softmax
+
+triton :: import "vendor/triton"
+
+PtrF32 :: triton.Ptr(f32)
+
+/// Single-block softmax forward kernel (ported from Liger-Kernel softmax).
+softmax_single_block_forward_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    y_ptr: PtrF32,
+    y_row_stride: i32,
+    x_ptr: PtrF32,
+    x_row_stride: i32,
+    n_cols: i32,
+) {
+    BLOCK_SIZE :: 128
+    row_id := triton.program_id(0)
+    offs := triton.make_range(0, BLOCK_SIZE)
+    mask := offs < triton.splat(n_cols, BLOCK_SIZE)
+
+    row_offset := row_id * x_row_stride
+    row_offset_b := triton.splat(row_offset, BLOCK_SIZE)
+    x_ptrs := x_ptr + (offs + row_offset_b)
+    x := triton.load(x_ptrs, mask, triton.splat(-3.4028235e38.(f32), BLOCK_SIZE))
+
+    m := triton.reduce_max(f32, x, 0)
+    m_b := triton.splat(m, BLOCK_SIZE)
+    e := triton.exp(x - m_b)
+    d := triton.reduce_sum(f32, e, 0)
+    d_b := triton.splat(d, BLOCK_SIZE)
+    y := e / d_b
+
+    out_row_offset := row_id * y_row_stride
+    out_row_offset_b := triton.splat(out_row_offset, BLOCK_SIZE)
+    y_ptrs := y_ptr + (offs + out_row_offset_b)
+    triton.store(y_ptrs, y, mask)
+}
+
+/// Multi-block softmax forward kernel (ported from Liger-Kernel softmax).
+softmax_multi_block_forward_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    y_ptr: PtrF32,
+    y_row_stride: i32,
+    x_ptr: PtrF32,
+    x_row_stride: i32,
+    n_cols: i32,
+    comptime BLOCK_SIZE: i32 = 1024,
+) {
+    row_id := triton.program_id(0)
+    offs := triton.make_range(0, BLOCK_SIZE)
+
+    m: f32 = -3.4028235e38
+    d: f32 = 0.0
+
+    start: i32 = 0
+    while start < n_cols {
+        start_b := triton.splat(start, BLOCK_SIZE)
+        idx := offs + start_b
+        mask := idx < triton.splat(n_cols, BLOCK_SIZE)
+
+        row_offset := row_id * x_row_stride
+        row_offset_b := triton.splat(row_offset, BLOCK_SIZE)
+        x_ptrs := x_ptr + (idx + row_offset_b)
+        xblk := triton.load(x_ptrs, mask, triton.splat(-3.4028235e38.(f32), BLOCK_SIZE))
+
+        blk_max := triton.reduce_max(f32, xblk, 0)
+        new_m := m
+        if blk_max > new_m { new_m = blk_max }
+
+        new_m_b := triton.splat(new_m, BLOCK_SIZE)
+        d = d * triton.exp(m - new_m) + triton.reduce_sum(f32, triton.exp(xblk - new_m_b), 0)
+        m = new_m
+
+        start = start + BLOCK_SIZE
+    }
+
+    start = 0
+    while start < n_cols {
+        start_b := triton.splat(start, BLOCK_SIZE)
+        idx := offs + start_b
+        mask := idx < triton.splat(n_cols, BLOCK_SIZE)
+
+        row_offset := row_id * x_row_stride
+        row_offset_b := triton.splat(row_offset, BLOCK_SIZE)
+        x_ptrs := x_ptr + (idx + row_offset_b)
+        xblk := triton.load(x_ptrs, mask, triton.splat(-3.4028235e38.(f32), BLOCK_SIZE))
+
+        m_b := triton.splat(m, BLOCK_SIZE)
+        d_b := triton.splat(d, BLOCK_SIZE)
+        yblk := triton.exp(xblk - m_b) / d_b
+
+        out_row_offset := row_id * y_row_stride
+        out_row_offset_b := triton.splat(out_row_offset, BLOCK_SIZE)
+        y_ptrs := y_ptr + (idx + out_row_offset_b)
+        triton.store(y_ptrs, yblk, mask)
+
+        start = start + BLOCK_SIZE
+    }
+}
+
+/// Single-block softmax backward kernel (ported from Liger-Kernel softmax).
+softmax_single_block_backward_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    dy_ptr: PtrF32,
+    dy_stride: i32,
+    y_ptr: PtrF32,
+    y_stride: i32,
+    dx_ptr: PtrF32,
+    dx_stride: i32,
+    n_cols: i32,
+) {
+    BLOCK_SIZE :: 128
+    row_id := triton.program_id(0)
+    offs := triton.make_range(0, BLOCK_SIZE)
+    mask := offs < triton.splat(n_cols, BLOCK_SIZE)
+
+    dy_row_offset := row_id * dy_stride
+    dy_row_offset_b := triton.splat(dy_row_offset, BLOCK_SIZE)
+    dy_ptrs := dy_ptr + (offs + dy_row_offset_b)
+    dy := triton.load(dy_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+
+    y_row_offset := row_id * y_stride
+    y_row_offset_b := triton.splat(y_row_offset, BLOCK_SIZE)
+    y_ptrs := y_ptr + (offs + y_row_offset_b)
+    y := triton.load(y_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+
+    dot := triton.reduce_sum(f32, dy * y, 0)
+    dot_b := triton.splat(dot, BLOCK_SIZE)
+    dx := y * (dy - dot_b)
+
+    dx_row_offset := row_id * dx_stride
+    dx_row_offset_b := triton.splat(dx_row_offset, BLOCK_SIZE)
+    dx_ptrs := dx_ptr + (offs + dx_row_offset_b)
+    triton.store(dx_ptrs, dx, mask)
+}
+
+/// Multi-block softmax backward kernel (ported from Liger-Kernel softmax).
+softmax_multi_block_backward_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    dy_ptr: PtrF32,
+    dy_stride: i32,
+    y_ptr: PtrF32,
+    y_stride: i32,
+    dx_ptr: PtrF32,
+    dx_stride: i32,
+    n_cols: i32,
+    comptime BLOCK_SIZE: i32 = 1024,
+) {
+    row_id := triton.program_id(0)
+    offs := triton.make_range(0, BLOCK_SIZE)
+
+    acc: f32 = 0.0
+
+    start: i32 = 0
+    while start < n_cols {
+        start_b := triton.splat(start, BLOCK_SIZE)
+        idx := offs + start_b
+        mask := idx < triton.splat(n_cols, BLOCK_SIZE)
+
+        dy_row_offset := row_id * dy_stride
+        dy_row_offset_b := triton.splat(dy_row_offset, BLOCK_SIZE)
+        dy_ptrs := dy_ptr + (idx + dy_row_offset_b)
+        dy_blk := triton.load(dy_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+
+        y_row_offset := row_id * y_stride
+        y_row_offset_b := triton.splat(y_row_offset, BLOCK_SIZE)
+        y_ptrs := y_ptr + (idx + y_row_offset_b)
+        y_blk := triton.load(y_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+
+        acc = acc + triton.reduce_sum(f32, dy_blk * y_blk, 0)
+
+        start = start + BLOCK_SIZE
+    }
+
+    start = 0
+    while start < n_cols {
+        start_b := triton.splat(start, BLOCK_SIZE)
+        idx := offs + start_b
+        mask := idx < triton.splat(n_cols, BLOCK_SIZE)
+
+        dy_row_offset := row_id * dy_stride
+        dy_row_offset_b := triton.splat(dy_row_offset, BLOCK_SIZE)
+        dy_ptrs := dy_ptr + (idx + dy_row_offset_b)
+        dy_blk := triton.load(dy_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+
+        y_row_offset := row_id * y_stride
+        y_row_offset_b := triton.splat(y_row_offset, BLOCK_SIZE)
+        y_ptrs := y_ptr + (idx + y_row_offset_b)
+        y_blk := triton.load(y_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+
+        acc_b := triton.splat(acc, BLOCK_SIZE)
+        dx_blk := y_blk * (dy_blk - acc_b)
+
+        dx_row_offset := row_id * dx_stride
+        dx_row_offset_b := triton.splat(dx_row_offset, BLOCK_SIZE)
+        dx_ptrs := dx_ptr + (idx + dx_row_offset_b)
+        triton.store(dx_ptrs, dx_blk, mask)
+
+        start = start + BLOCK_SIZE
+    }
+}

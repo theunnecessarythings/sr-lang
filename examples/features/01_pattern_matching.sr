@@ -1,0 +1,57 @@
+package main
+
+// Chapter 9: Pattern Matching
+//
+// Destructuring data and handling complex conditions elegantly.
+
+io :: import "std/io"
+
+Point :: struct { x: i32, y: i32 }
+Event :: variant { Quit, Click{x: i32, y: i32} }
+
+main :: proc() {
+    io.println("--- Pattern Matching ---", 0)
+
+    val := 10
+
+    // 1. Basic Match
+    match val {
+        1 => io.println("One", 0),
+        2 | 3 => io.println("Two or Three", 0), // Or-pattern
+        10 => io.println("Ten", 0),
+        _ => io.println("Something else", 0),   // Wildcard catch-all
+    }
+
+    // 2. Ranges
+    match val {
+        0..5 => io.println("Small", 0),
+        6..=10 => io.println("Medium", 0), // Inclusive
+        _ => io.println("Large", 0),
+    }
+
+    // 3. Destructuring
+    p := Point{ x: 1, y: 2 }
+    
+    // Struct pattern
+    match p {
+        Point{ x: 0, y: 0 } => io.println("Origin", 0),
+        Point{ x: x, y: 0 } => io.println("On X-axis at %d", x),
+        Point{ x: _, y: y } => io.println("On Y-axis at %d", y),
+    }
+
+    // 4. Variant Pattern
+    e := Event.Click{ x: 100, y: 200 }
+    
+    match e {
+        Event.Quit => io.println("Quit", 0),
+        Event.Click{ x, y } if x > 0 => { // Guard clause
+            io.println("Click positive X: %d, %d", (x, y))
+        },
+        Event.Click{ .. } => io.println("Other click", 0),
+    }
+
+    // 5. Destructuring Declaration
+    // You can unpack values directly in declarations.
+    (a, b) := (10, 20)
+    io.println("a=%d, b=%d", (a, b))
+}

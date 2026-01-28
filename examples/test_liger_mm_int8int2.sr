@@ -1,0 +1,157 @@
+package main
+
+liger_mm_int8int2 :: import "vendor/liger_mm_int8int2"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+
+PtrI32 :: triton.Ptr(i32)
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    M: i32 = 2
+    N: i32 = 3
+    K: i32 = 4
+    BLOCK_SIZE_M: i32 = 1
+    BLOCK_SIZE_N: i32 = 1
+    BLOCK_SIZE_K: i32 = 1
+    GROUP_SIZE_M: i32 = 1
+
+    a_size := M.(usize) * K.(usize) * 4
+    b_size := (K / 4).(usize) * N.(usize) * 4
+    c_size := M.(usize) * N.(usize) * 4
+
+    a_h_ptr := alloc.alloc(a_size) orelse return
+    a_h := a_h_ptr.^*i32
+    b_h_ptr := alloc.alloc(b_size) orelse return
+    b_h := b_h_ptr.^*i32
+    c_h_ptr := alloc.alloc(c_size) orelse return
+    c_h := c_h_ptr.^*i32
+
+    m: i32 = 0
+    while m < M {
+        k: i32 = 0
+        while k < K {
+            a_h[m * K + k] = (m + k) % 3 - 1
+            k = k + 1
+        }
+        m = m + 1
+    }
+
+    // Pack weights (2-bit) for each N column.
+    n: i32 = 0
+    while n < N {
+        packed: i32 = 0
+        k: i32 = 0
+        while k < K {
+            w := ((k + n) % 4) - 1
+            if w < -1 { w = -1 }
+            if w > 2 { w = 2 }
+            w_enc := w + 1
+            packed = packed | (w_enc << (2 * k))
+            k = k + 1
+        }
+        b_h[n] = packed
+        n = n + 1
+    }
+
+    ref_ptr := alloc.alloc(c_size) orelse return
+    ref := ref_ptr.^*i32
+    m = 0
+    while m < M {
+        n = 0
+        while n < N {
+            sum: i32 = 0
+            k: i32 = 0
+            while k < K {
+                w_enc := (b_h[n] >> (2 * k)) & 3
+                w := w_enc - 1
+                sum = sum + a_h[m * K + k] * w
+                k = k + 1
+            }
+            ref[m * N + n] = sum
+            n = n + 1
+        }
+        m = m + 1
+    }
+
+    a_d: cuda.CUdeviceptr = 0
+    b_d: cuda.CUdeviceptr = 0
+    c_d: cuda.CUdeviceptr = 0
+
+    _ = cuda.cuMemAlloc(&a_d, a_size)
+    _ = cuda.cuMemAlloc(&b_d, b_size)
+    _ = cuda.cuMemAlloc(&c_d, c_size)
+
+    _ = cuda.cuMemcpyHtoD(a_d, a_h.^?*void, a_size)
+    _ = cuda.cuMemcpyHtoD(b_d, b_h.^?*void, b_size)
+
+    grid_m := (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M
+    grid_n := (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N
+    grid := grid_m * grid_n
+
+    triton.launch(
+        liger_mm_int8int2.matmul_int8int2_kernel,
+        grid = (grid, 1, 1),
+        block = (1, 1, 1),
+        BLOCK_SIZE_M = BLOCK_SIZE_M,
+        BLOCK_SIZE_N = BLOCK_SIZE_N,
+        BLOCK_SIZE_K = BLOCK_SIZE_K,
+        GROUP_SIZE_M = GROUP_SIZE_M,
+        a_d,
+        b_d,
+        c_d,
+        M,
+        N,
+        K,
+        K,
+        1,
+        N,
+        1,
+        N,
+        1,
+    )
+
+    _ = cuda.cuMemcpyDtoH(c_h.^?*void, c_d, c_size)
+
+    success := true
+    m = 0
+    while m < M {
+        n = 0
+        while n < N {
+            if c_h[m * N + n] != ref[m * N + n] {
+                io.println("mm int8int2 mismatch at %d,%d: expected %d got %d", m, n, ref[m * N + n], c_h[m * N + n])
+                success = false
+                break
+            }
+            n = n + 1
+        }
+        if !success { break }
+        m = m + 1
+    }
+    if success { io.println("mm int8int2 verification passed", ()) }
+
+    _ = cuda.cuMemFree(a_d)
+    _ = cuda.cuMemFree(b_d)
+    _ = cuda.cuMemFree(c_d)
+}

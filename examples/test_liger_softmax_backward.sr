@@ -1,0 +1,150 @@
+package main
+
+liger_softmax :: import "vendor/liger_softmax"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+math :: import "std/math"
+
+PtrF32 :: triton.Ptr(f32)
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    n_rows: i32 = 64
+    n_cols: i32 = 128
+    stride: i32 = n_cols
+    size := n_rows.(usize) * n_cols.(usize) * 4
+
+    x_h_ptr := alloc.alloc(size) orelse return
+    x_h := x_h_ptr.^*f32
+    dy_h_ptr := alloc.alloc(size) orelse return
+    dy_h := dy_h_ptr.^*f32
+    y_h_ptr := alloc.alloc(size) orelse return
+    y_h := y_h_ptr.^*f32
+    dx_h_ptr := alloc.alloc(size) orelse return
+    dx_h := dx_h_ptr.^*f32
+
+    i: i32 = 0
+    total: i32 = n_rows * n_cols
+    while i < total {
+        x_h[i] = (i % 97).(f32) * 0.01 - 0.5
+        dy_h[i] = ((i % 13) - 6).(f32) * 0.1
+        i = i + 1
+    }
+
+    r: i32 = 0
+    while r < n_rows {
+        max_val := x_h[r * n_cols]
+        c: i32 = 1
+        while c < n_cols {
+            v := x_h[r * n_cols + c]
+            if v > max_val { max_val = v }
+            c = c + 1
+        }
+        sum: f32 = 0.0
+        c = 0
+        while c < n_cols {
+            idx := r * n_cols + c
+            e := math.expf(x_h[idx] - max_val)
+            y_h[idx] = e
+            sum = sum + e
+            c = c + 1
+        }
+        inv_sum := 1.0.(f32) / sum
+        c = 0
+        while c < n_cols {
+            idx := r * n_cols + c
+            y_h[idx] = y_h[idx] * inv_sum
+            c = c + 1
+        }
+        r = r + 1
+    }
+
+    dx_ref_ptr := alloc.alloc(size) orelse return
+    dx_ref := dx_ref_ptr.^*f32
+    r = 0
+    while r < n_rows {
+        dot: f32 = 0.0
+        c: i32 = 0
+        while c < n_cols {
+            idx := r * n_cols + c
+            dot = dot + dy_h[idx] * y_h[idx]
+            c = c + 1
+        }
+        c = 0
+        while c < n_cols {
+            idx := r * n_cols + c
+            dx_ref[idx] = y_h[idx] * (dy_h[idx] - dot)
+            c = c + 1
+        }
+        r = r + 1
+    }
+
+    x_d: cuda.CUdeviceptr = 0
+    dy_d: cuda.CUdeviceptr = 0
+    y_d: cuda.CUdeviceptr = 0
+    dx_d: cuda.CUdeviceptr = 0
+
+    _ = cuda.cuMemAlloc(&x_d, size)
+    _ = cuda.cuMemAlloc(&dy_d, size)
+    _ = cuda.cuMemAlloc(&y_d, size)
+    _ = cuda.cuMemAlloc(&dx_d, size)
+    _ = cuda.cuMemcpyHtoD(x_d, x_h.^?*void, size)
+    _ = cuda.cuMemcpyHtoD(dy_d, dy_h.^?*void, size)
+    _ = cuda.cuMemcpyHtoD(y_d, y_h.^?*void, size)
+
+    triton.launch(
+        liger_softmax.softmax_single_block_backward_kernel,
+        grid = (n_rows, 1, 1),
+        block = (128, 1, 1),
+        dy_d,
+        stride,
+        y_d,
+        stride,
+        dx_d,
+        stride,
+        n_cols,
+    )
+
+    _ = cuda.cuMemcpyDtoH(dx_h.^?*void, dx_d, size)
+
+    success := true
+    epsilon: f32 = 5.e-4
+    i = 0
+    while i < total {
+        diff := dx_h[i] - dx_ref[i]
+        if diff < 0 { diff = -diff }
+        if diff > epsilon {
+            io.println("Mismatch at %d: expected %f got %f", i, dx_ref[i], dx_h[i])
+            success = false
+            break
+        }
+        i = i + 1
+    }
+    if success { io.println("Softmax backward verification passed", ()) }
+
+    _ = cuda.cuMemFree(x_d)
+    _ = cuda.cuMemFree(dy_d)
+    _ = cuda.cuMemFree(y_d)
+    _ = cuda.cuMemFree(dx_d)
+}

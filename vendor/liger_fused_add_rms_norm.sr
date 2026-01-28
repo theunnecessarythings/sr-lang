@@ -1,0 +1,111 @@
+package liger_fused_add_rms_norm
+
+triton :: import "vendor/triton"
+
+PtrF32 :: triton.Ptr(f32)
+
+/// Fused add + RMSNorm forward kernel.
+fused_add_rms_norm_forward_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    y_ptr: PtrF32,
+    y_row_stride: i32,
+    s_ptr: PtrF32,
+    s_row_stride: i32,
+    x_ptr: PtrF32,
+    x_row_stride: i32,
+    r_ptr: PtrF32,
+    r_row_stride: i32,
+    w_ptr: PtrF32,
+    w_row_stride: i32,
+    rstd_ptr: PtrF32,
+    rstd_row_stride: i32,
+    n_cols: i32,
+    eps: f32,
+    offset: f32,
+    comptime BLOCK_SIZE: i32 = 1024,
+) {
+    row_id := triton.program_id(0)
+    offs := triton.make_range(0, BLOCK_SIZE)
+    mask := offs < triton.splat(n_cols, BLOCK_SIZE)
+    mask0 := offs < 1.(i32)
+
+    x_ptrs := x_ptr + (offs + triton.splat(row_id * x_row_stride, BLOCK_SIZE))
+    r_ptrs := r_ptr + (offs + triton.splat(row_id * r_row_stride, BLOCK_SIZE))
+    s_ptrs := s_ptr + (offs + triton.splat(row_id * s_row_stride, BLOCK_SIZE))
+    y_ptrs := y_ptr + (offs + triton.splat(row_id * y_row_stride, BLOCK_SIZE))
+
+    x_row := triton.load(x_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+    r_row := triton.load(r_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+    s_row := x_row + r_row
+
+    triton.store(s_ptrs, s_row, mask)
+
+    w_ptrs := w_ptr + (offs + triton.splat(0.(i32), BLOCK_SIZE))
+    w_row := triton.load(w_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+
+    sum_sq := triton.reduce_sum(f32, s_row * s_row, 0)
+    mean_sq := sum_sq / n_cols.(f32)
+    rstd := triton.rsqrt(mean_sq + eps)
+
+    rstd_ptrs := rstd_ptr + (offs + triton.splat(row_id * rstd_row_stride, BLOCK_SIZE))
+    triton.store(rstd_ptrs, triton.splat(rstd, BLOCK_SIZE), mask0)
+
+    rstd_b := triton.splat(rstd, BLOCK_SIZE)
+    y_row := (s_row * rstd_b) * (triton.splat(offset, BLOCK_SIZE) + w_row)
+    triton.store(y_ptrs, y_row, mask)
+}
+
+/// Fused add + RMSNorm backward kernel (dX == dR).
+fused_add_rms_norm_backward_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    dy_ptr: PtrF32,
+    dy_row_stride: i32,
+    dx_ptr: PtrF32,
+    dx_row_stride: i32,
+    dr_ptr: PtrF32,
+    dr_row_stride: i32,
+    s_ptr: PtrF32,
+    s_row_stride: i32,
+    w_ptr: PtrF32,
+    w_row_stride: i32,
+    rstd_ptr: PtrF32,
+    rstd_row_stride: i32,
+    dw_ptr: PtrF32,
+    dw_row_stride: i32,
+    n_cols: i32,
+    offset: f32,
+    comptime BLOCK_SIZE: i32 = 1024,
+) {
+    row_id := triton.program_id(0)
+    offs := triton.make_range(0, BLOCK_SIZE)
+    mask := offs < triton.splat(n_cols, BLOCK_SIZE)
+    mask0 := offs < 1.(i32)
+
+    dy_ptrs := dy_ptr + (offs + triton.splat(row_id * dy_row_stride, BLOCK_SIZE))
+    s_ptrs := s_ptr + (offs + triton.splat(row_id * s_row_stride, BLOCK_SIZE))
+    w_ptrs := w_ptr + (offs + triton.splat(0.(i32), BLOCK_SIZE))
+
+    dy_row := triton.load(dy_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+    s_row := triton.load(s_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+    w_row := triton.load(w_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+
+    rstd_ptrs := rstd_ptr + (offs + triton.splat(row_id * rstd_row_stride, BLOCK_SIZE))
+    rstd_vec := triton.load(rstd_ptrs, mask0, triton.splat(0.(f32), BLOCK_SIZE))
+    rstd := triton.reduce_sum(f32, rstd_vec, 0)
+    rstd_b := triton.splat(rstd, BLOCK_SIZE)
+
+    m := dy_row * (triton.splat(offset, BLOCK_SIZE) + w_row)
+    sum_mx := triton.reduce_sum(f32, m * s_row, 0)
+    sum_mx_b := triton.splat(sum_mx, BLOCK_SIZE)
+
+    n_cols_f := n_cols.(f32)
+    inv_n := triton.splat(1.0.(f32) / n_cols_f, BLOCK_SIZE)
+    dx_row := rstd_b * (m - (inv_n * rstd_b * rstd_b * sum_mx_b * s_row))
+
+    dx_ptrs := dx_ptr + (offs + triton.splat(row_id * dx_row_stride, BLOCK_SIZE))
+    dr_ptrs := dr_ptr + (offs + triton.splat(row_id * dr_row_stride, BLOCK_SIZE))
+    triton.store(dx_ptrs, dx_row, mask)
+    triton.store(dr_ptrs, dx_row, mask)
+
+    dw_row := dy_row * (s_row * rstd_b)
+    dw_ptrs := dw_ptr + (offs + triton.splat(row_id * dw_row_stride, BLOCK_SIZE))
+    triton.store(dw_ptrs, dw_row, mask)
+}

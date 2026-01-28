@@ -7,15 +7,12 @@ const Diagnostics = compiler.diagnostics.Diagnostics;
 const Context = compiler.compile.Context;
 
 fn parseProgramFromText(gpa: std.mem.Allocator, context: *Context, src: [:0]const u8) !cst.CST {
-    // Register an in-memory file with a stable path so relative import
-    // resolution in the parser has a directory to work from.
     const file_path = "in_memory.sr";
     const file_id = try context.source_manager.setVirtualSourceByPath(file_path, src);
 
     var parser = Parser.init(gpa, src, file_id, context.diags, context);
     var ast = try parser.parse();
     errdefer ast.deinit();
-    // Drain any import work spawned during parsing to avoid leaks in tests.
     if (context.parse_worklist.capacity != 0) {
         var i: usize = 0;
         while (i < context.parse_worklist.items.len) : (i += 1) {
@@ -44,7 +41,6 @@ fn parseProgramFromPath(gpa: std.mem.Allocator, context: *Context, path: []const
     var parser = Parser.init(gpa, src, file_id, context.diags, context);
     var ast = try parser.parse();
     errdefer ast.deinit();
-    // Drain any import work spawned during parsing to avoid leaks in tests.
     if (context.parse_worklist.capacity != 0) {
         var i: usize = 0;
         while (i < context.parse_worklist.items.len) : (i += 1) {

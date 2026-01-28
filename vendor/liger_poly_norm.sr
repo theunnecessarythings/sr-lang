@@ -1,0 +1,178 @@
+package liger_poly_norm
+
+triton :: import "vendor/triton"
+
+PtrF32 :: triton.Ptr(f32)
+
+/// PolyNorm forward kernel.
+poly_norm_forward_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    y_ptr: PtrF32,
+    y_row_stride: i32,
+    x_ptr: PtrF32,
+    x_row_stride: i32,
+    w_ptr: PtrF32,
+    b_ptr: PtrF32,
+    rstd_ptr: PtrF32,
+    rstd_row_stride: i32,
+    n_cols: i32,
+    eps: f32,
+    comptime BLOCK_SIZE: i32 = 1024,
+) {
+    row_id := triton.program_id(0)
+    offs := triton.make_range(0, BLOCK_SIZE)
+    mask := offs < triton.splat(n_cols, BLOCK_SIZE)
+    mask0 := offs < 1.(i32)
+
+    row_offset := row_id * x_row_stride
+    row_offset_b := triton.splat(row_offset, BLOCK_SIZE)
+    x_ptrs := x_ptr + (offs + row_offset_b)
+    x_row := triton.load(x_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+
+    w0 := triton.load(w_ptr + triton.splat(0.(i32), BLOCK_SIZE), mask0, triton.splat(0.(f32), BLOCK_SIZE))
+    w1 := triton.load(w_ptr + triton.splat(1.(i32), BLOCK_SIZE), mask0, triton.splat(0.(f32), BLOCK_SIZE))
+    w2 := triton.load(w_ptr + triton.splat(2.(i32), BLOCK_SIZE), mask0, triton.splat(0.(f32), BLOCK_SIZE))
+    b := triton.load(b_ptr + triton.splat(0.(i32), BLOCK_SIZE), mask0, triton.splat(0.(f32), BLOCK_SIZE))
+    w0s := triton.reduce_sum(f32, w0, 0)
+    w1s := triton.reduce_sum(f32, w1, 0)
+    w2s := triton.reduce_sum(f32, w2, 0)
+    bs := triton.reduce_sum(f32, b, 0)
+
+    x2 := x_row * x_row
+    x3 := x2 * x_row
+
+    mean_square_3 := triton.reduce_sum(f32, x3 * x3, 0) / n_cols.(f32)
+    rstd_3 := triton.rsqrt(mean_square_3 + eps)
+    norm_x3 := x3 * triton.splat(rstd_3, BLOCK_SIZE)
+
+    mean_square_2 := triton.reduce_sum(f32, x2 * x2, 0) / n_cols.(f32)
+    rstd_2 := triton.rsqrt(mean_square_2 + eps)
+    norm_x2 := x2 * triton.splat(rstd_2, BLOCK_SIZE)
+
+    mean_square_1 := triton.reduce_sum(f32, x_row * x_row, 0) / n_cols.(f32)
+    rstd_1 := triton.rsqrt(mean_square_1 + eps)
+    norm_x1 := x_row * triton.splat(rstd_1, BLOCK_SIZE)
+
+    rstd_base := triton.splat(row_id * rstd_row_stride, BLOCK_SIZE)
+    rstd3_ptrs := rstd_ptr + (rstd_base + triton.splat(0.(i32), BLOCK_SIZE))
+    rstd2_ptrs := rstd_ptr + (rstd_base + triton.splat(1.(i32), BLOCK_SIZE))
+    rstd1_ptrs := rstd_ptr + (rstd_base + triton.splat(2.(i32), BLOCK_SIZE))
+    triton.store(rstd3_ptrs, triton.splat(rstd_3, BLOCK_SIZE), mask0)
+    triton.store(rstd2_ptrs, triton.splat(rstd_2, BLOCK_SIZE), mask0)
+    triton.store(rstd1_ptrs, triton.splat(rstd_1, BLOCK_SIZE), mask0)
+
+    y_row := triton.splat(w0s, BLOCK_SIZE) * norm_x3 +
+        triton.splat(w1s, BLOCK_SIZE) * norm_x2 +
+        triton.splat(w2s, BLOCK_SIZE) * norm_x1 +
+        triton.splat(bs, BLOCK_SIZE)
+
+    y_ptrs := y_ptr + (offs + triton.splat(row_id * y_row_stride, BLOCK_SIZE))
+    triton.store(y_ptrs, y_row, mask)
+}
+
+/// PolyNorm backward kernel (simplified, per-row dW/dB).
+poly_norm_backward_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    dy_ptr: PtrF32,
+    dy_row_stride: i32,
+    dx_ptr: PtrF32,
+    dx_row_stride: i32,
+    x_ptr: PtrF32,
+    x_row_stride: i32,
+    w_ptr: PtrF32,
+    rstd_ptr: PtrF32,
+    rstd_row_stride: i32,
+    dw_ptr: PtrF32,
+    dw_row_stride: i32,
+    db_ptr: PtrF32,
+    n_cols: i32,
+    comptime BLOCK_SIZE: i32 = 1024,
+) {
+    row_id := triton.program_id(0)
+    offs := triton.make_range(0, BLOCK_SIZE)
+    mask := offs < triton.splat(n_cols, BLOCK_SIZE)
+    mask0 := offs < 1.(i32)
+
+    row_offset := row_id * x_row_stride
+    row_offset_b := triton.splat(row_offset, BLOCK_SIZE)
+    x_ptrs := x_ptr + (offs + row_offset_b)
+    dy_ptrs := dy_ptr + (offs + triton.splat(row_id * dy_row_stride, BLOCK_SIZE))
+    x_row := triton.load(x_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+    dy_row := triton.load(dy_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+
+    w0 := triton.load(w_ptr + triton.splat(0.(i32), BLOCK_SIZE), mask0, triton.splat(0.(f32), BLOCK_SIZE))
+    w1 := triton.load(w_ptr + triton.splat(1.(i32), BLOCK_SIZE), mask0, triton.splat(0.(f32), BLOCK_SIZE))
+    w2 := triton.load(w_ptr + triton.splat(2.(i32), BLOCK_SIZE), mask0, triton.splat(0.(f32), BLOCK_SIZE))
+    w0s := triton.reduce_sum(f32, w0, 0)
+    w1s := triton.reduce_sum(f32, w1, 0)
+    w2s := triton.reduce_sum(f32, w2, 0)
+
+    rstd_base := triton.splat(row_id * rstd_row_stride, BLOCK_SIZE)
+    rstd3_ptrs := rstd_ptr + (rstd_base + triton.splat(0.(i32), BLOCK_SIZE))
+    rstd2_ptrs := rstd_ptr + (rstd_base + triton.splat(1.(i32), BLOCK_SIZE))
+    rstd1_ptrs := rstd_ptr + (rstd_base + triton.splat(2.(i32), BLOCK_SIZE))
+    rstd3_vec := triton.load(rstd3_ptrs, mask0, triton.splat(0.(f32), BLOCK_SIZE))
+    rstd2_vec := triton.load(rstd2_ptrs, mask0, triton.splat(0.(f32), BLOCK_SIZE))
+    rstd1_vec := triton.load(rstd1_ptrs, mask0, triton.splat(0.(f32), BLOCK_SIZE))
+    rstd3 := triton.reduce_sum(f32, rstd3_vec, 0)
+    rstd2 := triton.reduce_sum(f32, rstd2_vec, 0)
+    rstd1 := triton.reduce_sum(f32, rstd1_vec, 0)
+
+    x2 := x_row * x_row
+    x3 := x2 * x_row
+
+    s3 := triton.reduce_sum(f32, dy_row * x3, 0)
+    s2 := triton.reduce_sum(f32, dy_row * x2, 0)
+    s1 := triton.reduce_sum(f32, dy_row * x_row, 0)
+
+    rstd3_b := triton.splat(rstd3, BLOCK_SIZE)
+    rstd2_b := triton.splat(rstd2, BLOCK_SIZE)
+    rstd1_b := triton.splat(rstd1, BLOCK_SIZE)
+
+    n_cols_f := n_cols.(f32)
+    inv_n := triton.splat(1.0.(f32) / n_cols_f, BLOCK_SIZE)
+
+    w0_b := triton.splat(w0s, BLOCK_SIZE)
+    w1_b := triton.splat(w1s, BLOCK_SIZE)
+    w2_b := triton.splat(w2s, BLOCK_SIZE)
+    s3_b := triton.splat(s3, BLOCK_SIZE)
+    s2_b := triton.splat(s2, BLOCK_SIZE)
+    s1_b := triton.splat(s1, BLOCK_SIZE)
+    three_b := triton.splat(3.0.(f32), BLOCK_SIZE)
+    two_b := triton.splat(2.0.(f32), BLOCK_SIZE)
+    five_x := x_row * x_row * x_row * x_row * x_row
+    three_x := x_row * x_row * x_row
+    rstd3_c := rstd3_b * rstd3_b * rstd3_b
+    rstd2_c := rstd2_b * rstd2_b * rstd2_b
+    rstd1_c := rstd1_b * rstd1_b * rstd1_b
+
+    term3 := three_b * x2 * rstd3_b * dy_row
+    corr3 := three_b * inv_n * five_x * rstd3_c * s3_b
+    grad_x_3 := w0_b * (term3 - corr3)
+
+    term2 := two_b * x_row * rstd2_b * dy_row
+    corr2 := two_b * inv_n * three_x * rstd2_c * s2_b
+    grad_x_2 := w1_b * (term2 - corr2)
+
+    term1 := rstd1_b * dy_row
+    corr1 := inv_n * x_row * rstd1_c * s1_b
+    grad_x_1 := w2_b * (term1 - corr1)
+
+    dx_row := grad_x_3 + grad_x_2 + grad_x_1
+    dx_ptrs := dx_ptr + (offs + triton.splat(row_id * dx_row_stride, BLOCK_SIZE))
+    triton.store(dx_ptrs, dx_row, mask)
+
+    dW0 := rstd3 * s3
+    dW1 := rstd2 * s2
+    dW2 := rstd1 * s1
+    dB := triton.reduce_sum(f32, dy_row, 0)
+
+    dw_base := triton.splat(row_id * dw_row_stride, BLOCK_SIZE)
+    dw_ptr0 := dw_ptr + (dw_base + triton.splat(0.(i32), BLOCK_SIZE))
+    dw_ptr1 := dw_ptr + (dw_base + triton.splat(1.(i32), BLOCK_SIZE))
+    dw_ptr2 := dw_ptr + (dw_base + triton.splat(2.(i32), BLOCK_SIZE))
+    triton.store(dw_ptr0, triton.splat(dW0, BLOCK_SIZE), mask0)
+    triton.store(dw_ptr1, triton.splat(dW1, BLOCK_SIZE), mask0)
+    triton.store(dw_ptr2, triton.splat(dW2, BLOCK_SIZE), mask0)
+
+    db_ptrs := db_ptr + triton.splat(row_id, BLOCK_SIZE)
+    triton.store(db_ptrs, triton.splat(dB, BLOCK_SIZE), mask0)
+}

@@ -1,0 +1,81 @@
+package liger_llama4_rope
+
+triton :: import "vendor/triton"
+
+PtrF32 :: triton.Ptr(f32)
+
+fn load_scalar(ptr: PtrF32, offset: i32) f32 {
+    offs := triton.splat(offset, 1)
+    ptrs := triton.addptr(triton.splat(ptr, 1), offs)
+    mask := triton.splat(0, 1) < triton.splat(1, 1)
+    v := triton.load(ptrs, mask, triton.splat(0.(f32), 1))
+    return triton.reduce_sum(f32, v, 0)
+}
+
+fn store_scalar(ptr: PtrF32, offset: i32, val: f32) void {
+    offs := triton.splat(offset, 1)
+    ptrs := triton.addptr(triton.splat(ptr, 1), offs)
+    mask := triton.splat(0, 1) < triton.splat(1, 1)
+    triton.store(ptrs, triton.splat(val, 1), mask)
+}
+
+/// Llama4 RoPE kernel (forward) with 2D grid.
+llama4_rope_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    q_ptr: PtrF32,
+    k_ptr: PtrF32,
+    freqs_real_ptr: PtrF32,
+    freqs_imag_ptr: PtrF32,
+    q_row_stride: i32,
+    k_row_stride: i32,
+    q_head_stride: i32,
+    k_head_stride: i32,
+    freqs_row_stride: i32,
+    seq_len: i32,
+    batch_size: i32,
+    imag_sign: f32,
+    comptime HEAD_DIM_HALF: i32,
+    comptime N_Q_HEADS: i32,
+    comptime N_K_HEADS: i32,
+    comptime BLOCK_SIZE: i32,
+) {
+    pid_bs := triton.program_id(0)
+    pid_h := triton.program_id(1)
+
+    batch_idx := pid_bs / seq_len
+    seq_idx := pid_bs - (batch_idx * seq_len)
+
+    if batch_idx >= batch_size { return }
+    if seq_idx >= seq_len { return }
+
+    base_offset := batch_idx * seq_len + seq_idx
+    q_base := triton.addptr(q_ptr, base_offset * q_row_stride)
+    k_base := triton.addptr(k_ptr, base_offset * k_row_stride)
+
+    d: i32 = 0
+    while d < HEAD_DIM_HALF {
+        freq_real := load_scalar(freqs_real_ptr, seq_idx * freqs_row_stride + d)
+        freq_imag := load_scalar(freqs_imag_ptr, seq_idx * freqs_row_stride + d) * imag_sign
+
+        if pid_h < N_Q_HEADS {
+            q_head_ptr := triton.addptr(q_base, pid_h * q_head_stride)
+            q_real := load_scalar(q_head_ptr, d * 2)
+            q_imag := load_scalar(q_head_ptr, d * 2 + 1)
+            new_q_real := q_real * freq_real - q_imag * freq_imag
+            new_q_imag := q_real * freq_imag + q_imag * freq_real
+            store_scalar(q_head_ptr, d * 2, new_q_real)
+            store_scalar(q_head_ptr, d * 2 + 1, new_q_imag)
+        }
+
+        if pid_h < N_K_HEADS {
+            k_head_ptr := triton.addptr(k_base, pid_h * k_head_stride)
+            k_real := load_scalar(k_head_ptr, d * 2)
+            k_imag := load_scalar(k_head_ptr, d * 2 + 1)
+            new_k_real := k_real * freq_real - k_imag * freq_imag
+            new_k_imag := k_real * freq_imag + k_imag * freq_real
+            store_scalar(k_head_ptr, d * 2, new_k_real)
+            store_scalar(k_head_ptr, d * 2 + 1, new_k_imag)
+        }
+
+        d = d + 1
+    }
+}

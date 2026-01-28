@@ -3,7 +3,6 @@ package main
 testing :: import "std/testing"
 io :: import "std/io"
 
-// Aggregate all in-language behavior suites.
 _ :: import "behavior_any_type"
 _ :: import "behavior_arithmetic_operators"
 _ :: import "behavior_array_slice_patterns"
@@ -75,7 +74,6 @@ _ :: import "behavior_wildcard_patterns"
 _ :: import "behavior_wrapping_casts"
 _ :: import "behavior_wrapping_saturating_arithmetic"
 
-// Global definitions for tests
 add_func_test :: fn(a: i32, b: i32) i32 {
     return a + b
 }
@@ -204,7 +202,6 @@ errdefer_test_run :: proc() errdefer_test_err ! void {
     return errdefer_test_err.Failed
 }
 
-// Tests
 test "behavior: hello world" {
     a := "hello world"
 }

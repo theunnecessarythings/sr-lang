@@ -46,24 +46,7 @@ main :: proc() {
         return
     }
 
-    // 2. Load PTX Module
-    ptx_path := "out/triton_kernels.ptx"
-
-    mod: cuda.CUmodule = null
-    res = cuda.cuModuleLoad(&mod, ptx_path.ptr)
-    if res != cuda.SUCCESS {
-        io.println("Failed to load module: %d", res)
-        return
-    }
-
-    kernel: cuda.CUfunction = null
-    res = cuda.cuModuleGetFunction(&kernel, mod, "add_kernel".ptr)
-    if res != cuda.SUCCESS {
-        io.println("Failed to get kernel function", ())
-        return
-    }
-
-    // 3. Prepare Data
+    // 2. Prepare Data
     N: i32 = 1024
     size := N.(usize) * 4 // i32 is 4 bytes
 
@@ -99,25 +82,17 @@ main :: proc() {
     block_size: i32 = 1024
     grid_size: i32 = (N + block_size - 1) / block_size
 
-    scratch := triton.alloc_scratch(0, 0)
-
     // 4. Launch Kernel
-    // Params: x_ptr, y_ptr, output_ptr, n_elements, block_size
-    base_params: [5]?*void = [
-        (&x_d).^?*void,
-        (&y_d).^?*void,
-        (&out_d).^?*void,
-        (&N).^?*void,
-        (&block_size).^?*void,
-    ]
-    params := triton.make_params(5.(usize), base_params, &scratch)
-
-    res = cuda.cuLaunchKernel(kernel, grid_size, 1, 1, block_size, 1, 1, 0, null, (&params).^(?**void), null)
-
-    if res != cuda.SUCCESS {
-        io.println("Kernel launch failed: %d", res)
-        return
-    }
+    triton.launch(
+        add_kernel,
+        grid = (grid_size, 1, 1),
+        block = (block_size, 1, 1),
+        BLOCK = 1024,
+        x_d,
+        y_d,
+        out_d,
+        N,
+    )
 
     // 5. Copy back and verify
     _ = cuda.cuMemcpyDtoH(out_h.^?*void, out_d, size)
@@ -145,5 +120,4 @@ main :: proc() {
     _ = cuda.cuMemFree(x_d)
     _ = cuda.cuMemFree(y_d)
     _ = cuda.cuMemFree(out_d)
-    triton.free_scratch(&scratch)
 }

@@ -1,0 +1,164 @@
+package main
+
+liger_neigh :: import "vendor/liger_fused_neighborhood_attention"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+
+PtrF32 :: triton.Ptr(f32)
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    batch: i32 = 1
+    num_heads: i32 = 1
+    seq_len: i32 = 16
+    head_dim: i32 = 8
+
+    attn_stride_seq2: i32 = 1
+    attn_stride_seq: i32 = seq_len
+    attn_stride_head: i32 = seq_len * seq_len
+    attn_stride_batch: i32 = num_heads * attn_stride_head
+
+    v_stride_dim: i32 = 1
+    v_stride_seq: i32 = head_dim
+    v_stride_head: i32 = seq_len * head_dim
+    v_stride_batch: i32 = num_heads * v_stride_head
+
+    out_stride_dim: i32 = 1
+    out_stride_seq: i32 = head_dim
+    out_stride_head: i32 = seq_len * head_dim
+    out_stride_batch: i32 = num_heads * out_stride_head
+
+    attn_size := batch.(usize) * num_heads.(usize) * seq_len.(usize) * seq_len.(usize) * 4
+    v_size := batch.(usize) * num_heads.(usize) * seq_len.(usize) * head_dim.(usize) * 4
+    out_size := v_size
+
+    attn_h_ptr := alloc.alloc(attn_size) orelse return
+    attn_h := attn_h_ptr.^*f32
+    v_h_ptr := alloc.alloc(v_size) orelse return
+    v_h := v_h_ptr.^*f32
+    out_h_ptr := alloc.alloc(out_size) orelse return
+    out_h := out_h_ptr.^*f32
+    ref_ptr := alloc.alloc(out_size) orelse return
+    ref := ref_ptr.^*f32
+
+    i: i32 = 0
+    total_attn: i32 = batch * num_heads * seq_len * seq_len
+    while i < total_attn {
+        attn_h[i] = ((i % 23) - 11).(f32) * 0.01
+        i = i + 1
+    }
+
+    i = 0
+    total_v: i32 = batch * num_heads * seq_len * head_dim
+    while i < total_v {
+        v_h[i] = ((i % 31) - 15).(f32) * 0.02
+        i = i + 1
+    }
+
+    // CPU ref: out[b,h,r,d] = sum_k attn[b,h,r,k] * v[b,h,k,d]
+    b: i32 = 0
+    while b < batch {
+        h: i32 = 0
+        while h < num_heads {
+            r: i32 = 0
+            while r < seq_len {
+                d: i32 = 0
+                while d < head_dim {
+                    sum: f32 = 0.0.(f32)
+                    k: i32 = 0
+                    while k < seq_len {
+                        attn_idx := b * attn_stride_batch + h * attn_stride_head + r * attn_stride_seq + k * attn_stride_seq2
+                        v_idx := b * v_stride_batch + h * v_stride_head + k * v_stride_seq + d * v_stride_dim
+                        sum = sum + attn_h[attn_idx] * v_h[v_idx]
+                        k = k + 1
+                    }
+                    out_idx := b * out_stride_batch + h * out_stride_head + r * out_stride_seq + d * out_stride_dim
+                    ref[out_idx] = sum
+                    d = d + 1
+                }
+                r = r + 1
+            }
+            h = h + 1
+        }
+        b = b + 1
+    }
+
+    attn_d: cuda.CUdeviceptr = 0
+    v_d: cuda.CUdeviceptr = 0
+    out_d: cuda.CUdeviceptr = 0
+
+    _ = cuda.cuMemAlloc(&attn_d, attn_size)
+    _ = cuda.cuMemAlloc(&v_d, v_size)
+    _ = cuda.cuMemAlloc(&out_d, out_size)
+
+    _ = cuda.cuMemcpyHtoD(attn_d, attn_h.^?*void, attn_size)
+    _ = cuda.cuMemcpyHtoD(v_d, v_h.^?*void, v_size)
+
+    triton.launch(
+        liger_neigh.fused_neighborhood_attention_av_kernel,
+        grid = (batch * num_heads, seq_len, head_dim),
+        block = (1, 1, 1),
+        BLOCK_SIZE = 1,
+        attn_d,
+        v_d,
+        out_d,
+        attn_stride_batch,
+        attn_stride_head,
+        attn_stride_seq,
+        attn_stride_seq2,
+        v_stride_batch,
+        v_stride_head,
+        v_stride_seq,
+        v_stride_dim,
+        out_stride_batch,
+        out_stride_head,
+        out_stride_seq,
+        out_stride_dim,
+        num_heads,
+        seq_len,
+        head_dim,
+    )
+
+    _ = cuda.cuMemcpyDtoH(out_h.^?*void, out_d, out_size)
+
+    success := true
+    epsilon: f32 = 1.e-3
+    i = 0
+    while i < total_v {
+        diff := out_h[i] - ref[i]
+        if diff < 0 { diff = -diff }
+        if diff > epsilon {
+            io.println("av mismatch at %d: expected %f got %f", i, ref[i], out_h[i])
+            success = false
+            break
+        }
+        i = i + 1
+    }
+
+    if success { io.println("Neighborhood AV verification passed", ()) }
+
+    _ = cuda.cuMemFree(attn_d)
+    _ = cuda.cuMemFree(v_d)
+    _ = cuda.cuMemFree(out_d)
+}

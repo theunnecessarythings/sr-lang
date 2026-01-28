@@ -1,0 +1,198 @@
+package liger_group_norm
+
+triton :: import "vendor/triton"
+
+PtrF32 :: triton.Ptr(f32)
+
+/// GroupNorm forward kernel (simplified CUDA path).
+group_norm_forward_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    y_ptr: PtrF32,
+    y_row_stride: i32,
+    y_col_stride: i32,
+    x_ptr: PtrF32,
+    x_row_stride: i32,
+    x_col_stride: i32,
+    mean_ptr: PtrF32,
+    mean_row_stride: i32,
+    mean_col_stride: i32,
+    rstd_ptr: PtrF32,
+    rstd_row_stride: i32,
+    rstd_col_stride: i32,
+    w_ptr: PtrF32,
+    b_ptr: PtrF32,
+    hidden_size: i32,
+    channels_per_group: i32,
+    eps: f32,
+    comptime BLOCK_SIZE: i32 = 256,
+) {
+    batch_idx := triton.program_id(0)
+    group_idx := triton.program_id(1)
+
+    base_offset := batch_idx * x_row_stride + group_idx * x_col_stride
+    base_offset_b := triton.splat(base_offset, BLOCK_SIZE)
+    y_base_offset_b := triton.splat(batch_idx * y_row_stride + group_idx * y_col_stride, BLOCK_SIZE)
+
+    offs := triton.make_range(0, BLOCK_SIZE)
+    mask0 := offs < 1.(i32)
+
+    s: f32 = 0.0
+    sq: f32 = 0.0
+    i: i32 = 0
+    while i < hidden_size {
+        idx := offs + triton.splat(i, BLOCK_SIZE)
+        mask := idx < triton.splat(hidden_size, BLOCK_SIZE)
+        x_ptrs := x_ptr + (idx + base_offset_b)
+        x_row := triton.load(x_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+        s = s + triton.reduce_sum(f32, x_row, 0)
+        sq = sq + triton.reduce_sum(f32, x_row * x_row, 0)
+        i = i + BLOCK_SIZE
+    }
+
+    mean := s / hidden_size.(f32)
+    var := (sq / hidden_size.(f32)) - (mean * mean)
+    rstd := triton.rsqrt(var + eps)
+
+    mean_ptrs := mean_ptr + triton.splat(batch_idx * mean_row_stride + group_idx * mean_col_stride, BLOCK_SIZE)
+    rstd_ptrs := rstd_ptr + triton.splat(batch_idx * rstd_row_stride + group_idx * rstd_col_stride, BLOCK_SIZE)
+    mean_b := triton.splat(mean, BLOCK_SIZE)
+    rstd_b := triton.splat(rstd, BLOCK_SIZE)
+    triton.store(mean_ptrs, mean_b, mask0)
+    triton.store(rstd_ptrs, rstd_b, mask0)
+
+    hidden_size_per_channel := hidden_size / channels_per_group
+    channel_idx: i32 = group_idx * channels_per_group
+    while channel_idx < (group_idx + 1) * channels_per_group {
+        w_ptrs := w_ptr + triton.splat(channel_idx, BLOCK_SIZE)
+        b_ptrs := b_ptr + triton.splat(channel_idx, BLOCK_SIZE)
+        w := triton.load(w_ptrs, mask0, triton.splat(0.(f32), BLOCK_SIZE))
+        b := triton.load(b_ptrs, mask0, triton.splat(0.(f32), BLOCK_SIZE))
+        channel_offset := (channel_idx - group_idx * channels_per_group) * hidden_size_per_channel
+        j: i32 = 0
+        while j < hidden_size_per_channel {
+            idx := offs + triton.splat(channel_offset + j, BLOCK_SIZE)
+            mask := idx < triton.splat(hidden_size_per_channel, BLOCK_SIZE)
+            x_ptrs := x_ptr + (idx + base_offset_b)
+            x_row := triton.load(x_ptrs, mask, triton.splat(mean, BLOCK_SIZE))
+            w_b := triton.splat(triton.reduce_sum(f32, w, 0), BLOCK_SIZE)
+            b_b := triton.splat(triton.reduce_sum(f32, b, 0), BLOCK_SIZE)
+            y_row := (x_row - mean_b) * rstd_b * w_b + b_b
+            y_ptrs := y_ptr + (idx + y_base_offset_b)
+            triton.store(y_ptrs, y_row, mask)
+            j = j + BLOCK_SIZE
+        }
+        channel_idx = channel_idx + 1
+    }
+}
+
+/// GroupNorm backward kernel (simplified CUDA path, no cross-batch accumulation).
+group_norm_backward_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    x_ptr: PtrF32,
+    x_row_stride: i32,
+    x_col_stride: i32,
+    w_ptr: PtrF32,
+    mean_ptr: PtrF32,
+    mean_row_stride: i32,
+    mean_col_stride: i32,
+    rstd_ptr: PtrF32,
+    dx_ptr: PtrF32,
+    dw_ptr: PtrF32,
+    db_ptr: PtrF32,
+    dy_ptr: PtrF32,
+    hidden_size: i32,
+    channels_per_group: i32,
+    comptime BLOCK_SIZE: i32 = 256,
+) {
+    batch_idx := triton.program_id(0)
+    group_idx := triton.program_id(1)
+
+    base_offset := batch_idx * x_row_stride + group_idx * x_col_stride
+    base_offset_b := triton.splat(base_offset, BLOCK_SIZE)
+    dy_base_offset_b := triton.splat(batch_idx * x_row_stride + group_idx * x_col_stride, BLOCK_SIZE)
+
+    offs := triton.make_range(0, BLOCK_SIZE)
+    mask0 := offs < 1.(i32)
+
+    mean_ptrs := mean_ptr + triton.splat(batch_idx * mean_row_stride + group_idx * mean_col_stride, BLOCK_SIZE)
+    rstd_ptrs := rstd_ptr + triton.splat(batch_idx * mean_row_stride + group_idx * mean_col_stride, BLOCK_SIZE)
+    mean_vec := triton.load(mean_ptrs, mask0, triton.splat(0.(f32), BLOCK_SIZE))
+    rstd_vec := triton.load(rstd_ptrs, mask0, triton.splat(0.(f32), BLOCK_SIZE))
+    mean := triton.reduce_sum(f32, mean_vec, 0)
+    rstd := triton.reduce_sum(f32, rstd_vec, 0)
+    mean_b := triton.splat(mean, BLOCK_SIZE)
+    rstd_b := triton.splat(rstd, BLOCK_SIZE)
+
+    hidden_size_per_channel := hidden_size / channels_per_group
+
+    // First pass: compute c1/c2 over the whole group.
+    c1: f32 = 0.0
+    c2: f32 = 0.0
+    channel_idx: i32 = group_idx * channels_per_group
+    while channel_idx < (group_idx + 1) * channels_per_group {
+        w_ptrs := w_ptr + triton.splat(channel_idx, BLOCK_SIZE)
+        w_vec := triton.load(w_ptrs, mask0, triton.splat(0.(f32), BLOCK_SIZE))
+        w := triton.reduce_sum(f32, w_vec, 0)
+        w_b := triton.splat(w, BLOCK_SIZE)
+
+        channel_offset := (channel_idx - group_idx * channels_per_group) * hidden_size_per_channel
+        j: i32 = 0
+        while j < hidden_size_per_channel {
+            idx := offs + triton.splat(channel_offset + j, BLOCK_SIZE)
+            mask := idx < triton.splat(hidden_size_per_channel, BLOCK_SIZE)
+            x_ptrs := x_ptr + (idx + base_offset_b)
+            dy_ptrs := dy_ptr + (idx + dy_base_offset_b)
+            x_row := triton.load(x_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+            dy_row := triton.load(dy_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+            x_hat := (x_row - mean_b) * rstd_b
+            wdy := w_b * dy_row
+            c1 = c1 + triton.reduce_sum(f32, x_hat * wdy, 0)
+            c2 = c2 + triton.reduce_sum(f32, wdy, 0)
+            j = j + BLOCK_SIZE
+        }
+        channel_idx = channel_idx + 1
+    }
+    c1 = c1 / hidden_size.(f32)
+    c2 = c2 / hidden_size.(f32)
+    c1_b := triton.splat(c1, BLOCK_SIZE)
+    c2_b := triton.splat(c2, BLOCK_SIZE)
+
+    // Second pass: compute dx, dw, db.
+    channel_idx = group_idx * channels_per_group
+    while channel_idx < (group_idx + 1) * channels_per_group {
+        w_ptrs := w_ptr + triton.splat(channel_idx, BLOCK_SIZE)
+        w_vec := triton.load(w_ptrs, mask0, triton.splat(0.(f32), BLOCK_SIZE))
+        w := triton.reduce_sum(f32, w_vec, 0)
+        w_b := triton.splat(w, BLOCK_SIZE)
+
+        dW: f32 = 0.0
+        dB: f32 = 0.0
+
+        channel_offset := (channel_idx - group_idx * channels_per_group) * hidden_size_per_channel
+        j: i32 = 0
+        while j < hidden_size_per_channel {
+            idx := offs + triton.splat(channel_offset + j, BLOCK_SIZE)
+            mask := idx < triton.splat(hidden_size_per_channel, BLOCK_SIZE)
+            x_ptrs := x_ptr + (idx + base_offset_b)
+            dy_ptrs := dy_ptr + (idx + dy_base_offset_b)
+            dx_ptrs := dx_ptr + (idx + base_offset_b)
+            x_row := triton.load(x_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+            dy_row := triton.load(dy_ptrs, mask, triton.splat(0.(f32), BLOCK_SIZE))
+            x_hat := (x_row - mean_b) * rstd_b
+            wdy := w_b * dy_row
+            dx_row := (wdy - (x_hat * c1_b + c2_b)) * rstd_b
+            triton.store(dx_ptrs, dx_row, mask)
+
+            dW = dW + triton.reduce_sum(f32, dy_row * x_hat, 0)
+            dB = dB + triton.reduce_sum(f32, dy_row, 0)
+            j = j + BLOCK_SIZE
+        }
+
+        dw_ptrs := dw_ptr + triton.splat(channel_idx, BLOCK_SIZE)
+        db_ptrs := db_ptr + triton.splat(channel_idx, BLOCK_SIZE)
+        dw_b := triton.splat(dW, BLOCK_SIZE)
+        db_b := triton.splat(dB, BLOCK_SIZE)
+        triton.store(dw_ptrs, dw_b, mask0)
+        triton.store(db_ptrs, db_b, mask0)
+
+        channel_idx = channel_idx + 1
+    }
+}

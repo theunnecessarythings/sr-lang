@@ -1,0 +1,109 @@
+package main
+
+liger_mta :: import "vendor/liger_multi_token_attention"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+
+PtrF32 :: triton.Ptr(f32)
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    batch: i32 = 1
+    L: i32 = 64
+    stride_m: i32 = L
+    stride_n: i32 = 1
+    stride_b: i32 = L * L
+    total := batch * L * L
+    size := total.(usize) * 4
+
+    grad_h_ptr := alloc.alloc(size) orelse return
+    grad_h := grad_h_ptr.^*f32
+    out_h_ptr := alloc.alloc(size) orelse return
+    out_h := out_h_ptr.^*f32
+    ref_h_ptr := alloc.alloc(size) orelse return
+    ref_h := ref_h_ptr.^*f32
+
+    i: i32 = 0
+    while i < total {
+        grad_h[i] = ((i % 97) - 48).(f32) * 0.01
+        i = i + 1
+    }
+
+    b: i32 = 0
+    while b < batch {
+        r: i32 = 0
+        while r < L {
+            c: i32 = 0
+            while c < L {
+                idx := b * stride_b + r * stride_m + c * stride_n
+                v := grad_h[idx]
+                if c > r { v = 0.0.(f32) }
+                ref_h[idx] = v
+                c = c + 1
+            }
+            r = r + 1
+        }
+        b = b + 1
+    }
+
+    grad_d: cuda.CUdeviceptr = 0
+    out_d: cuda.CUdeviceptr = 0
+    _ = cuda.cuMemAlloc(&grad_d, size)
+    _ = cuda.cuMemAlloc(&out_d, size)
+    _ = cuda.cuMemcpyHtoD(grad_d, grad_h.^?*void, size)
+
+    triton.launch(
+        liger_mta.mask_bwd_kernel,
+        grid = (L, batch, 1),
+        block = (128, 1, 1),
+        BLOCK_SIZE = 128,
+        grad_d,
+        out_d,
+        stride_b,
+        stride_m,
+        stride_n,
+        L,
+    )
+
+    _ = cuda.cuMemcpyDtoH(out_h.^?*void, out_d, size)
+
+    success := true
+    epsilon: f32 = 1.e-4
+    i = 0
+    while i < total {
+        diff := out_h[i] - ref_h[i]
+        if diff < 0 { diff = -diff }
+        if diff > epsilon {
+            io.println("mask bwd mismatch at %d: expected %f got %f", i, ref_h[i], out_h[i])
+            success = false
+            break
+        }
+        i = i + 1
+    }
+
+    if success { io.println("Mask backward verification passed", ()) }
+
+    _ = cuda.cuMemFree(grad_d)
+    _ = cuda.cuMemFree(out_d)
+}

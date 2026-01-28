@@ -7,22 +7,14 @@ const diagnostics = @import("diagnostics.zig");
 /// Converts CST nodes into AST nodes per source file.
 pub const Lower = @This();
 
-/// Main allocator (gpa).
 gpa: std.mem.Allocator,
-/// Arena for temporary allocations during lowering (eliminates alloc/free overhead).
 arena: std.heap.ArenaAllocator,
-/// CST representing the parse result for this file.
 cst_program: *cst.CST,
-/// AST buffer being constructed.
 ast_unit: *ast.Ast,
-/// Compilation context providing type store, diagnostics, etc.
 context: *compile.Context,
-/// File id assigned by the source manager.
 file_id: u32,
-/// Dependencies discovered during lowering.
 dependencies: std.ArrayList(ast.StrId),
 
-/// Result of a lowering pass.
 pub const LowerResult = struct {
     ast_unit: *ast.Ast,
     dependencies: std.ArrayList(ast.StrId),
@@ -477,6 +469,14 @@ fn lowerExpr(self: *Lower, id: cst.ExprId) anyerror!ast.ExprId {
             break :blk self.ast_unit.exprs.add(.Call, .{
                 .callee = try self.lowerExpr(r.callee),
                 .args = try self.lowerExprRange(r.args),
+                .loc = r.loc,
+            });
+        },
+        .NamedArg => blk: {
+            const r = self.cst_program.exprs.get(.NamedArg, id);
+            break :blk self.ast_unit.exprs.add(.NamedArg, .{
+                .name = r.name,
+                .value = try self.lowerExpr(r.value),
                 .loc = r.loc,
             });
         },

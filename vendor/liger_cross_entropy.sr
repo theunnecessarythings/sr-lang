@@ -1,0 +1,57 @@
+package liger_cross_entropy
+
+triton :: import "vendor/triton"
+
+PtrF32 :: triton.Ptr(f32)
+PtrI32 :: triton.Ptr(i32)
+
+/// Cross-entropy forward kernel (simplified: no weights, no smoothing, no softcap).
+cross_entropy_forward_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    x_ptr: PtrF32,
+    x_stride: i32,
+    y_ptr: PtrI32,
+    y_stride: i32,
+    loss_ptr: PtrF32,
+    loss_stride: i32,
+    n_cols: i32,
+    comptime BLOCK_SIZE: i32 = 1024,
+) {
+    pid := triton.program_id(0)
+    offs := triton.make_range(0, BLOCK_SIZE)
+    mask := offs < triton.splat(n_cols, BLOCK_SIZE)
+    mask0 := offs < 1.(i32)
+
+    row_offset_b := triton.splat(pid * x_stride, BLOCK_SIZE)
+    y_ptrs := y_ptr + triton.splat(pid * y_stride, BLOCK_SIZE)
+    y_vec := triton.load(y_ptrs, mask0, triton.splat(0.(i32), BLOCK_SIZE))
+
+    // Fetch x_y via a masked single-lane load.
+    x_y_ptrs := x_ptr + (row_offset_b + y_vec)
+    x_y_vec := triton.load(x_y_ptrs, mask0, triton.splat(-3.4028235e38.(f32), BLOCK_SIZE))
+    x_y := triton.reduce_sum(f32, x_y_vec, 0)
+
+    m: f32 = -3.4028235e38
+    d: f32 = 0.0
+    i: i32 = 0
+    while i < n_cols {
+        idx := offs + triton.splat(i, BLOCK_SIZE)
+        mask_i := idx < triton.splat(n_cols, BLOCK_SIZE)
+        x_ptrs := x_ptr + (row_offset_b + idx)
+        x_block := triton.load(x_ptrs, mask_i, triton.splat(-3.4028235e38.(f32), BLOCK_SIZE))
+        blk_max := triton.reduce_max(f32, x_block, 0)
+        new_m := m
+        if blk_max > new_m { new_m = blk_max }
+        new_m_b := triton.splat(new_m, BLOCK_SIZE)
+        exp_block := triton.exp(x_block - new_m_b)
+        sum_block := triton.reduce_sum(f32, exp_block, 0)
+        d = d * triton.exp(m - new_m) + sum_block
+        m = new_m
+        i = i + BLOCK_SIZE
+    }
+
+    lse := m + triton.log(d)
+    loss := lse - x_y
+
+    loss_ptrs := loss_ptr + triton.splat(pid * loss_stride, BLOCK_SIZE)
+    triton.store(loss_ptrs, triton.splat(loss, BLOCK_SIZE), mask0)
+}

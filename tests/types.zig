@@ -50,7 +50,7 @@ fn runQualifiedNameDiagnostics(store: *types.TypeStore, interner: *cst.StringInt
     if (store.getQualifiedName(bool_ty)) |got| {
         try std.testing.expectEqual(got, qualified_name);
     } else {
-        std.debug.print("FAILURE: getQualifiedName(bool_ty) returned null\n", .{});
+        std.debug.print("getQualifiedName(bool_ty) returned null\n", .{});
         return error.TestUnexpectedResult;
     }
 

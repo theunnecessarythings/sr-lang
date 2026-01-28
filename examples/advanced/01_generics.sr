@@ -1,0 +1,39 @@
+package main
+
+// Chapter 12: Generics
+//
+// Functions that work on multiple types.
+
+io :: import "std/io"
+
+// A generic function takes a `comptime T: type` parameter.
+// The compiler generates a specialized version for each type used.
+max :: fn(comptime T: type, a: T, b: T) T {
+    if a > b { return a }
+    return b
+}
+
+// Generic Struct
+Box :: fn(comptime T: type) type {
+    return struct {
+        value: T
+    }
+}
+
+main :: proc() {
+    io.println("--- Generics ---", 0)
+
+    // Using generic function
+    m1 := max(i32, 10, 20)
+    m2 := max(f64, 3.14, 1.59)
+
+    io.println("Max i32: %d", m1)
+    io.println("Max f64: %f", m2)
+
+    // Using generic struct
+    // We instantiate the type `Box(i32)`
+    IntBox :: Box(i32)
+    b := IntBox{ value: 99 }
+    
+    io.println("Boxed value: %d", b.value)
+}

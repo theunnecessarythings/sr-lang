@@ -23,6 +23,14 @@ make_range :: @[triton] proc(comptime start: i32, comptime end: i32) tensor(end 
     return mlir op { "tt.make_range"() {end = `end`, start = `start`} : () -> `T` }
 }
 
+/// Create a range of values [start, end) as f32.
+make_range_f32 :: @[triton] proc(comptime start: i32, comptime end: i32) tensor(end - start, f32) {
+    Ti :: tensor(end - start, i32)
+    Tf :: tensor(end - start, f32)
+    tmp: Ti = mlir op { "tt.make_range"() {end = `end`, start = `start`} : () -> `Ti` }
+    return mlir op(tmp) { "arith.uitofp"(%arg0) : (`Ti`) -> `Tf` }
+}
+
 /// Splat a scalar value to a tensor of the given size.
 splat :: @[triton] proc(val: any, comptime size: i32) tensor(size, typeof(val)) {
     val_ty :: typeof(val)
@@ -34,6 +42,34 @@ splat :: @[triton] proc(val: any, comptime size: i32) tensor(size, typeof(val)) 
 exp :: @[triton] proc(val: any) typeof(val) {
     val_ty :: typeof(val)
     return mlir op(val) { "math.exp"(%arg0) : (`val_ty`) -> `val_ty` }
+}
+
+/// Elementwise tanh for Triton tensors.
+tanh :: @[triton] proc(val: any) typeof(val) {
+    val_ty :: typeof(val)
+    return mlir op(val) {
+        "tt.extern_elementwise"(%arg0) {libname = "libdevice", libpath = "", pure = true, symbol = "__nv_tanhf"} : (`val_ty`) -> `val_ty`
+    }
+}
+
+/// Elementwise log for Triton tensors.
+log :: @[triton] proc(val: any) typeof(val) {
+    val_ty :: typeof(val)
+    return mlir op(val) { "math.log"(%arg0) : (`val_ty`) -> `val_ty` }
+}
+
+/// Elementwise abs for Triton tensors.
+abs :: @[triton] proc(val: any) typeof(val) {
+    val_ty :: typeof(val)
+    return mlir op(val) { "math.absf"(%arg0) : (`val_ty`) -> `val_ty` }
+}
+
+/// Elementwise rsqrt for Triton tensors.
+rsqrt :: @[triton] proc(val: any) typeof(val) {
+    val_ty :: typeof(val)
+    return mlir op(val) {
+        "tt.extern_elementwise"(%arg0) {libname = "libdevice", libpath = "", pure = true, symbol = "__nv_rsqrtf"} : (`val_ty`) -> `val_ty`
+    }
 }
 
 /// Reduce a tensor of values by max along the given axis.
@@ -48,6 +84,75 @@ reduce_max :: @[triton] proc(comptime T: type, val: any, comptime axis: i32) T {
         }
 }
 
+/// Elementwise maximum for Triton tensors/scalars.
+maximum :: @[triton] proc(a: any, b: any) typeof(a) {
+    a_ty :: typeof(a)
+    b_ty :: typeof(b)
+    return mlir op(a, b) { "arith.maximumf"(%arg0, %arg1) : (`a_ty`, `b_ty`) -> `a_ty` }
+}
+
+/// Elementwise minimum for Triton tensors/scalars.
+minimum :: @[triton] proc(a: any, b: any) typeof(a) {
+    a_ty :: typeof(a)
+    b_ty :: typeof(b)
+    return mlir op(a, b) { "arith.minimumf"(%arg0, %arg1) : (`a_ty`, `b_ty`) -> `a_ty` }
+}
+
+/// Elementwise bitwise AND for Triton tensors/scalars (i1/i32/etc).
+band :: @[triton] proc(a: any, b: any) typeof(a) {
+    a_ty :: typeof(a)
+    b_ty :: typeof(b)
+    return mlir op(a, b) { "arith.andi"(%arg0, %arg1) : (`a_ty`, `b_ty`) -> `a_ty` }
+}
+
+/// Elementwise integer remainder for Triton tensors/scalars.
+rem :: @[triton] proc(a: any, b: any) typeof(a) {
+    a_ty :: typeof(a)
+    b_ty :: typeof(b)
+    return mlir op(a, b) { "arith.remsi"(%arg0, %arg1) : (`a_ty`, `b_ty`) -> `a_ty` }
+}
+
+/// Pointer addition (ptr + offset) for Triton ptr/tensor-of-ptr.
+addptr :: @[triton] proc(ptr: any, offset: any) typeof(ptr) {
+    ptr_ty :: typeof(ptr)
+    off_ty :: typeof(offset)
+    return mlir op(ptr, offset) { "tt.addptr"(%arg0, %arg1) : (`ptr_ty`, `off_ty`) -> `ptr_ty` }
+}
+
+/// Elementwise logical shift right for Triton integers.
+shri :: @[triton] proc(a: any, b: any) typeof(a) {
+    a_ty :: typeof(a)
+    b_ty :: typeof(b)
+    return mlir op(a, b) { "arith.shrui"(%arg0, %arg1) : (`a_ty`, `b_ty`) -> `a_ty` }
+}
+
+/// Elementwise shift left for Triton integers.
+shli :: @[triton] proc(a: any, b: any) typeof(a) {
+    a_ty :: typeof(a)
+    b_ty :: typeof(b)
+    return mlir op(a, b) { "arith.shli"(%arg0, %arg1) : (`a_ty`, `b_ty`) -> `a_ty` }
+}
+
+/// Select between values based on a boolean mask.
+where :: @[triton] proc(mask: any, a: any, b: any) typeof(a) {
+    mask_ty :: typeof(mask)
+    a_ty :: typeof(a)
+    b_ty :: typeof(b)
+    return mlir op(mask, a, b) { "arith.select"(%arg0, %arg1, %arg2) : (`mask_ty`, `a_ty`, `b_ty`) -> `a_ty` }
+}
+
+/// Inclusive scan (sum) along the given axis.
+scan_sum :: @[triton] proc(comptime T: type, val: any, comptime axis: i32) typeof(val) {
+    val_ty :: typeof(val)
+    return mlir op(val) {
+        "tt.scan"(%arg0) ({
+        ^bb0(%lhs: `T`, %rhs: `T`):
+        %s = arith.addf %lhs, %rhs : `T`
+        "tt.scan.return"(%s) : (`T`) -> ()
+        }) {axis = `axis`, reverse = false} : (`val_ty`) -> `val_ty`
+    }
+}
+
 /// Reduce a tensor of values by sum along the given axis.
 reduce_sum :: @[triton] proc(comptime T: type, val: any, comptime axis: i32) T {
     val_ty :: typeof(val)
@@ -57,6 +162,18 @@ reduce_sum :: @[triton] proc(comptime T: type, val: any, comptime axis: i32) T {
         %s = arith.addf %lhs, %rhs : `T`
         "tt.reduce.return"(%s) : (`T`) -> ()
         }) {axis = `axis`} : (`val_ty`) -> `T`
+        }
+}
+
+/// Reduce a tensor of i32 values by sum along the given axis.
+reduce_sum_i32 :: @[triton] proc(val: any, comptime axis: i32) i32 {
+    val_ty :: typeof(val)
+    return mlir op(val) {
+        "tt.reduce"(%arg0) ({
+        ^bb0(%lhs: i32, %rhs: i32):
+        %s = arith.addi %lhs, %rhs : i32
+        "tt.reduce.return"(%s) : (i32) -> ()
+        }) {axis = `axis`} : (`val_ty`) -> i32
         }
 }
 

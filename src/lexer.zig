@@ -3,18 +3,12 @@ const cst = @import("cst.zig"); // Import cst to get FileId
 
 /// Lexed token plus its location span.
 pub const Token = struct {
-    /// Category identifying the kind of lexeme represented by the token.
     tag: Tag,
-    /// Source location describing where the token occurred.
     loc: Loc,
 
-    /// Precise source span covering a lexeme.
     pub const Loc = struct {
-        /// File identifier from the CST source manager.
         file_id: cst.FileId,
-        /// Start byte index of the token.
         start: usize,
-        /// End byte index of the token (exclusive).
         end: usize,
 
         /// Create a location span covering `[start,end)` in `file_id`.

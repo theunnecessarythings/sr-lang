@@ -1,0 +1,96 @@
+package main
+
+liger_flce :: import "vendor/liger_fused_linear_cross_entropy"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+
+PtrF32 :: triton.Ptr(f32)
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    n_rows: i32 = 4
+    n_cols: i32 = 8
+    stride: i32 = n_cols
+    size := n_rows.(usize) * n_cols.(usize) * 4
+
+    x_h_ptr := alloc.alloc(size) orelse return
+    x_h := x_h_ptr.^*f32
+    i: i32 = 0
+    while i < n_rows * n_cols {
+        x_h[i] = (i + 1).(f32)
+        i = i + 1
+    }
+
+    grad_val: f32 = 0.5
+    grad_h_ptr := alloc.alloc(4) orelse return
+    grad_h := grad_h_ptr.^*f32
+    grad_h[0] = grad_val
+
+    ref_ptr := alloc.alloc(size) orelse return
+    ref := ref_ptr.^*f32
+    i = 0
+    while i < n_rows * n_cols {
+        ref[i] = x_h[i] * grad_val
+        i = i + 1
+    }
+
+    x_d: cuda.CUdeviceptr = 0
+    grad_d: cuda.CUdeviceptr = 0
+
+    _ = cuda.cuMemAlloc(&x_d, size)
+    _ = cuda.cuMemAlloc(&grad_d, 4)
+    _ = cuda.cuMemcpyHtoD(x_d, x_h.^?*void, size)
+    _ = cuda.cuMemcpyHtoD(grad_d, grad_h.^?*void, 4)
+
+    triton.launch(
+        liger_flce.element_mul_kernel,
+        grid = (n_rows, 1, 1),
+        block = (128, 1, 1),
+        BLOCK_SIZE = 128,
+        x_d,
+        stride,
+        grad_d,
+        n_cols,
+    )
+
+    _ = cuda.cuMemcpyDtoH(x_h.^?*void, x_d, size)
+
+    success := true
+    epsilon: f32 = 1.e-5
+    i = 0
+    while i < n_rows * n_cols {
+        diff := x_h[i] - ref[i]
+        if diff < 0 { diff = -diff }
+        if diff > epsilon {
+            io.println("element_mul mismatch at %d: expected %f got %f", i, ref[i], x_h[i])
+            success = false
+            break
+        }
+        i = i + 1
+    }
+    if success { io.println("element_mul verification passed", ()) }
+
+    _ = cuda.cuMemFree(x_d)
+    _ = cuda.cuMemFree(grad_d)
+}

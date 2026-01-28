@@ -2312,6 +2312,11 @@ pub fn checkExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: a
         .IndexAccess => try self.checkIndexAccess(ctx, ast_unit, id),
         .FieldAccess => try self.checkFieldAccess(ctx, ast_unit, id),
         .Call => try self.checkCall(ctx, ast_unit, id),
+        .NamedArg => blk: {
+            const row = ast_unit.exprs.get(.NamedArg, id);
+            try self.context.diags.addError(exprLoc(ast_unit, row), .invalid_named_argument, .{});
+            break :blk self.context.type_store.tTypeError();
+        },
         .Range => try self.checkRange(ctx, ast_unit, id),
         .Deref => try self.checkDeref(ctx, ast_unit, id),
 
@@ -3522,35 +3527,7 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     // 3. Main Type Switch
     switch (kind) {
         .Ast => {
-            const ast_ty = self.context.type_store.get(.Ast, ty);
-            const pkg_name = self.context.interner.get(ast_ty.pkg_name);
-            const filepath = self.context.interner.get(ast_ty.filepath);
-
-            const pkg = self.context.compilation_unit.packages.getPtr(pkg_name) orelse
-                return self.context.type_store.tTypeError();
-            const parent_unit = pkg.sources.getPtr(filepath) orelse
-                return self.context.type_store.tTypeError();
-
-            if (parent_unit.ast) |a| {
-                if (a.type_info.getExport(a.exprs.strs.intern(field_name))) |ex| {
-                    return ex.ty;
-                }
-
-                const last_diag_idx = self.context.diags.count();
-                try self.context.diags.addError(field_loc, .unknown_module_field, .{field_name});
-
-                var all_exports = List([]const u8){};
-                defer all_exports.deinit(self.gpa);
-                var it = a.type_info.exports.iterator();
-                while (it.next()) |entry| {
-                    try all_exports.append(self.gpa, a.exprs.strs.get(entry.key_ptr.*));
-                }
-                try self.attachSuggestionListNotes(last_diag_idx, field_name, all_exports.items, .did_you_mean_field, .available_fields);
-                return self.context.type_store.tTypeError();
-            }
-
-            try self.context.diags.addError(field_loc, .unknown_module_field, .{field_name});
-            return self.context.type_store.tTypeError();
+            return try self.resolveAstModuleFieldAccess(ty, field_name, field_loc);
         },
         .Struct, .Union => {
             const fields = self.context.type_store.field_pool.slice(if (kind == .Struct) self.context.type_store.get(.Struct, ty).fields else self.context.type_store.get(.Union, ty).fields);
@@ -3657,7 +3634,7 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
                 try self.attachSuggestionListNotes(self.context.diags.count() - 1, field_name, all_tags.items, .did_you_mean_tag, .available_tags);
                 return self.context.type_store.tTypeError();
             } else if (inner_kind == .Ast) {
-                return self.checkFieldAccess(ctx, ast_unit, id);
+                return try self.resolveAstModuleFieldAccess(inner_ty, field_name, field_loc);
             }
 
             // Shared logic for Struct, Variant, Error (all use Field pool)
@@ -3841,6 +3818,37 @@ fn resolveStructLitExpectedType(self: *Checker, ctx: *CheckerContext, ast_unit: 
         try self.context.diags.addError(loc, .could_not_resolve_type, StringPayload{ .value = "type expression" });
     }
     return self.context.type_store.tTypeError();
+}
+
+/// Resolve a module field access on an `Ast` type and emit unknown-field diagnostics.
+fn resolveAstModuleFieldAccess(self: *Checker, ast_ty: types.TypeId, field_name: []const u8, field_loc: Loc) !types.TypeId {
+    const ts = self.context.type_store;
+    const ast_row = ts.get(.Ast, ast_ty);
+    const pkg_name = self.context.interner.get(ast_row.pkg_name);
+    const filepath = self.context.interner.get(ast_row.filepath);
+
+    const parent_unit = self.context.compilation_unit.findFileUnit(pkg_name, filepath) orelse
+        return ts.tTypeError();
+    if (parent_unit.ast) |a| {
+        if (a.type_info.getExport(a.exprs.strs.intern(field_name))) |ex| {
+            return ex.ty;
+        }
+
+        const last_diag_idx = self.context.diags.count();
+        try self.context.diags.addError(field_loc, .unknown_module_field, .{field_name});
+
+        var all_exports = List([]const u8){};
+        defer all_exports.deinit(self.gpa);
+        var it = a.type_info.exports.iterator();
+        while (it.next()) |entry| {
+            try all_exports.append(self.gpa, a.exprs.strs.get(entry.key_ptr.*));
+        }
+        try self.attachSuggestionListNotes(last_diag_idx, field_name, all_exports.items, .did_you_mean_field, .available_fields);
+        return ts.tTypeError();
+    }
+
+    try self.context.diags.addError(field_loc, .unknown_module_field, .{field_name});
+    return ts.tTypeError();
 }
 
 fn coerceStructLitFields(self: *Checker, ast_unit: *ast.Ast, lit_fields: []const ast.StructFieldValueId, expect_ty: types.TypeId) !bool {
@@ -4087,14 +4095,12 @@ fn structFieldHasDefault(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.As
                 const pkg_name = self.context.interner.get(ast_ty.pkg_name);
                 const filepath = self.context.interner.get(ast_ty.filepath);
 
-                if (self.context.compilation_unit.packages.getPtr(pkg_name)) |pkg| {
-                    if (pkg.sources.getPtr(filepath)) |unit| {
-                        if (unit.ast) |mod_ast| {
-                            if (mod_ast.type_info.getExport(fr.field)) |ex| {
-                                const decl = mod_ast.exprs.Decl.get(ex.decl_id);
-                                if (mod_ast.kind(decl.value) == .StructType) {
-                                    return structFieldHasDefaultInStructExpr(mod_ast, decl.value, field_name);
-                                }
+                if (self.context.compilation_unit.findFileUnit(pkg_name, filepath)) |unit| {
+                    if (unit.ast) |mod_ast| {
+                        if (mod_ast.type_info.getExport(fr.field)) |ex| {
+                            const decl = mod_ast.exprs.Decl.get(ex.decl_id);
+                            if (mod_ast.kind(decl.value) == .StructType) {
+                                return structFieldHasDefaultInStructExpr(mod_ast, decl.value, field_name);
                             }
                         }
                     }
@@ -4240,6 +4246,10 @@ fn checkTagConstructorCall(
 fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const ts = self.context.type_store;
     const call_expr = getExpr(ast_unit, .Call, id);
+    if (ast.isTritonLaunchCall(ast_unit, call_expr)) {
+        try self.checkTritonLaunch(ctx, ast_unit, id, call_expr);
+        return ts.tVoid();
+    }
 
     // Phase 1: Special Forms (Constructors, Builtins)
     if (try self.checkSpecialForms(ctx, ast_unit, id, call_expr)) |ty| return ty;
@@ -5219,6 +5229,261 @@ fn calleeNameForCall(ast_unit: *ast.Ast, callee_expr: ast.ExprId) ?ast.StrId {
         .FieldAccess => ast_unit.exprs.get(.FieldAccess, callee_expr).field,
         else => null,
     };
+}
+
+fn qualifySymbolName(self: *Checker, a: *ast.Ast, base: ast.StrId) !ast.StrId {
+    if (a.unit.package_name.isNone()) return base;
+    const pkg_name = self.context.type_store.strs.get(a.unit.package_name.unwrap());
+    if (std.mem.eql(u8, pkg_name, "main")) return base;
+    const base_name = self.context.type_store.strs.get(base);
+    const symbol = try std.fmt.allocPrint(self.gpa, "{s}__{s}", .{ pkg_name, base_name });
+    defer self.gpa.free(symbol);
+    return self.context.type_store.strs.intern(symbol);
+}
+
+fn recordTritonLaunchMeta(self: *Checker, loc: Loc, meta: compile.TritonLaunchMeta) !void {
+    const cur = self.context.triton_launch_meta;
+    if (meta.num_warps) |v| {
+        if (cur.num_warps) |c| if (c != v) {
+            _ = try self.context.diags.addError(loc, .triton_launch_meta_mismatch, .{});
+            return;
+        };
+        self.context.triton_launch_meta.num_warps = v;
+    }
+    if (meta.threads_per_warp) |v| {
+        if (cur.threads_per_warp) |c| if (c != v) {
+            _ = try self.context.diags.addError(loc, .triton_launch_meta_mismatch, .{});
+            return;
+        };
+        self.context.triton_launch_meta.threads_per_warp = v;
+    }
+    if (meta.num_ctas) |v| {
+        if (cur.num_ctas) |c| if (c != v) {
+            _ = try self.context.diags.addError(loc, .triton_launch_meta_mismatch, .{});
+            return;
+        };
+        self.context.triton_launch_meta.num_ctas = v;
+    }
+}
+
+fn checkTritonLaunch(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId, call_expr: ast.Rows.Call) !void {
+    const ts = self.context.type_store;
+    const loc = exprLoc(ast_unit, call_expr);
+    const args = ast_unit.exprs.expr_pool.slice(call_expr.args);
+
+    var positional = std.ArrayList(ast.ExprId){};
+    defer positional.deinit(self.gpa);
+    var named = std.AutoArrayHashMapUnmanaged(ast.StrId, ast.ExprId){};
+    defer named.deinit(self.gpa);
+
+    for (args) |arg| {
+        if (ast_unit.kind(arg) == .NamedArg) {
+            const na = ast_unit.exprs.get(.NamedArg, arg);
+            if (named.contains(na.name)) {
+                _ = try self.context.diags.addError(exprLoc(ast_unit, na), .duplicate_named_argument, .{});
+                return;
+            }
+            try named.put(self.gpa, na.name, na.value);
+        } else {
+            try positional.append(self.gpa, arg);
+        }
+    }
+
+    if (positional.items.len < 2) {
+        _ = try self.context.diags.addError(loc, .wrong_arity_in_call, .{ 2, positional.items.len });
+        return;
+    }
+
+    const kernel_expr = positional.items[0];
+    const grid_key = ast_unit.exprs.strs.intern("grid");
+    const grid_expr = if (named.get(grid_key)) |g| g else positional.items[1];
+    const kernel_args_start: usize = if (named.get(grid_key) != null) 1 else 2;
+    const kernel_args = positional.items[kernel_args_start..];
+
+    // Resolve kernel declaration
+    const kname = calleeNameForCall(ast_unit, kernel_expr) orelse {
+        _ = try self.context.diags.addError(exprLocFromId(ast_unit, kernel_expr), .invalid_triton_launch_kernel, .{});
+        return;
+    };
+    const decl_ctx = call_resolution.findFunctionDeclForCall(self.context, ast_unit, kernel_expr, kname) orelse {
+        _ = try self.context.diags.addError(exprLocFromId(ast_unit, kernel_expr), .invalid_triton_launch_kernel, .{});
+        return;
+    };
+    const resolved_ctx = resolveFunctionDeclAlias(self, decl_ctx) orelse decl_ctx;
+    const k_ast = resolved_ctx.ast;
+    const k_decl = k_ast.exprs.Decl.get(resolved_ctx.decl_id);
+    if (k_ast.kind(k_decl.value) != .FunctionLit) {
+        _ = try self.context.diags.addError(exprLocFromId(ast_unit, kernel_expr), .invalid_triton_launch_kernel, .{});
+        return;
+    }
+    const fn_lit = k_ast.exprs.get(.FunctionLit, k_decl.value);
+
+    // Ensure kernel has triton_kernel attribute
+    var is_kernel = false;
+    if (!fn_lit.attrs.isNone()) {
+        const attrs = k_ast.exprs.attr_pool.slice(fn_lit.attrs.asRange());
+        for (attrs) |aid| {
+            const name = k_ast.exprs.Attribute.get(aid).name;
+            const n = k_ast.exprs.strs.get(name);
+            if (std.mem.eql(u8, n, "triton_kernel") or std.mem.eql(u8, n, "kernel")) {
+                is_kernel = true;
+                break;
+            }
+        }
+    }
+    if (!is_kernel) {
+        _ = try self.context.diags.addError(exprLocFromId(ast_unit, kernel_expr), .invalid_triton_launch_kernel, .{});
+        return;
+    }
+
+    // Type check grid expression (expect tuple of 3 ints)
+    const grid_ty = try self.checkExpr(ctx, ast_unit, grid_expr);
+    if (self.typeKind(grid_ty) != .Tuple or ts.get(.Tuple, grid_ty).elems.len != 3) {
+        _ = try self.context.diags.addError(exprLocFromId(ast_unit, grid_expr), .invalid_triton_launch_grid, .{});
+        return;
+    }
+
+    // Kernel function type
+    const fn_ty = k_ast.type_info.decl_types.items[resolved_ctx.decl_id.toRaw()] orelse {
+        _ = try self.context.diags.addError(exprLocFromId(ast_unit, kernel_expr), .invalid_triton_launch_kernel, .{});
+        return;
+    };
+    const fnrow = ts.get(.Function, fn_ty);
+    const param_types = ts.type_pool.slice(fnrow.params);
+
+    // Build comptime bindings from named args or defaults
+    const params = k_ast.exprs.param_pool.slice(fn_lit.params);
+    var comptime_hashes = try std.ArrayList(u64).initCapacity(self.gpa, params.len);
+    defer comptime_hashes.deinit(self.gpa);
+    var comptime_bindings = std.ArrayList(ComptimeParamBinding){};
+    defer comptime_bindings.deinit(self.gpa);
+
+    for (params, 0..) |pid, param_idx| {
+        const p = k_ast.exprs.Param.get(pid);
+        if (!p.is_comptime) {
+            comptime_hashes.appendAssumeCapacity(0);
+            continue;
+        }
+
+        const pname = if (!p.pat.isNone()) bindingNameOfPattern(k_ast, p.pat.unwrap()) else null;
+        if (pname == null) {
+            _ = try self.context.diags.addError(exprLoc(k_ast, p), .invalid_triton_launch_kernel, .{});
+            return;
+        }
+
+        const target_ctx = if (k_ast.file_id < self.checker_ctx.items.len) self.checker_ctx.items[k_ast.file_id] else null;
+        if (target_ctx == null) return error.InvalidState;
+
+        var val_expr_opt: ?ast.ExprId = null;
+        var val_expr_ast: *ast.Ast = k_ast;
+        var val_expr_ctx: *CheckerContext = target_ctx.?;
+        if (named.get(pname.?)) |vexpr| {
+            val_expr_opt = vexpr;
+            val_expr_ast = ast_unit;
+            val_expr_ctx = ctx;
+        } else if (!p.value.isNone()) {
+            val_expr_opt = p.value.unwrap();
+        }
+
+        if (val_expr_opt == null) {
+            _ = try self.context.diags.addError(exprLocFromId(ast_unit, kernel_expr), .missing_triton_comptime_arg, .{k_ast.exprs.strs.get(pname.?)});
+            return;
+        }
+
+        const cval = self.evalComptimeExpr(val_expr_ctx, val_expr_ast, val_expr_opt.?, &[_]Pipeline.ComptimeBinding{}) catch {
+            _ = try self.context.diags.addError(exprLocFromId(val_expr_ast, val_expr_opt.?), .checker_comptime_not_executed, .{});
+            return;
+        };
+
+        const pty = if (param_idx < param_types.len) param_types[param_idx] else ts.tAny();
+        try comptime_bindings.append(self.gpa, .{ .name = pname.?, .ty = pty, .value = cval });
+        // Hash using the val_store that produced the comptime value.
+        comptime_hashes.appendAssumeCapacity(val_expr_ast.type_info.val_store.hashValue(cval));
+    }
+    // Pad or truncate hashes to match params
+    if (comptime_hashes.items.len < param_types.len) {
+        try comptime_hashes.appendNTimes(self.gpa, 0, param_types.len - comptime_hashes.items.len);
+    } else comptime_hashes.items.len = param_types.len;
+
+    // Validate runtime args against non-comptime params
+    var expected_rt = std.ArrayList(types.TypeId){};
+    defer expected_rt.deinit(self.gpa);
+    for (params, 0..) |pid, param_idx| {
+        const p = k_ast.exprs.Param.get(pid);
+        if (!p.is_comptime and param_idx < param_types.len) try expected_rt.append(self.gpa, param_types[param_idx]);
+    }
+    if (kernel_args.len != expected_rt.items.len) {
+        _ = try self.context.diags.addError(exprLoc(ast_unit, call_expr), .argument_count_mismatch, .{ expected_rt.items.len, kernel_args.len });
+        return;
+    }
+    for (kernel_args, 0..) |arg_expr, i| {
+        const at = try self.checkExpr(ctx, ast_unit, arg_expr);
+        const pt = expected_rt.items[i];
+        if (self.assignable(at, pt) != .success) {
+            const pt_kind = self.typeKind(pt);
+            const at_kind = self.typeKind(at);
+            if (pt_kind == .MlirType and (at_kind == .U64 or at_kind == .Usize or at_kind == .Ptr)) continue;
+            _ = try self.context.diags.addError(exprLocFromId(ast_unit, arg_expr), .argument_type_mismatch, .{ pt, at });
+            return;
+        }
+    }
+
+    const target_ctx = if (k_ast.file_id < self.checker_ctx.items.len) self.checker_ctx.items[k_ast.file_id] else null;
+    if (target_ctx == null) return error.InvalidState;
+
+    const spec_decl_id = try self.getOrInstantiateSpecialization(target_ctx.?, k_ast, resolved_ctx.decl_id, param_types, comptime_bindings.items, comptime_hashes.items);
+    const base_name = if (!k_decl.pattern.isNone()) bindingNameOfPattern(k_ast, k_decl.pattern.unwrap()) else null;
+    const base = base_name orelse {
+        _ = try self.context.diags.addError(exprLocFromId(ast_unit, kernel_expr), .invalid_triton_launch_kernel, .{});
+        return;
+    };
+    const spec_name_str = try std.fmt.allocPrint(self.gpa, "{s}_spec_{d}", .{ self.context.type_store.strs.get(base), spec_decl_id.toRaw() });
+    defer self.gpa.free(spec_name_str);
+    const spec_sid = try self.qualifySymbolName(k_ast, self.context.type_store.strs.intern(spec_name_str));
+
+    // Resolve meta overrides from named args
+    var meta = compile.TritonLaunchMeta{ .num_warps = null, .threads_per_warp = null, .num_ctas = null };
+    if (named.get(ast_unit.exprs.strs.intern("num_warps"))) |vexpr| {
+        const cval = self.evalComptimeExpr(ctx, ast_unit, vexpr, &[_]Pipeline.ComptimeBinding{}) catch {
+            _ = try self.context.diags.addError(exprLocFromId(ast_unit, vexpr), .checker_comptime_not_executed, .{});
+            return;
+        };
+        meta.num_warps = @intCast(ast_unit.type_info.val_store.get(.Int, cval).value);
+    }
+    if (named.get(ast_unit.exprs.strs.intern("threads_per_warp"))) |vexpr| {
+        const cval = self.evalComptimeExpr(ctx, ast_unit, vexpr, &[_]Pipeline.ComptimeBinding{}) catch {
+            _ = try self.context.diags.addError(exprLocFromId(ast_unit, vexpr), .checker_comptime_not_executed, .{});
+            return;
+        };
+        meta.threads_per_warp = @intCast(ast_unit.type_info.val_store.get(.Int, cval).value);
+    }
+    if (named.get(ast_unit.exprs.strs.intern("num_ctas"))) |vexpr| {
+        const cval = self.evalComptimeExpr(ctx, ast_unit, vexpr, &[_]Pipeline.ComptimeBinding{}) catch {
+            _ = try self.context.diags.addError(exprLocFromId(ast_unit, vexpr), .checker_comptime_not_executed, .{});
+            return;
+        };
+        meta.num_ctas = @intCast(ast_unit.type_info.val_store.get(.Int, cval).value);
+    }
+
+    // Typecheck optional launch args so lowering has stamped types
+    if (named.get(ast_unit.exprs.strs.intern("block"))) |bexpr| {
+        _ = try self.checkExpr(ctx, ast_unit, bexpr);
+    }
+    if (named.get(ast_unit.exprs.strs.intern("shared_mem"))) |smexpr| {
+        _ = try self.checkExpr(ctx, ast_unit, smexpr);
+    }
+    if (named.get(ast_unit.exprs.strs.intern("stream"))) |stexpr| {
+        _ = try self.checkExpr(ctx, ast_unit, stexpr);
+    }
+
+    try self.recordTritonLaunchMeta(loc, meta);
+    try ast_unit.type_info.setTritonLaunchInfo(id, .{
+        .spec_name = spec_sid,
+        .num_warps = meta.num_warps,
+        .threads_per_warp = meta.threads_per_warp,
+        .num_ctas = meta.num_ctas,
+    });
+    try self.context.triton_launches.append(self.gpa, .{ .spec_name = spec_sid, .num_warps = meta.num_warps, .threads_per_warp = meta.threads_per_warp, .num_ctas = meta.num_ctas });
 }
 /// Map a triton pointer MLIR token like "!tt.ptr<i32>" to its element SR type.
 fn tritonPointeeFromMlir(self: *Checker, tok: []const u8) ?types.TypeId {

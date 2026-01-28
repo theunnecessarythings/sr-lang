@@ -1,0 +1,43 @@
+package main
+
+// Chapter 8: Pointers
+//
+// Direct memory access.
+
+io :: import "std/io"
+
+main :: proc() {
+    io.println("--- Pointers ---", 0)
+
+    val: i32 = 42
+    
+    // Address-of operator `&`
+    // `ptr` is of type `*i32`
+    ptr := &val
+    
+    // Dereference operator `.*`
+    // (Note: syntax might be `*ptr` or `ptr.*` depending on the latest parser)
+    // The parser supports `.*` as a postfix dereference.
+    read_val := ptr.*
+    io.println("Read via pointer: %d", read_val)
+
+    // Mutating via pointer
+    ptr.* = 100
+    io.println("New val: %d", val)
+
+    // Optional Pointers
+    // `?*T` is a pointer that can be null.
+    // This is safe because you must unwrap it to use it.
+    opt_ptr: ?*i32 = null
+    
+    if opt_ptr == null {
+        io.println("Pointer is null", 0)
+    }
+
+    opt_ptr = &val
+    
+    // Unwrap `?` operator. Crashes if null (or use `orelse`).
+    // Or use `if let` / `while is` patterns.
+    real_ptr := opt_ptr?
+    io.println("Unwrapped: %d", real_ptr.*)
+}

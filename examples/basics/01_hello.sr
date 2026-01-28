@@ -1,0 +1,17 @@
+package main
+
+// Chapter 1: Hello, World!
+//
+// This is the entry point of your journey.
+// Every executable program must have a `main` procedure.
+
+// Import the standard input/output module.
+io :: import "std/io"
+
+// `main` is a procedure (proc), meaning it can have side effects like printing.
+main :: proc() {
+    // `io.println` prints a formatted string to stdout, followed by a newline.
+    // The format specifiers are similar to C's printf (e.g., %s for string, %d for integer).
+    // Here we just print a simple string.
+    io.println("Hello, World!", 0)
+}

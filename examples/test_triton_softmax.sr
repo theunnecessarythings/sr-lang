@@ -70,22 +70,6 @@ main :: proc() {
         return
     }
 
-    ptx_path := "out/triton_kernels.ptx"
-
-    mod: cuda.CUmodule = null
-    res = cuda.cuModuleLoad(&mod, ptx_path.ptr)
-    if res != cuda.SUCCESS {
-        io.println("Failed to load module: %d", res)
-        return
-    }
-
-    kernel: cuda.CUfunction = null
-    res = cuda.cuModuleGetFunction(&kernel, mod, "softmax_kernel".ptr)
-    if res != cuda.SUCCESS {
-        io.println("Failed to get kernel function", ())
-        return
-    }
-
     n_rows: i32 = 128
     n_cols: i32 = 128
     size := n_rows.(usize) * n_cols.(usize) * 4
@@ -118,38 +102,19 @@ main :: proc() {
     warps := (block_size + 31) / 32
     shared_mem_bytes: i32 = warps * 4
 
-    scratch := triton.alloc_scratch(0, 0)
-
-    base_params: [7]?*void = [
-        (&out_d).^?*void,
-        (&x_d).^?*void,
-        (&input_row_stride).^?*void,
-        (&output_row_stride).^?*void,
-        (&n_rows).^?*void,
-        (&n_cols).^?*void,
-        (&block_size).^?*void,
-    ]
-
-    params := triton.make_params(7.(usize), base_params, &scratch)
-
-    res = cuda.cuLaunchKernel(
-        kernel,
-        grid_size,
-        1,
-        1,
-        block_size,
-        1,
-        1,
-        shared_mem_bytes,
-        null,
-        (&params).^(?**void),
-        null,
+    triton.launch(
+        softmax_kernel,
+        grid = (grid_size, 1, 1),
+        block = (block_size, 1, 1),
+        shared_mem = shared_mem_bytes,
+        BLOCK_SIZE = 128,
+        out_d,
+        x_d,
+        input_row_stride,
+        output_row_stride,
+        n_rows,
+        n_cols,
     )
-
-    if res != cuda.SUCCESS {
-        io.println("Kernel launch failed: %d", res)
-        return
-    }
 
     _ = cuda.cuMemcpyDtoH(out_h.^?*void, out_d, size)
 
@@ -192,5 +157,4 @@ main :: proc() {
 
     _ = cuda.cuMemFree(x_d)
     _ = cuda.cuMemFree(out_d)
-    triton.free_scratch(&scratch)
 }

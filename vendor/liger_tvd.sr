@@ -1,0 +1,72 @@
+package liger_tvd
+
+triton :: import "vendor/triton"
+
+PtrF32 :: triton.Ptr(f32)
+PtrI32 :: triton.Ptr(i32)
+
+/// TVD forward kernel (simplified). Computes grads and optionally per-row loss.
+tvd_forward_kernel :: @[triton_kernel, triton_target = "cuda:75", triton_ptx_version = 80] proc(
+    p_ptr: PtrF32,
+    p_stride: i32,
+    q_ptr: PtrF32,
+    q_stride: i32,
+    loss_ptr: PtrF32,
+    loss_stride: i32,
+    grads_ptr: PtrF32,
+    grads_stride: i32,
+    label_ptr: PtrI32,
+    ignore_index: i32,
+    n_cols: i32,
+    comptime BLOCK_SIZE: i32 = 1024,
+    comptime HAS_LABEL: i32 = 0,
+    comptime REDUCTION: i32 = 1,
+) {
+    pid := triton.program_id(0)
+    row_p := triton.splat(pid * p_stride, BLOCK_SIZE)
+    row_q := triton.splat(pid * q_stride, BLOCK_SIZE)
+    row_loss := triton.splat(pid * loss_stride, BLOCK_SIZE)
+    row_grads := triton.splat(pid * grads_stride, BLOCK_SIZE)
+
+    offs := triton.make_range(0, BLOCK_SIZE)
+    n_cols_b := triton.splat(n_cols, BLOCK_SIZE)
+
+    active_mask := triton.splat(1.(i32), BLOCK_SIZE) > triton.splat(0.(i32), BLOCK_SIZE)
+    if HAS_LABEL != 0 {
+        label_vec := triton.load(label_ptr + offs, offs < 1.(i32), triton.splat(0.(i32), BLOCK_SIZE))
+        label := triton.reduce_sum_i32(label_vec, 0)
+        active_i := triton.where(label != ignore_index, 1.(i32), 0.(i32))
+        active_mask = triton.splat(active_i, BLOCK_SIZE) > triton.splat(0.(i32), BLOCK_SIZE)
+    }
+
+    loss_sum: f32 = 0.0
+    i: i32 = 0
+    while i < n_cols {
+        idx := offs + triton.splat(i, BLOCK_SIZE)
+        mask := idx < n_cols_b
+
+        p := triton.load(p_ptr + (row_p + idx), mask, triton.splat(0.(f32), BLOCK_SIZE))
+        q := triton.load(q_ptr + (row_q + idx), mask, triton.splat(0.(f32), BLOCK_SIZE))
+
+        diff := p - q
+        tv_loss := triton.abs(diff) * triton.splat(0.5.(f32), BLOCK_SIZE)
+        grad := triton.where(p > q, triton.splat(0.5.(f32), BLOCK_SIZE), triton.splat(-0.5.(f32), BLOCK_SIZE))
+
+        tv_loss = triton.where(active_mask, tv_loss, triton.splat(0.(f32), BLOCK_SIZE))
+        grad = triton.where(active_mask, grad, triton.splat(0.(f32), BLOCK_SIZE))
+
+        triton.store(grads_ptr + (row_grads + idx), grad, mask)
+
+        if REDUCTION == 0 {
+            triton.store(loss_ptr + (row_loss + idx), tv_loss, mask)
+        } else {
+            loss_sum = loss_sum + triton.reduce_sum(f32, tv_loss, 0)
+        }
+
+        i = i + BLOCK_SIZE
+    }
+
+    if REDUCTION != 0 {
+        triton.store(loss_ptr + row_loss, triton.splat(loss_sum, BLOCK_SIZE), offs < 1.(i32))
+    }
+}

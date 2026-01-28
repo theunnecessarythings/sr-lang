@@ -1,0 +1,199 @@
+package main
+
+liger_fused_add_rms_norm :: import "vendor/liger_fused_add_rms_norm"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+math :: import "std/math"
+
+PtrF32 :: triton.Ptr(f32)
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    n_rows: i32 = 1
+    n_cols: i32 = 1024
+    stride: i32 = n_cols
+    size := n_rows.(usize) * n_cols.(usize) * 4
+
+    x_h_ptr := alloc.alloc(size) orelse return
+    x_h := x_h_ptr.^*f32
+    r_h_ptr := alloc.alloc(size) orelse return
+    r_h := r_h_ptr.^*f32
+    s_h_ptr := alloc.alloc(size) orelse return
+    s_h := s_h_ptr.^*f32
+    w_h_ptr := alloc.alloc(n_cols.(usize) * 4) orelse return
+    w_h := w_h_ptr.^*f32
+    dy_h_ptr := alloc.alloc(size) orelse return
+    dy_h := dy_h_ptr.^*f32
+    dx_h_ptr := alloc.alloc(size) orelse return
+    dx_h := dx_h_ptr.^*f32
+    dr_h_ptr := alloc.alloc(size) orelse return
+    dr_h := dr_h_ptr.^*f32
+    dw_h_ptr := alloc.alloc(size) orelse return
+    dw_h := dw_h_ptr.^*f32
+    rstd_h_ptr := alloc.alloc(n_rows.(usize) * 4) orelse return
+    rstd_h := rstd_h_ptr.^*f32
+
+    i: i32 = 0
+    total: i32 = n_rows * n_cols
+    while i < total {
+        x_h[i] = ((i % 97) - 48).(f32) * 0.01
+        r_h[i] = ((i % 89) - 44).(f32) * 0.02
+        dy_h[i] = ((i % 31) - 15).(f32) * 0.02
+        s_h[i] = x_h[i] + r_h[i]
+        i = i + 1
+    }
+
+    i = 0
+    while i < n_cols {
+        w_h[i] = ((i % 17) - 8).(f32) * 0.03
+        i = i + 1
+    }
+
+    eps: f32 = 1.e-5
+    offset: f32 = 0.0
+
+    sum_sq: f32 = 0.0
+    i = 0
+    while i < n_cols {
+        v := s_h[i]
+        sum_sq = sum_sq + v * v
+        i = i + 1
+    }
+    mean_sq := sum_sq / n_cols.(f32)
+    rstd := 1.0.(f32) / math.sqrtf(mean_sq + eps)
+    rstd_h[0] = rstd
+
+    dx_ref_ptr := alloc.alloc(size) orelse return
+    dx_ref := dx_ref_ptr.^*f32
+    dw_ref_ptr := alloc.alloc(size) orelse return
+    dw_ref := dw_ref_ptr.^*f32
+
+    sum_mx: f32 = 0.0
+    i = 0
+    while i < n_cols {
+        m := dy_h[i] * (offset + w_h[i])
+        sum_mx = sum_mx + m * s_h[i]
+        i = i + 1
+    }
+    i = 0
+    while i < n_cols {
+        m := dy_h[i] * (offset + w_h[i])
+        dx_ref[i] = rstd * (m - (1.0.(f32) / n_cols.(f32)) * rstd * rstd * sum_mx * s_h[i])
+        dw_ref[i] = dy_h[i] * (s_h[i] * rstd)
+        i = i + 1
+    }
+
+    x_d: cuda.CUdeviceptr = 0
+    r_d: cuda.CUdeviceptr = 0
+    s_d: cuda.CUdeviceptr = 0
+    w_d: cuda.CUdeviceptr = 0
+    dy_d: cuda.CUdeviceptr = 0
+    dx_d: cuda.CUdeviceptr = 0
+    dr_d: cuda.CUdeviceptr = 0
+    dw_d: cuda.CUdeviceptr = 0
+    rstd_d: cuda.CUdeviceptr = 0
+
+    _ = cuda.cuMemAlloc(&x_d, size)
+    _ = cuda.cuMemAlloc(&r_d, size)
+    _ = cuda.cuMemAlloc(&s_d, size)
+    _ = cuda.cuMemAlloc(&w_d, n_cols.(usize) * 4)
+    _ = cuda.cuMemAlloc(&dy_d, size)
+    _ = cuda.cuMemAlloc(&dx_d, size)
+    _ = cuda.cuMemAlloc(&dr_d, size)
+    _ = cuda.cuMemAlloc(&dw_d, size)
+    _ = cuda.cuMemAlloc(&rstd_d, n_rows.(usize) * 4)
+
+    _ = cuda.cuMemcpyHtoD(x_d, x_h.^?*void, size)
+    _ = cuda.cuMemcpyHtoD(r_d, r_h.^?*void, size)
+    _ = cuda.cuMemcpyHtoD(s_d, s_h.^?*void, size)
+    _ = cuda.cuMemcpyHtoD(w_d, w_h.^?*void, n_cols.(usize) * 4)
+    _ = cuda.cuMemcpyHtoD(dy_d, dy_h.^?*void, size)
+    _ = cuda.cuMemcpyHtoD(rstd_d, rstd_h.^?*void, n_rows.(usize) * 4)
+
+    triton.launch(
+        liger_fused_add_rms_norm.fused_add_rms_norm_backward_kernel,
+        grid = (n_rows, 1, 1),
+        block = (128, 1, 1),
+        BLOCK_SIZE = 1024,
+        dy_d,
+        stride,
+        dx_d,
+        stride,
+        dr_d,
+        stride,
+        s_d,
+        stride,
+        w_d,
+        0,
+        rstd_d,
+        1,
+        dw_d,
+        stride,
+        n_cols,
+        offset,
+    )
+
+    _ = cuda.cuMemcpyDtoH(dx_h.^?*void, dx_d, size)
+    _ = cuda.cuMemcpyDtoH(dr_h.^?*void, dr_d, size)
+    _ = cuda.cuMemcpyDtoH(dw_h.^?*void, dw_d, size)
+
+    success := true
+    epsilon: f32 = 1.e-3
+    i = 0
+    while i < total {
+        diff := dx_h[i] - dx_ref[i]
+        if diff < 0 { diff = -diff }
+        if diff > epsilon {
+            io.println("dx mismatch at %d: expected %f got %f", i, dx_ref[i], dx_h[i])
+            success = false
+            break
+        }
+        diffr := dr_h[i] - dx_ref[i]
+        if diffr < 0 { diffr = -diffr }
+        if diffr > epsilon {
+            io.println("dr mismatch at %d: expected %f got %f", i, dx_ref[i], dr_h[i])
+            success = false
+            break
+        }
+        diffw := dw_h[i] - dw_ref[i]
+        if diffw < 0 { diffw = -diffw }
+        if diffw > epsilon {
+            io.println("dw mismatch at %d: expected %f got %f", i, dw_ref[i], dw_h[i])
+            success = false
+            break
+        }
+        i = i + 1
+    }
+    if success { io.println("Fused add RMSNorm backward verification passed", ()) }
+
+    _ = cuda.cuMemFree(x_d)
+    _ = cuda.cuMemFree(r_d)
+    _ = cuda.cuMemFree(s_d)
+    _ = cuda.cuMemFree(w_d)
+    _ = cuda.cuMemFree(dy_d)
+    _ = cuda.cuMemFree(dx_d)
+    _ = cuda.cuMemFree(dr_d)
+    _ = cuda.cuMemFree(dw_d)
+    _ = cuda.cuMemFree(rstd_d)
+}
