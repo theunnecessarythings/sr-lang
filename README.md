@@ -40,6 +40,18 @@ The language is designed with a focus on modern language features, explicit cont
   - **Loops:** `while` loops (boolean, pattern-matching, infinite) and `for` loops for iteration over collections or ranges.
   - **Labeled Control:** `break` and `continue` statements, including labeled versions for nested loops and `break` with a return value.
   - **Pattern Matching:** Powerful `match` expressions for exhaustive pattern matching over values.
+
+#### match
+
+`match` is an expression used to branch on the structure or value of data in an exhaustive and explicit way.
+It is commonly used with enums and variants to ensure all cases are handled.
+
+```sr
+result := match value {
+    .ok(x)    => x,
+    .error(e) => handle_error(e),
+};
+```
 - **Error Handling:**
   - **Error Union Types:** `SuccessType!ErrorType` for handleable errors.
   - **Propagation:** The `!` operator for concise error propagation.
