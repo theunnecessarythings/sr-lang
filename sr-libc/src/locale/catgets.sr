@@ -1,0 +1,12 @@
+package libc
+
+// Minimal catgets: return default message.
+
+nl_h :: import "libc/include/nl_types"
+
+catgets :: proc(catd: nl_h.nl_catd, set_id: i32, msg_id: i32, msg: *const u8) *u8 {
+    _ = catd
+    _ = set_id
+    _ = msg_id
+    return msg.^*u8
+}

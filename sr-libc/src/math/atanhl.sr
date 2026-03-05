@@ -1,0 +1,26 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/atanhl.c (f128 path).
+
+basic :: import "libc/src/math/basic"
+libm :: import "libc/src/math/libm_internal"
+
+atanhl :: proc(x: f128) f128 {
+    bits := x.^u128
+    exp := ((bits >> 112) & 0x7fff).(i32)
+    sign := ((bits >> 127) & 1) != 0
+
+    x = basic.fabsl(x)
+
+    if exp < 0x3fff - 1 {
+        if exp < 0x3fff - 56 {
+            if exp == 0 { libm.fp_force_evalf(x.(f32)) }
+        } else {
+            x = 0.5 * log1pl(2.0 * x + 2.0 * x * x / (1.0 - x))
+        }
+    } else {
+        x = 0.5 * log1pl(2.0 * (x / (1.0 - x)))
+    }
+
+    return if sign { -x } else { x }
+}

@@ -1,0 +1,20 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/__stdio_read.c.
+
+unistd :: import "libc/include/unistd"
+impl :: import "libc/src/stdio/stdio_impl"
+alltypes :: import "libc/include/alltypes"
+
+__stdio_read :: proc(f: *alltypes.FILE, buf: *u8, len: usize) usize {
+    r := unistd.read(f.fd, buf.^*void, len)
+    if r <= 0 {
+        if r == 0 {
+            f.flags = f.flags | impl.F_EOF.(u32)
+        } else {
+            f.flags = f.flags | impl.F_ERR.(u32)
+        }
+        return 0
+    }
+    return r.(usize)
+}

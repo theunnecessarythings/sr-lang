@@ -1,0 +1,36 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_getattr_np.c
+
+pthread_impl :: import "libc/src/internal/pthread_impl"
+libc_mod :: import "libc/src/internal/libc"
+attr_int :: import "libc/src/thread/pthread_attr_internal"
+string_h :: import "libc/src/string"
+mremap_mod :: import "libc/src/mman/mremap"
+errno_mod :: import "libc/include/errno"
+
+PAGE_SIZE :: 4096
+
+pthread_getattr_np :: proc(t: alltypes.pthread_t, a: *alltypes.pthread_attr_t) i32 {
+    _ = string_h.memset(a.^*void, 0, sizeof(alltypes.pthread_attr_t))
+    td := t.^*pthread_impl.pthread
+    attr_int.attr_detach(a).* = if td.detach_state >= pthread_impl.DT_DETACHED { 1 } else { 0 }
+    attr_int.attr_guardsize(a).* = td.guard_size
+    if td.stack != null {
+        attr_int.attr_stackaddr(a).* = td.stack.^usize
+        attr_int.attr_stacksize(a).* = td.stack_size
+    } else {
+        p := libc_mod.__libc.auxv.^*u8
+        l: usize = PAGE_SIZE
+        p = p + ((-p.^usize) & (PAGE_SIZE - 1))
+        attr_int.attr_stackaddr(a).* = p.^usize
+        while true {
+            r := mremap_mod.__mremap((p - l - PAGE_SIZE).^*void, PAGE_SIZE, 2 * PAGE_SIZE, 0, null)
+            if r != mremap_mod.MAP_FAILED { break }
+            if errno_mod.errno().* != errno_mod.ENOMEM { break }
+            l += PAGE_SIZE
+        }
+        attr_int.attr_stacksize(a).* = l
+    }
+    return 0
+}

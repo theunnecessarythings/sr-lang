@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/stat/lchmod.c
+
+stat_mod :: import "libc/include/sys/stat"
+fchmodat_mod :: import "libc/src/stat/fchmodat"
+
+lchmod :: proc(path: *const u8, mode: mode_t) i32 {
+    return fchmodat_mod.fchmodat(stat_mod.AT_FDCWD, path, mode, stat_mod.AT_SYMLINK_NOFOLLOW)
+}

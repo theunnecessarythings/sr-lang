@@ -1,0 +1,24 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/setvbuf.c.
+
+impl :: import "libc/src/stdio/stdio_impl"
+
+setvbuf :: proc(f: *alltypes.FILE, buf: ?*u8, mode: i32, size: usize) i32 {
+    f.lbf = EOF
+
+    if mode == _IONBF {
+        f.buf_size = 0
+    } else if mode == _IOLBF or mode == _IOFBF {
+        if buf != null and size >= impl.UNGET {
+            f.buf = (buf? + impl.UNGET)
+            f.buf_size = size - impl.UNGET
+        }
+        if mode == _IOLBF and f.buf_size != 0 { f.lbf = 10 }
+    } else {
+        return -1
+    }
+
+    f.flags = f.flags | impl.F_SVB.(u32)
+    return 0
+}

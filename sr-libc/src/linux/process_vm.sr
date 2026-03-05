@@ -1,0 +1,32 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/process_vm.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+process_vm_writev :: proc(pid: alltypes.pid_t, lvec: *const iovec, liovcnt: u64, rvec: *const iovec, riovcnt: u64, flags: u64) isize {
+    r := sc.syscall6_ret(
+        nums.SYS_process_vm_writev.(i64),
+        pid.(i64),
+        lvec.^usize.(i64),
+        liovcnt.(i64),
+        rvec.^usize.(i64),
+        riovcnt.(i64),
+        flags.(i64),
+    )
+    return r.(isize)
+}
+
+process_vm_readv :: proc(pid: alltypes.pid_t, lvec: *const iovec, liovcnt: u64, rvec: *const iovec, riovcnt: u64, flags: u64) isize {
+    r := sc.syscall6_ret(
+        nums.SYS_process_vm_readv.(i64),
+        pid.(i64),
+        lvec.^usize.(i64),
+        liovcnt.(i64),
+        rvec.^usize.(i64),
+        riovcnt.(i64),
+        flags.(i64),
+    )
+    return r.(isize)
+}

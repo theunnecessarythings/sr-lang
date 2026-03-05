@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/fenv/fegetexceptflag.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <fenv.h>
+
+fegetexceptflag :: proc(fp: *fexcept_t, mask: i32) i32 {
+    fp.flags = fetestexcept(mask)
+    return 0
+}

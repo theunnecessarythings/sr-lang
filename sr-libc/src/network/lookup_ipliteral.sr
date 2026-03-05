@@ -1,0 +1,71 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/lookup_ipliteral.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <netinet/in.h>
+// #include <netdb.h>
+// #include <net/if.h>
+// #include <arpa/inet.h>
+// #include <limits.h>
+// #include <stdlib.h>
+// #include <string.h>
+// #include <ctype.h>
+// #include <lookup.h>
+
+inet_aton_mod :: import "libc/src/network/inet_aton"
+inet_pton_mod :: import "libc/src/network/inet_pton"
+string_h :: import "libc/src/string"
+ctype_mod :: import "libc/src/ctype/ctype"
+strtoull_mod :: import "libc/src/stdlib/strtol"
+if_mod :: import "libc/src/network/if_nametoindex"
+memcpy_mod :: import "libc/src/string/memcpy"
+lookup_h :: import "libc/include/lookup"
+netdb_h :: import "libc/include/netdb"
+
+__lookup_ipliteral :: proc(buf: *lookup_h.address, name: *const u8, family: i32) i32 {
+    a4: in_addr
+    a6: in6_addr
+    if inet_aton_mod.__inet_aton(name, &a4) > 0 {
+        if family == AF_INET6 { return netdb_h.EAI_NODATA }
+        _ = memcpy_mod.memcpy((&buf[0].addr[0]).^*void, (&a4).^*const void, sizeof(in_addr))
+        buf[0].family = AF_INET
+        buf[0].scopeid = 0
+        return 1
+    }
+
+    tmp: [64]u8
+    p := string_h.strchr(name, '%')
+    z: *u8 = null
+    scopeid: u64 = 0
+    if p != null && (p.^usize - name.^usize) < 64 {
+        _ = memcpy_mod.memcpy(&tmp[0], name.^*const void, (p.^usize - name.^usize))
+        tmp[(p.^usize - name.^usize).(usize)] = 0
+        name = &tmp[0]
+    }
+
+    if inet_pton_mod.inet_pton(AF_INET6, name, (&a6).^*void) <= 0 { return 0 }
+    if family == AF_INET { return netdb_h.EAI_NODATA }
+
+    _ = memcpy_mod.memcpy((&buf[0].addr[0]).^*void, (&a6).^*const void, sizeof(in6_addr))
+    buf[0].family = AF_INET6
+    if p != null {
+        p = (&p[1]).^*u8
+        if ctype_mod.isdigit(p[0].(i32)) != 0 {
+            scopeid = strtoull_mod.strtoull(p, &z, 10)
+        } else {
+            z = (p.^usize - 1).(usize).^*u8
+        }
+        if z[0] != 0 {
+            if IN6_IS_ADDR_LINKLOCAL(&a6) == 0 && IN6_IS_ADDR_MC_LINKLOCAL(&a6) == 0 {
+                return netdb_h.EAI_NONAME
+            }
+            scopeid = if_mod.if_nametoindex(p).(u64)
+            if scopeid == 0 { return netdb_h.EAI_NONAME }
+        }
+        if scopeid > 0xffffffff { return netdb_h.EAI_NONAME }
+    }
+    buf[0].scopeid = scopeid.(u32)
+    return 1
+}

@@ -1,0 +1,21 @@
+package libc
+
+glob_t :: struct {
+    gl_pathc: usize,
+    gl_pathv: **u8,
+    gl_offs: usize,
+}
+
+GLOB_ERR :: 1
+GLOB_NOSORT :: 2
+GLOB_DOOFFS :: 4
+GLOB_MARK :: 8
+GLOB_NOCHECK :: 16
+GLOB_PERIOD :: 32
+
+GLOB_NOMATCH :: 3
+GLOB_NOSPACE :: 4
+GLOB_ABORTED :: 5
+
+glob :: proc(pattern: *const u8, flags: i32, errfunc: *void, pglob: *glob_t) i32
+globfree :: proc(pglob: *glob_t) void

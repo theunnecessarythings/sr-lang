@@ -1,0 +1,23 @@
+package libc
+
+// Derived from musl-1.2.5/src/legacy/getpass.c
+
+fputs_mod :: import "libc/src/stdio/fputs"
+fflush_mod :: import "libc/src/stdio/fflush"
+fgets_mod :: import "libc/src/stdio/fgets"
+stdin_mod :: import "libc/src/stdio/stdin"
+stderr_mod :: import "libc/src/stdio/stderr"
+pwf :: import "libc/src/passwd/pwf"
+
+__getpass_buf: [128]u8
+
+getpass :: proc(prompt: *const u8) *u8 {
+    if prompt != null {
+        _ = fputs_mod.fputs(prompt, stderr_mod.stderr)
+        _ = fflush_mod.fflush(stderr_mod.stderr)
+    }
+    s := fgets_mod.fgets(&__getpass_buf[0], 128, stdin_mod.stdin)
+    if s == null { return null }
+    pwf.strip_newline(&__getpass_buf[0])
+    return &__getpass_buf[0]
+}

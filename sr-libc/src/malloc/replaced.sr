@@ -1,0 +1,6 @@
+package libc
+
+// Derived from musl-1.2.5/src/malloc/replaced.c
+
+__malloc_replaced: i32 = 0
+__aligned_alloc_replaced: i32 = 0

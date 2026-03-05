@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/time/nanosleep.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+nanosleep :: proc(req: *const timespec, rem: ?*timespec) i32 {
+    rem_ptr := null
+    if rem != null { rem_ptr = rem? }
+    r := sc.syscall2_ret(nums.SYS_nanosleep.(i64), req.^usize.(i64), rem_ptr.^usize.(i64))
+    return r.(i32)
+}

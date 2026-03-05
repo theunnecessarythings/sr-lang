@@ -1,0 +1,22 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/putgrent.c
+
+grp_h :: import "libc/include/grp"
+fprintf_mod :: import "libc/src/stdio/fprintf"
+fputs_mod :: import "libc/src/stdio/fputs"
+
+putgrent :: proc(gr: *grp_h.group, f: *alltypes.FILE) i32 {
+    if gr == null || f == null { return -1 }
+    if fprintf_mod.fprintf(f, "%s:%s:%u:", gr.gr_name, gr.gr_passwd, gr.gr_gid) < 0 { return -1 }
+
+    if gr.gr_mem != null {
+        i: usize = 0
+        while gr.gr_mem[i] != null {
+            if i != 0 { _ = fputs_mod.fputs(",", f) }
+            _ = fputs_mod.fputs(gr.gr_mem[i], f)
+            i += 1
+        }
+    }
+    return fputs_mod.fputs("\n", f)
+}

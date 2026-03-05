@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/ntohs.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <netinet/in.h>
+// #include <byteswap.h>
+
+ntohs :: proc(n: uint16_t) uint16_t {
+    return ((n & 0x00ff) << 8) | ((n & 0xff00) >> 8)
+}

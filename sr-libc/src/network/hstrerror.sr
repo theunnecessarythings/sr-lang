@@ -1,0 +1,23 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/hstrerror.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <netdb.h>
+// #include <locale_impl.h>
+
+__lctrans_mod :: import "libc/src/locale/__lctrans"
+
+__hstr_msgs :: "Host not found\x00Try again\x00Non-recoverable error\x00Address not available\x00\x00Unknown error"
+
+hstrerror :: proc(ecode: i32) *const u8 {
+    s := __hstr_msgs.^*u8
+    e := ecode - 1
+    while e != 0 && s[0] != 0 {
+        e -= 1
+        while s[0] != 0 { s = (&s[1]).^*u8 }
+        s = (&s[1]).^*u8
+    }
+    if s[0] == 0 { s = (&s[1]).^*u8 }
+    return __lctrans_mod.__lctrans_cur(s)
+}

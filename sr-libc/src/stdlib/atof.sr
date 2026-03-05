@@ -1,0 +1,7 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdlib/atof.c.
+
+atof :: proc(s: *const u8) f64 {
+    return strtod(s, null)
+}

@@ -1,0 +1,21 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_mutex_lock.c
+
+mutex_int :: import "libc/src/thread/pthread_mutex_internal"
+atomic :: import "libc/src/internal/atomic"
+errno_mod :: import "libc/include/errno"
+timedlock_mod :: import "libc/src/thread/pthread_mutex_timedlock"
+alltypes :: import "libc/include/alltypes"
+
+__pthread_mutex_lock :: proc(m: *alltypes.pthread_mutex_t) i32 {
+    if (mutex_int.m_type(m).* & 15) == mutex_int.PTHREAD_MUTEX_NORMAL &&
+       atomic.a_cas(mutex_int.m_lock(m), 0, errno_mod.EBUSY) == 0 {
+        return 0
+    }
+    return timedlock_mod.__pthread_mutex_timedlock(m, null)
+}
+
+pthread_mutex_lock :: proc(m: *alltypes.pthread_mutex_t) i32 {
+    return __pthread_mutex_lock(m)
+}

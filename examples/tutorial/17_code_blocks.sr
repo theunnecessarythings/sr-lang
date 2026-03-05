@@ -1,0 +1,60 @@
+package main
+
+io :: import "std/io"
+
+// Note: `code` and `insert` are experimental.
+build_math :: proc() Code {
+    return code {
+        add :: fn(a: i32, b: i32) i32 {
+            return a + b
+        }
+        mul :: fn(a: i32, b: i32) i32 {
+            return a * b
+        }
+    }
+}
+
+build_local :: proc() Code {
+    return code {
+        local :: 41
+    }
+}
+
+build_shadow :: proc() Code {
+    return code {
+        local :: 99
+    }
+}
+
+build_more :: proc() Code {
+    return code {
+        extra :: 5
+    }
+}
+
+comptime {
+    insert build_math()
+}
+
+main :: proc() {
+    comptime { insert build_local() }
+    io.println("%d", add(3, 4))
+    io.println("%d", mul(3, 4))
+    io.println("%d", local)
+
+    {
+        comptime { insert build_shadow() }
+        io.println("%d", local)
+    }
+
+    io.println("%d", local)
+
+    comptime {
+        insert build_more()
+        comptime {
+            insert build_shadow()
+        }
+    }
+    io.println("%d", extra)
+    io.println("%d", local)
+}

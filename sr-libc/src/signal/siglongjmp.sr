@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/siglongjmp.c
+
+longjmp :: extern proc(buf: sigjmp_buf, ret: i32) void
+
+siglongjmp :: proc(buf: sigjmp_buf, ret: i32) void {
+    if ret == 0 { ret = 1 }
+    longjmp(buf, ret)
+}

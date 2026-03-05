@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/sched/sched_get_priority_max.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sched.h>
+// #include <syscall.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+sched_get_priority_max :: proc(policy: i32) i32 {
+    return sc.syscall1_ret(nums.SYS_sched_get_priority_max.(i64), policy.(i64)).(i32)
+}
+
+sched_get_priority_min :: proc(policy: i32) i32 {
+    return sc.syscall1_ret(nums.SYS_sched_get_priority_min.(i64), policy.(i64)).(i32)
+}

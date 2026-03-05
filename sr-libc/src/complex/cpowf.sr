@@ -1,0 +1,7 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/cpowf.c
+
+cpowf :: proc(z: complex(f32), c: complex(f32)) complex(f32) {
+    return cexpf(c * clogf(z))
+}

@@ -1,0 +1,64 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/__tan.c.
+
+libm :: import "libc/src/math/libm_internal"
+
+T: [13]f64 = [
+    3.33333333333334091986e-01,
+    1.33333333333201242699e-01,
+    5.39682539762260521377e-02,
+    2.18694882948595424599e-02,
+    8.86323982359930005737e-03,
+    3.59207910759131235356e-03,
+    1.45620945432529025516e-03,
+    5.88041240820264096874e-04,
+    2.46463134818469906812e-04,
+    7.81794442939557092300e-05,
+    7.14072491382608190305e-05,
+    -1.85586374855275456654e-05,
+    2.59073051863633712884e-05,
+]
+pio4 :: 7.85398163397448278999e-01
+pio4lo :: 3.06161699786838301793e-17
+
+__tan :: proc(x: f64, y: f64, odd: i32) f64 {
+    z: f64
+    r: f64
+    v: f64
+    w: f64
+    s: f64
+    a: f64
+    w0: f64
+    a0: f64
+    hx: u32
+    big: bool
+    sign: i32
+
+    hx = libm.get_high_word(x)
+    big = (hx & 0x7fffffff) >= 0x3FE59428
+    if big {
+        sign = (hx >> 31).(i32)
+        if sign != 0 { x = -x; y = -y }
+        x = (pio4 - x) + (pio4lo - y)
+        y = 0.0
+    }
+    z = x * x
+    w = z * z
+    r = T[1] + w * (T[3] + w * (T[5] + w * (T[7] + w * (T[9] + w * T[11]))))
+    v = z * (T[2] + w * (T[4] + w * (T[6] + w * (T[8] + w * (T[10] + w * T[12])))))
+    s = z * x
+    r = y + z * (s * (r + v) + y) + s * T[0]
+    w = x + r
+    if big {
+        s = 1.0 - 2.0 * odd.(f64)
+        v = s - 2.0 * (x + (r - w * w / (w + s)))
+        return if sign != 0 { -v } else { v }
+    }
+    if odd == 0 { return w }
+    w0 = libm.set_low_word(w, 0)
+    v = r - (w0 - x)
+    a0 = a = -1.0 / w
+    a0 = libm.set_low_word(a0, 0)
+    return a0 + a * (1.0 + a0 * w0 + a0 * v)
+}

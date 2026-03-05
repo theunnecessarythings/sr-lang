@@ -1,0 +1,8 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/stime.c
+
+stime :: proc(t: *const time_t) i32 {
+    tv := timeval{ tv_sec: t.*, tv_usec: 0 }
+    return settimeofday(&tv, null)
+}

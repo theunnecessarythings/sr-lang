@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/fenv/feupdateenv.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <fenv.h>
+
+feupdateenv :: proc(envp: *const fenv_t) i32 {
+    ex := fetestexcept(FE_ALL_EXCEPT)
+    _ = fesetenv(envp)
+    _ = feraiseexcept(ex)
+    return 0
+}

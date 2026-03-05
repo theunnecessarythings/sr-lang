@@ -1,0 +1,26 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/memmove.c (x86_64 portable fallback).
+
+memmove :: proc(dest: *void, src: *const void, n: usize) *void {
+    d := dest.^*u8
+    s := src.^*u8
+    if d.^usize == s.^usize { return dest }
+
+    d_u := d.^usize
+    s_u := s.^usize
+    if d_u < s_u or d_u >= s_u + n {
+        i: usize = 0
+        while i < n {
+            d[i] = s[i]
+            i += 1
+        }
+    } else {
+        i := n
+        while i > 0 {
+            i -= 1
+            d[i] = s[i]
+        }
+    }
+    return dest
+}

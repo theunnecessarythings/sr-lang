@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/cprojl.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+cprojl :: proc(z: complex(f128)) complex(f128) {
+    if isinfl(z.real) or isinfl(z.imag) {
+        return impl.cmplxl(1.0.(f128) / 0.0.(f128), copysignl(0.0.(f128), z.imag))
+    }
+    return z
+}

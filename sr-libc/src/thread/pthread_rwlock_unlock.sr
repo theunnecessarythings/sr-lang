@@ -1,0 +1,32 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_rwlock_unlock.c
+
+atomic :: import "libc/src/internal/atomic"
+lock_mod :: import "libc/src/internal/lock"
+rw_int :: import "libc/src/thread/pthread_rwlock_internal"
+
+__pthread_rwlock_unlock :: proc(rw: ?*alltypes.pthread_rwlock_t) i32 {
+    val: i32
+    cnt: i32
+    waiters: i32
+    newv: i32
+    priv := (rw_int.rw_shared(rw)).* ^ 128
+
+    while true {
+        val = (rw_int.rw_lock(rw)).*
+        cnt = val & 0x7fffffff
+        waiters = (rw_int.rw_waiters(rw)).*
+        newv = if (cnt == 0x7fffffff) or (cnt == 1) { 0 } else { val - 1 }
+        if atomic.a_cas(rw_int.rw_lock(rw), val, newv) == val { break }
+    }
+
+    if (newv == 0) and ((waiters != 0) or (val < 0)) {
+        lock_mod.__wake((rw_int.rw_lock(rw)).^*void, cnt, priv)
+    }
+    return 0
+}
+
+pthread_rwlock_unlock :: proc(rw: ?*alltypes.pthread_rwlock_t) i32 {
+    return __pthread_rwlock_unlock(rw)
+}

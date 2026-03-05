@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/termios/tcsendbreak.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <termios.h>
+// #include <sys/ioctl.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+ioctl_consts :: import "libc/include/sys/ioctl"
+
+tcsendbreak :: proc(fd: i32, dur: i32) i32 {
+    _ = dur
+    r := sc.syscall3_ret(nums.SYS_ioctl.(i64), fd.(i64), ioctl_consts.TCSBRK.(i64), 0)
+    return r.(i32)
+}

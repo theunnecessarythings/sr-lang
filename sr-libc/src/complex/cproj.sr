@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/cproj.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+cproj :: proc(z: complex(f64)) complex(f64) {
+    if isinf(z.real) != 0 or isinf(z.imag) != 0 {
+        return impl.cmplx(1.0 / 0.0, copysign(0.0, z.imag))
+    }
+    return z
+}

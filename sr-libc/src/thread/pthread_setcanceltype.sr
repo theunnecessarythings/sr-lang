@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_setcanceltype.c
+
+pthread_impl :: import "libc/src/internal/pthread_impl"
+errno_mod :: import "libc/include/errno"
+
+pthread_setcanceltype :: proc(new: i32, old: *i32) i32 {
+    self := pthread_impl.__pthread_self()
+    if new > 1 { return errno_mod.EINVAL }
+    if old != null { old.* = self.cancelasync.(i32) }
+    self.cancelasync = new.(u8)
+    if new != 0 { pthread_testcancel() }
+    return 0
+}

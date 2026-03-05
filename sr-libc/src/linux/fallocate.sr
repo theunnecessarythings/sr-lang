@@ -1,0 +1,21 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/fallocate.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+fallocate :: proc(fd: i32, mode: i32, base: alltypes.off_t, len: alltypes.off_t) i32 {
+    b := base.(i64)
+    l := len.(i64)
+    r := sc.syscall6_ret(
+        nums.SYS_fallocate.(i64),
+        fd.(i64),
+        mode.(i64),
+        b,
+        (b >> 32),
+        l,
+        (l >> 32),
+    )
+    return r.(i32)
+}

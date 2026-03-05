@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/module.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+init_module :: proc(a: *void, b: u64, c: *const u8) i32 {
+    r := sc.syscall3_ret(nums.SYS_init_module.(i64), a.^usize.(i64), b.(i64), c.^usize.(i64))
+    return r.(i32)
+}
+
+delete_module :: proc(a: *const u8, b: u32) i32 {
+    r := sc.syscall2_ret(nums.SYS_delete_module.(i64), a.^usize.(i64), b.(i64))
+    return r.(i32)
+}

@@ -1,4 +1,6 @@
-package mlir_constructs
+package main
+
+io :: import "std/io"
 
 // MLIR Construct Examples
 
@@ -20,28 +22,37 @@ my_module := mlir {
 
 // 2. Type
 my_ptr_type := mlir type {
-    !llvm.ptr<i32>
+    i32
 }
 
 // 3. Attribute
 my_attr := mlir attribute {
-     #"my_dialect.my_attribute"<{
-         some_property = 42
-     }>
+     42 : i32
 }
 
 // 4. Operation
 // A single MLIR operation captured as text.
 // Backend or a later lowering phase can interpret this op.
-my_add_op := mlir op {
-    arith.addi %a, %b : i32
+my_add_op := mlir op : i32 {
+    "arith.constant"() {value = 1 : i32} : () -> i32
 }
 
 // 5. Operation with nested region
-my_region_op := mlir op {
-    scf.if %c0 {
-        %1 = arith.addi %a, %b : i32
-    } else {
-        %2 = arith.subi %a, %b : i32
-    }
+my_region_op := mlir op : i32 {
+    "scf.if"(%c0) ({
+        %1 = "arith.constant"() {value = 1 : i32} : () -> i32
+        "scf.yield"(%1) : (i32) -> ()
+    }, {
+        %2 = "arith.constant"() {value = 2 : i32} : () -> i32
+        "scf.yield"(%2) : (i32) -> ()
+    }) : (i1) -> i32
+}
+
+main :: proc() {
+    _ = my_module
+    _ = my_ptr_type
+    _ = my_attr
+    _ = my_add_op
+    _ = my_region_op
+    io.print("mlir constructs parsed\n", 0)
 }

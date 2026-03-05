@@ -1,0 +1,189 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/ns_parse.c
+
+errno_mod :: import "libc/include/errno"
+nameser_h :: import "libc/include/arpa/nameser"
+dn_expand_mod :: import "libc/src/network/dn_expand"
+dn_skipname_mod :: import "libc/src/network/dn_skipname"
+
+_ns_flagdata: [16]nameser_h._ns_flagdata = [16]nameser_h._ns_flagdata{
+    nameser_h._ns_flagdata{ mask: 0x8000, shift: 15 },
+    nameser_h._ns_flagdata{ mask: 0x7800, shift: 11 },
+    nameser_h._ns_flagdata{ mask: 0x0400, shift: 10 },
+    nameser_h._ns_flagdata{ mask: 0x0200, shift: 9 },
+    nameser_h._ns_flagdata{ mask: 0x0100, shift: 8 },
+    nameser_h._ns_flagdata{ mask: 0x0080, shift: 7 },
+    nameser_h._ns_flagdata{ mask: 0x0040, shift: 6 },
+    nameser_h._ns_flagdata{ mask: 0x0020, shift: 5 },
+    nameser_h._ns_flagdata{ mask: 0x0010, shift: 4 },
+    nameser_h._ns_flagdata{ mask: 0x000f, shift: 0 },
+    nameser_h._ns_flagdata{ mask: 0x0000, shift: 0 },
+    nameser_h._ns_flagdata{ mask: 0x0000, shift: 0 },
+    nameser_h._ns_flagdata{ mask: 0x0000, shift: 0 },
+    nameser_h._ns_flagdata{ mask: 0x0000, shift: 0 },
+    nameser_h._ns_flagdata{ mask: 0x0000, shift: 0 },
+    nameser_h._ns_flagdata{ mask: 0x0000, shift: 0 },
+}
+
+ns_get16 :: proc(cp: *const u8) u32 {
+    return (cp[0].(u32) << 8) | cp[1].(u32)
+}
+
+ns_get32 :: proc(cp: *const u8) u64 {
+    return (cp[0].(u64) << 24) | (cp[1].(u64) << 16) | (cp[2].(u64) << 8) | cp[3].(u64)
+}
+
+ns_put16 :: proc(s: u32, cp: *u8) void {
+    cp[0] = (s >> 8).(u8)
+    cp[1] = s.(u8)
+}
+
+ns_put32 :: proc(l: u64, cp: *u8) void {
+    cp[0] = (l >> 24).(u8)
+    cp[1] = (l >> 16).(u8)
+    cp[2] = (l >> 8).(u8)
+    cp[3] = l.(u8)
+}
+
+ns_initparse :: proc(msg: *const u8, msglen: i32, handle: *nameser_h.ns_msg) i32 {
+    i: i32
+    r: i32
+
+    handle._msg = msg
+    handle._eom = (msg.^usize + msglen.(usize)).(usize).^*const u8
+    if msglen < ((2 + nameser_h.ns_s_max) * nameser_h.NS_INT16SZ).(i32) { goto bad }
+
+    p := msg
+    handle._id = ns_get16(p).(u16)
+    p = (p.^usize + nameser_h.NS_INT16SZ).(usize).^*const u8
+    handle._flags = ns_get16(p).(u16)
+    p = (p.^usize + nameser_h.NS_INT16SZ).(usize).^*const u8
+
+    i = 0
+    while i < nameser_h.ns_s_max {
+        handle._counts[i.(usize)] = ns_get16(p).(u16)
+        p = (p.^usize + nameser_h.NS_INT16SZ).(usize).^*const u8
+        i += 1
+    }
+
+    i = 0
+    while i < nameser_h.ns_s_max {
+        if handle._counts[i.(usize)] != 0 {
+            handle._sections[i.(usize)] = p
+            r = ns_skiprr(p, handle._eom, i, handle._counts[i.(usize)].(i32))
+            if r < 0 { return -1 }
+            p = (p.^usize + r.(usize)).(usize).^*const u8
+        } else {
+            handle._sections[i.(usize)] = null
+        }
+        i += 1
+    }
+
+    if p != handle._eom { goto bad }
+    handle._sect = nameser_h.ns_s_max
+    handle._rrnum = -1
+    handle._msg_ptr = null
+    return 0
+
+bad:
+    errno_mod.errno().* = errno_mod.EMSGSIZE
+    return -1
+}
+
+ns_skiprr :: proc(ptr: *const u8, eom: *const u8, section: nameser_h.ns_sect, count: i32) i32 {
+    p := ptr
+    r: i32
+
+    c := count
+    while c > 0 {
+        r = dn_skipname_mod.dn_skipname(p, eom)
+        if r < 0 { goto bad }
+        if r + 2 * nameser_h.NS_INT16SZ > (eom.^usize - p.^usize).(i32) { goto bad }
+        p = (p.^usize + r.(usize) + (2 * nameser_h.NS_INT16SZ).(usize)).(usize).^*const u8
+        if section != nameser_h.ns_s_qd {
+            if nameser_h.NS_INT32SZ + nameser_h.NS_INT16SZ > (eom.^usize - p.^usize).(i32) { goto bad }
+            p = (p.^usize + nameser_h.NS_INT32SZ.(usize)).(usize).^*const u8
+            r = ns_get16(p).(i32)
+            p = (p.^usize + nameser_h.NS_INT16SZ.(usize)).(usize).^*const u8
+            if r > (eom.^usize - p.^usize).(i32) { goto bad }
+            p = (p.^usize + r.(usize)).(usize).^*const u8
+        }
+        c -= 1
+    }
+    return (p.^usize - ptr.^usize).(i32)
+
+bad:
+    errno_mod.errno().* = errno_mod.EMSGSIZE
+    return -1
+}
+
+ns_parserr :: proc(handle: *nameser_h.ns_msg, section: nameser_h.ns_sect, rrnum: i32, rr: *nameser_h.ns_rr) i32 {
+    r: i32
+
+    if section < 0 || section >= nameser_h.ns_s_max { goto bad }
+    if section != handle._sect {
+        handle._sect = section
+        handle._rrnum = 0
+        handle._msg_ptr = handle._sections[section.(usize)]
+    }
+    if rrnum == -1 { rrnum = handle._rrnum }
+    if rrnum < 0 || rrnum >= handle._counts[section.(usize)].(i32) { goto bad }
+    if rrnum < handle._rrnum {
+        handle._rrnum = 0
+        handle._msg_ptr = handle._sections[section.(usize)]
+    }
+    if rrnum > handle._rrnum {
+        r = ns_skiprr(handle._msg_ptr, handle._eom, section, rrnum - handle._rrnum)
+        if r < 0 { return -1 }
+        handle._msg_ptr = (handle._msg_ptr.^usize + r.(usize)).(usize).^*const u8
+        handle._rrnum = rrnum
+    }
+    r = ns_name_uncompress(handle._msg, handle._eom, handle._msg_ptr, &rr.name[0], nameser_h.NS_MAXDNAME)
+    if r < 0 { return -1 }
+    handle._msg_ptr = (handle._msg_ptr.^usize + r.(usize)).(usize).^*const u8
+    if (2 * nameser_h.NS_INT16SZ) > (handle._eom.^usize - handle._msg_ptr.^usize).(i32) { goto size }
+    rr.type = ns_get16(handle._msg_ptr).(u16)
+    handle._msg_ptr = (handle._msg_ptr.^usize + nameser_h.NS_INT16SZ.(usize)).(usize).^*const u8
+    rr.rr_class = ns_get16(handle._msg_ptr).(u16)
+    handle._msg_ptr = (handle._msg_ptr.^usize + nameser_h.NS_INT16SZ.(usize)).(usize).^*const u8
+    if section != nameser_h.ns_s_qd {
+        if (nameser_h.NS_INT32SZ + nameser_h.NS_INT16SZ) > (handle._eom.^usize - handle._msg_ptr.^usize).(i32) { goto size }
+        rr.ttl = ns_get32(handle._msg_ptr).(u32)
+        handle._msg_ptr = (handle._msg_ptr.^usize + nameser_h.NS_INT32SZ.(usize)).(usize).^*const u8
+        rr.rdlength = ns_get16(handle._msg_ptr).(u16)
+        handle._msg_ptr = (handle._msg_ptr.^usize + nameser_h.NS_INT16SZ.(usize)).(usize).^*const u8
+        if rr.rdlength.(usize) > (handle._eom.^usize - handle._msg_ptr.^usize) { goto size }
+        rr.rdata = handle._msg_ptr
+        handle._msg_ptr = (handle._msg_ptr.^usize + rr.rdlength.(usize)).(usize).^*const u8
+    } else {
+        rr.ttl = 0
+        rr.rdlength = 0
+        rr.rdata = null
+    }
+    handle._rrnum += 1
+    if handle._rrnum > handle._counts[section.(usize)].(i32) {
+        handle._sect = section + 1
+        if handle._sect == nameser_h.ns_s_max {
+            handle._rrnum = -1
+            handle._msg_ptr = null
+        } else {
+            handle._rrnum = 0
+        }
+    }
+    return 0
+
+bad:
+    errno_mod.errno().* = errno_mod.ENODEV
+    return -1
+
+size:
+    errno_mod.errno().* = errno_mod.EMSGSIZE
+    return -1
+}
+
+ns_name_uncompress :: proc(msg: *const u8, eom: *const u8, src: *const u8, dst: *u8, dstsiz: usize) i32 {
+    r := dn_expand_mod.dn_expand(msg, eom, src, dst, dstsiz.(i32))
+    if r < 0 { errno_mod.errno().* = errno_mod.EMSGSIZE }
+    return r
+}

@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_rwlockattr_setpshared.c
+
+errno_mod :: import "libc/include/errno"
+
+pthread_rwlockattr_setpshared :: proc(a: *pthread_rwlockattr_t, pshared: i32) i32 {
+    if pshared > 1 { return errno_mod.EINVAL }
+    a.__attr[0] = pshared.(u32)
+    return 0
+}

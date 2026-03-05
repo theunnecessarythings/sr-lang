@@ -1,0 +1,40 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/asinf.c.
+
+libm :: import "libc/src/math/libm_internal"
+basic :: import "libc/src/math/basic"
+
+pio2 :: 1.570796326794896558e+00
+pS0 ::  1.6666586697e-01
+pS1 :: -4.2743422091e-02
+pS2 :: -8.6563630030e-03
+qS1 :: -7.0662963390e-01
+
+R :: fn(z: f32) f32 {
+    p := z * (pS0 + z * (pS1 + z * pS2))
+    q := 1.0f + z * qS1
+    return p / q
+}
+
+asinf :: proc(x: f32) f32 {
+    s: f64
+    z: f32
+    hx: u32
+    ix: u32
+
+    hx = libm.get_float_word(x)
+    ix = hx & 0x7fffffff
+    if ix >= 0x3f800000 {
+        if ix == 0x3f800000 { return x * pio2 + 0x1p-120f }
+        return 0.0f / (x - x)
+    }
+    if ix < 0x3f000000 {
+        if ix < 0x39800000 and ix >= 0x00800000 { return x }
+        return x + x * R(x * x)
+    }
+    z = (1.0f - basic.fabsf(x)) * 0.5f
+    s = sqrt(z.(f64))
+    x = (pio2 - 2.0 * (s + s * R(z))).(f32)
+    return if (hx >> 31) != 0 { -x } else { x }
+}

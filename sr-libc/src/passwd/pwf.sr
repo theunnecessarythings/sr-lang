@@ -1,0 +1,58 @@
+package libc
+
+// Helper routines for passwd/group/shadow parsing.
+
+string_h :: import "libc/src/string"
+ctype_h :: import "libc/include/ctype"
+
+split_field :: fn(p: *u8) *u8 {
+    q := p
+    while q[0] != 0 && q[0] != ':' && q[0] != '\n' {
+        q = (q.^usize + 1).(usize).^*u8
+    }
+    if q[0] == ':' {
+        q[0] = 0
+        return (q.^usize + 1).(usize).^*u8
+    }
+    if q[0] == '\n' {
+        q[0] = 0
+        return q
+    }
+    return q
+}
+
+strip_newline :: fn(p: *u8) void {
+    q := p
+    while q[0] != 0 {
+        if q[0] == '\n' {
+            q[0] = 0
+            return
+        }
+        q = (q.^usize + 1).(usize).^*u8
+    }
+}
+
+atou :: fn(s: *const u8) u32 {
+    n: u32 = 0
+    p := s
+    while ctype_h.isspace(p[0].(i32)) != 0 { p = (p.^usize + 1).(usize).^*const u8 }
+    while ctype_h.isdigit(p[0].(i32)) != 0 {
+        n = n * 10 + (p[0] - '0'.(u8)).(u32)
+        p = (p.^usize + 1).(usize).^*const u8
+    }
+    return n
+}
+
+atol64 :: fn(s: *const u8) i64 {
+    if s == null || s[0] == 0 { return -1 }
+    sign: i64 = 1
+    p := s
+    while ctype_h.isspace(p[0].(i32)) != 0 { p = (p.^usize + 1).(usize).^*const u8 }
+    if p[0] == '-'.(u8) { sign = -1; p = (p.^usize + 1).(usize).^*const u8 }
+    n: i64 = 0
+    while ctype_h.isdigit(p[0].(i32)) != 0 {
+        n = n * 10 + (p[0] - '0'.(u8)).(i64)
+        p = (p.^usize + 1).(usize).^*const u8
+    }
+    return n * sign
+}

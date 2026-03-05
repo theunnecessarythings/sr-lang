@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/personality.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+personality :: proc(persona: u64) i32 {
+    r := sc.syscall1_ret(nums.SYS_personality.(i64), persona.(i64))
+    return r.(i32)
+}

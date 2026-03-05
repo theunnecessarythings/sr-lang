@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/lchown.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+lchown :: proc(path: *const u8, uid: uid_t, gid: gid_t) i32 {
+    r := sc.syscall3_ret(nums.SYS_lchown.(i64), path.^usize.(i64), uid.(i64), gid.(i64))
+    return r.(i32)
+}

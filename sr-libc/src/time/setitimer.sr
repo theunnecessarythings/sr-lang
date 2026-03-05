@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/time/getitimer.c and setitimer.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+time_mod :: import "libc/include/sys/time"
+
+getitimer :: proc(which: i32, value: *time_mod.itimerval) i32 {
+    r := sc.syscall2_ret(nums.SYS_getitimer.(i64), which.(i64), value.^usize.(i64))
+    return r.(i32)
+}
+
+setitimer :: proc(which: i32, value: *time_mod.itimerval, ovalue: ?*time_mod.itimerval) i32 {
+    ovalue_ptr := if ovalue == null { 0 } else { ovalue?.^usize }
+    r := sc.syscall3_ret(nums.SYS_setitimer.(i64), which.(i64), value.^usize.(i64), ovalue_ptr.(i64))
+    return r.(i32)
+}

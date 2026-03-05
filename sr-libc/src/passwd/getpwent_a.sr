@@ -1,0 +1,41 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/getpwent_a.c
+
+errno_h :: import "libc/include/errno"
+pwd_h :: import "libc/include/pwd"
+pwf :: import "libc/src/passwd/pwf"
+fgets_mod :: import "libc/src/stdio/fgets"
+ferror_mod :: import "libc/src/stdio/ferror"
+
+__getpwent_a :: proc(f: *alltypes.FILE, pw: *pwd_h.passwd, line: *u8, size: usize, res: **pwd_h.passwd) i32 {
+    if f == null || pw == null || line == null || res == null {
+        errno_h.errno().* = errno_h.EINVAL
+        return errno_h.EINVAL
+    }
+
+    s := fgets_mod.fgets(line, size.(i32), f)
+    if s == null {
+        res.* = null
+        return if ferror_mod.ferror(f) != 0 { errno_h.EIO } else { 0 }
+    }
+
+    p := line
+    pw.pw_name = p
+    p = pwf.split_field(p)
+    pw.pw_passwd = p
+    p = pwf.split_field(p)
+    pw.pw_uid = pwf.atou(p).(uid_t)
+    p = pwf.split_field(p)
+    pw.pw_gid = pwf.atou(p).(gid_t)
+    p = pwf.split_field(p)
+    pw.pw_gecos = p
+    p = pwf.split_field(p)
+    pw.pw_dir = p
+    p = pwf.split_field(p)
+    pw.pw_shell = p
+    pwf.strip_newline(pw.pw_shell)
+
+    res.* = pw
+    return 0
+}

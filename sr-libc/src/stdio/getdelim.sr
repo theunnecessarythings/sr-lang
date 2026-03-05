@@ -1,0 +1,95 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/getdelim.c
+
+stdio_impl :: import "libc/src/stdio/stdio_impl"
+malloc_mod :: import "libc/src/stdlib/malloc"
+memchr_mod :: import "libc/src/string/memchr"
+memcpy_mod :: import "libc/src/string/memcpy"
+errno_mod :: import "libc/include/errno"
+getc_mod :: import "libc/src/stdio/getc_unlocked"
+feof_mod :: import "libc/src/stdio/feof"
+
+SIZE_MAX :: 0xffff_ffff_ffff_ffff // u64
+
+getdelim :: proc(s: **u8, n: *usize, delim: i32, f: *alltypes.FILE) isize {
+    tmp: *u8
+    z: *u8
+    k: usize
+    i: usize = 0
+    c: i32
+    m: usize
+
+    _ = __lockfile(f)
+
+    if n == null or s == null {
+        f.flags |= stdio_impl.F_ERR.(u32)
+        _ = __unlockfile(f)
+        errno_mod.__errno_location().* = errno_mod.EINVAL
+        return -1
+    }
+
+    if s.* == null { n.* = 0 }
+
+    while true {
+        if f.rpos != f.rend {
+            z = memchr_mod.memchr(f.rpos.^*const void, delim, (f.rend.^usize - f.rpos.^usize).(usize)).^*u8
+            k = if z != null { (z.^usize - f.rpos.^usize).(usize) + 1 } else { (f.rend.^usize - f.rpos.^usize).(usize) }
+        } else {
+            z = null
+            k = 0
+        }
+
+        if (i + k) >= n.* {
+            m = i + k + 2
+            if z == null and m < SIZE_MAX / 4 { m += m / 2 }
+            tmp = malloc_mod.realloc(s.*.^*void, m).^*u8
+            if tmp == null {
+                m = i + k + 2
+                tmp = malloc_mod.realloc(s.*.^*void, m).^*u8
+                if tmp == null {
+                    // Copy what fits
+                    k = n.* - i
+                    _ = memcpy_mod.memcpy((s.* + i).^*void, f.rpos.^*const void, k)
+                    f.rpos = f.rpos + k
+                    f.flags |= stdio_impl.F_ERR.(u32)
+                    _ = __unlockfile(f)
+                    errno_mod.__errno_location().* = errno_mod.ENOMEM
+                    return -1
+                }
+            }
+            s.* = tmp
+            n.* = m
+        }
+
+        if k != 0 {
+            _ = memcpy_mod.memcpy((s.* + i).^*void, f.rpos.^*const void, k)
+            f.rpos = f.rpos + k
+            i += k
+        }
+
+        if z != null { break }
+
+        c = getc_mod.getc_unlocked(f)
+        if c == -1 { // EOF
+            if i == 0 or feof_mod.feof(f) == 0 {
+                _ = __unlockfile(f)
+                return -1
+            }
+            break
+        }
+
+        if (i + 1) >= n.* {
+            f.rpos = f.rpos - 1
+            f.rpos.* = c.(u8)
+        } else {
+            (s.* + i).* = c.(u8)
+            i += 1
+            if c == delim { break }
+        }
+    }
+
+    (s.* + i).* = 0
+    _ = __unlockfile(f)
+    return i.(isize)
+}

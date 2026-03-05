@@ -467,7 +467,7 @@ fn constInitFromLiteral(self: *LowerTir, a: *ast.Ast, expr: ast.ExprId, ty: type
             if (!info.valid or info.value > std.math.maxInt(i64)) return null;
             return tir.ConstInit{ .int = @intCast(info.value) };
         },
-        .F32, .F64 => {
+        .F32, .F64, .F128 => {
             const info = if (lit.data == .float) lit.data.float else return null;
             if (!info.valid) return null;
             return tir.ConstInit{ .float = info.value };
@@ -548,7 +548,7 @@ fn constInitFromExpr(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, expr_id: 
     if (self.constInitFromLiteral(a, expr_id, ty)) |ci| return ci;
 
     switch (self.context.type_store.getKind(ty)) {
-        .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64, .Bool => {
+        .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64, .F128, .Bool => {
             if (try self.getCachedComptimeValue(a, expr_id)) |val| {
                 const s = &a.type_info.val_store;
                 return switch (s.kind(val)) {
@@ -860,9 +860,9 @@ pub fn emitCoerce(
         .Ptr => if (gk == .Ptr) {
             return blk.builder.tirValue(.CastBit, blk, want, loc, .{ .value = v });
         },
-        .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64 => {
+        .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64, .F128 => {
             switch (gk) {
-                .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64 => {
+                .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64, .F128 => {
                     return blk.builder.tirValue(.CastNormal, blk, want, loc, .{ .value = v });
                 },
                 else => {},
@@ -897,9 +897,11 @@ fn coerceToErrorSet(
         return blk.builder.tirValue(.CastNormal, blk, want, loc, .{ .value = v });
     }
 
+    const ok_name = ts.strs.intern("Ok");
+    const err_name = ts.strs.intern("Err");
     const payload_union_ty = ts.mkUnion(&[_]types.TypeStore.StructFieldArg{
-        .{ .name = blk.builder.intern("Ok"), .ty = es.value_ty },
-        .{ .name = blk.builder.intern("Err"), .ty = es.error_ty },
+        .{ .name = ok_name, .ty = es.value_ty },
+        .{ .name = err_name, .ty = es.error_ty },
     });
 
     const tag = blk.builder.tirValue(.ConstInt, blk, ts.tI32(), loc, .{ .value = tag_value });
@@ -1283,7 +1285,31 @@ fn lowerAttrs(self: *LowerTir, a: *ast.Ast, b: *Builder, range: ast.OptRangeAttr
 
     for (attrs) |aid| {
         const arow = a.exprs.Attribute.get(aid);
-        const val_id = if (!arow.value.isNone()) try self.lowerAttributeValue(a, b, arow.value.unwrap()) else tir.OptValueId.none();
+        var val_id: tir.OptValueId = .none();
+        if (!arow.value.isNone()) {
+            const expr = arow.value.unwrap();
+
+            if (std.mem.eql(u8, a.exprs.strs.get(arow.name), "export_name") and a.kind(expr) == .Ident) {
+                const ident = a.exprs.get(.Ident, expr);
+                const vid = b.freshValue();
+                const iid = b.t.instrs.add(.ConstString, .{
+                    .result = vid,
+                    .ty = self.context.type_store.tString(),
+                    .text = ident.name,
+                    .loc = .none(),
+                });
+
+                const raw_vid = vid.toRaw();
+                try b.t.value_defs.ensureTotalCapacity(b.allocator, raw_vid + 1);
+                if (b.t.value_defs.items.len <= raw_vid) {
+                    b.t.value_defs.appendNTimesAssumeCapacity(tir.InstrId.fromRaw(std.math.maxInt(u32)), raw_vid + 1 - b.t.value_defs.items.len);
+                }
+                b.t.value_defs.items[raw_vid] = iid;
+                val_id = .some(vid);
+            } else {
+                val_id = try self.lowerAttributeValue(a, b, expr);
+            }
+        }
         try attr_list.append(self.gpa, b.t.instrs.Attribute.add(self.gpa, .{ .name = arow.name, .value = val_id }));
     }
     return b.t.instrs.attribute_pool.pushMany(self.gpa, attr_list.items);
@@ -3484,9 +3510,9 @@ fn lowerLiteral(
         .int => blk_int: {
             if (lit.data != .int or !lit.data.int.valid) break :blk_int blk.builder.tirValue(.ConstUndef, blk, base_ty, loc, .{});
             const want_kind = self.context.type_store.getKind(want_base);
-            if (want_kind == .F32 or want_kind == .F64) {
+            if (want_kind == .F32 or want_kind == .F64 or want_kind == .F128) {
                 literal_ty = want_base;
-                break :blk_int blk.builder.tirValue(.ConstFloat, blk, want_base, loc, .{ .value = @as(f64, @floatFromInt(lit.data.int.value)) });
+                break :blk_int blk.builder.tirValue(.ConstFloat, blk, want_base, loc, .{ .value = @as(f128, @floatFromInt(lit.data.int.value)) });
             }
             break :blk_int blk.builder.tirValue(.ConstInt, blk, base_ty, loc, .{ .value = @as(u64, @intCast(lit.data.int.value)) });
         },
@@ -3503,7 +3529,7 @@ fn lowerLiteral(
         .float => blk_flt: {
             if (lit.data != .float or !lit.data.float.valid) break :blk_flt blk.builder.tirValue(.ConstUndef, blk, base_ty, loc, .{});
             const k = self.context.type_store.getKind(base_ty);
-            literal_ty = if (k == .F32 or k == .F64) base_ty else self.context.type_store.tF64();
+            literal_ty = if (k == .F32 or k == .F64 or k == .F128) base_ty else self.context.type_store.tF64();
             break :blk_flt blk.builder.tirValue(.ConstFloat, blk, literal_ty, loc, .{ .value = lit.data.float.value });
         },
         .bool => blk.builder.tirValue(.ConstBool, blk, base_ty, loc, .{ .value = lit.data.bool }),
@@ -3563,7 +3589,7 @@ fn lowerUnary(
                 if (self.isType(ty0, .Simd)) {
                     const simd_info = self.context.type_store.get(.Simd, ty0);
                     const e_kind = self.context.type_store.getKind(simd_info.elem);
-                    const scalar = if (e_kind == .F32 or e_kind == .F64)
+                    const scalar = if (e_kind == .F32 or e_kind == .F64 or e_kind == .F128)
                         blk.builder.tirValue(.ConstFloat, blk, simd_info.elem, loc, .{ .value = 0.0 })
                     else
                         blk.builder.tirValue(.ConstInt, blk, simd_info.elem, loc, .{ .value = 0 });
@@ -4636,7 +4662,7 @@ pub fn lowerIdent(
 
 fn isScalarNumeric(kind: types.TypeKind) bool {
     return switch (kind) {
-        .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Usize, .F32, .F64 => true,
+        .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Usize, .F32, .F64, .F128 => true,
         else => false,
     };
 }
@@ -4944,6 +4970,8 @@ fn lowerCatch(
         is_optional_es = true;
     }
     const es = self.context.type_store.get(.ErrorSet, es_ty);
+    const ok_name = self.context.type_store.strs.intern("Ok");
+    const err_name = self.context.type_store.strs.intern("Err");
     const expr_loc = optLoc(a, row.expr);
 
     if (is_optional_es) {
@@ -4973,7 +5001,7 @@ fn lowerCatch(
         const one = self.context.type_store.tBool();
         const true_v = ok_blk.builder.tirValue(.ConstBool, &ok_blk, one, loc, .{ .value = true });
 
-        const ok_union = self.context.type_store.mkUnion(&.{ .{ .name = f.builder.intern("Ok"), .ty = es.value_ty }, .{ .name = f.builder.intern("Err"), .ty = es.error_ty } });
+        const ok_union = self.context.type_store.mkUnion(&.{ .{ .name = ok_name, .ty = es.value_ty }, .{ .name = err_name, .ty = es.error_ty } });
         const payload_union_ok = ok_blk.builder.extractField(&ok_blk, ok_union, es_payload, 1, expr_loc);
         const ok_v = ok_blk.builder.tirValue(.UnionField, &ok_blk, es.value_ty, loc, .{ .base = payload_union_ok, .field_index = 0 });
 
@@ -5012,7 +5040,7 @@ fn lowerCatch(
 
     var then_blk = try f.builder.beginBlock(f);
     var else_blk = try f.builder.beginBlock(f);
-    const payload_union_ty = self.context.type_store.mkUnion(&.{ .{ .name = f.builder.intern("Ok"), .ty = es.value_ty }, .{ .name = f.builder.intern("Err"), .ty = es.error_ty } });
+    const payload_union_ty = self.context.type_store.mkUnion(&.{ .{ .name = ok_name, .ty = es.value_ty }, .{ .name = err_name, .ty = es.error_ty } });
 
     if (produce_value) {
         var join_blk = try f.builder.beginBlock(f);
@@ -5138,7 +5166,9 @@ fn lowerOrelse(
             const rhs_ty = self.getExprType(ctx, a, row.right);
             if (!rhs_ty.eq(es.value_ty)) rhs_val = self.emitCoerce(&else_blk, rhs_val, rhs_ty, es.value_ty, loc);
 
-            const union_ty = self.context.type_store.mkUnion(&.{ .{ .name = f.builder.intern("Ok"), .ty = es.value_ty }, .{ .name = f.builder.intern("Err"), .ty = es.error_ty } });
+            const ok_name = self.context.type_store.strs.intern("Ok");
+            const err_name = self.context.type_store.strs.intern("Err");
+            const union_ty = self.context.type_store.mkUnion(&.{ .{ .name = ok_name, .ty = es.value_ty }, .{ .name = err_name, .ty = es.error_ty } });
             const union_val = else_blk.builder.tirValue(.UnionMake, &else_blk, union_ty, loc, .{ .field_index = 0, .value = rhs_val });
             const tag0 = else_blk.builder.tirValue(.ConstInt, &else_blk, self.context.type_store.tI32(), loc, .{ .value = 0 });
 
@@ -5263,7 +5293,7 @@ pub fn lowerExpr(
             const row = a.exprs.get(.Continue, id);
             const loc = optLoc(a, id);
             const poison = self.safeUndef(blk, expected_ty orelse self.getExprType(ctx, a, id), loc);
-            try cf.lowerContinueCommon(self, ctx, a, env, f, blk, row.label, loc);
+            try cf.lowerContinueCommon(self, ctx, a, env, f, blk, row.label, row.value, loc);
             break :blk_cont poison;
         },
         .If => cf.lowerIf(self, ctx, a, env, f, blk, id, expected_ty),
@@ -5424,15 +5454,15 @@ fn structFieldDefaultInStructExpr(a: *ast.Ast, struct_expr: ast.ExprId, field_na
 fn isNumeric(self: *const LowerTir, ty: types.TypeId) bool {
     if (self.isVoid(ty)) return false;
     return switch (self.context.type_store.getKind(ty)) {
-        .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Usize, .F32, .F64, .Simd, .Tensor => true,
+        .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Usize, .F32, .F64, .F128, .Simd, .Tensor => true,
         else => false,
     };
 }
 
-/// Return true when `ty` is either `f32` or `f64`.
+/// Return true when `ty` is a floating-point type.
 fn isFloat(self: *const LowerTir, ty: types.TypeId) bool {
     const k = self.context.type_store.getKind(ty);
-    return k == .F32 or k == .F64;
+    return k == .F32 or k == .F64 or k == .F128;
 }
 
 /// Test whether `ty` currently maps to `kind` in the type store index.
@@ -5450,6 +5480,8 @@ fn commonNumeric(self: *const LowerTir, l: ?types.TypeId, r: ?types.TypeId) ?typ
                 const kR = ts.getKind(rt);
                 if (kL == .Simd or kL == .Tensor) return lt;
                 if (kR == .Simd or kR == .Tensor) return rt;
+                if (kL == .F128 or kR == .F128) return ts.tF128();
+                if (kL == .F128 or kR == .F128) return ts.tF128();
                 if (kL == .F64 or kR == .F64) return ts.tF64();
                 if (kL == .F32 or kR == .F32) return ts.tF32();
 

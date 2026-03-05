@@ -1,0 +1,35 @@
+package libc
+
+// Derived from musl-1.2.5/src/ldso/dlerror.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <dlfcn.h>
+// #include <stdlib.h>
+// #include <stdarg.h>
+// #include <pthread_impl.h>
+// #include <dynlink.h>
+// #include <atomic.h>
+
+alltypes :: import "libc/include/alltypes"
+
+dlerror :: proc() ?*u8 {
+    // TODO: Translate function body
+    return null
+}
+
+__dl_thread_cleanup :: proc() void {
+    // No-op in static/no-dso builds.
+}
+
+__dl_vseterr :: proc(fmt: *const u8, ap: alltypes.va_list) void {
+    // TODO: Translate function body
+}
+
+__dl_seterr :: proc(fmt: *const u8) void {
+    // TODO: Translate function body
+}
+
+stub_invalid_handle :: proc(h: void) i32 {
+    // TODO: Translate function body
+    unreachable
+}

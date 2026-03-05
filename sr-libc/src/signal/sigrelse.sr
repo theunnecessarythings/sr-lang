@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/sigrelse.c
+
+sigprocmask_mod :: import "libc/src/signal/sigprocmask"
+sigaddset_mod :: import "libc/src/signal/sigaddset"
+sigempty_mod :: import "libc/src/signal/sigemptyset"
+
+sigrelse :: proc(sig: i32) i32 {
+    mask: alltypes.sigset_t
+    _ = sigempty_mod.sigemptyset(&mask)
+    if sigaddset_mod.sigaddset(&mask, sig) < 0 { return -1 }
+    return sigprocmask_mod.sigprocmask(1, &mask, null)
+}

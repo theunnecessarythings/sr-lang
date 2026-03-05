@@ -1,0 +1,64 @@
+package libc
+
+// Derived from musl-1.2.5/src/fcntl/fcntl.c (simplified, non-varargs).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+flags :: import "libc/include/fcntl"
+
+fcntl :: proc(fd: i32, cmd: i32, arg: usize) i32 {
+    a := arg
+    if cmd == flags.F_SETFL {
+        a = a | flags.O_LARGEFILE.(usize)
+    }
+    if cmd == flags.F_GETOWN {
+        ex: flags.f_owner_ex = flags.f_owner_ex{ r#type: 0, pid: 0 }
+        ex_ptr := (&ex).^usize
+        r0 := sc.syscall3(nums.SYS_fcntl.(i64), fd.(i64), flags.F_GETOWN_EX.(i64), ex_ptr.(i64))
+        if r0 != -22 { // -EINVAL
+            if r0 < 0 { return sc.__syscall_ret(r0).(i32) }
+            if ex.r#type == flags.F_OWNER_PGRP { return (-ex.pid).(i32) }
+            return ex.pid.(i32)
+        }
+    }
+    if cmd == flags.F_SETOWN {
+        // Prefer F_SETOWN_EX if available
+        ex: flags.f_owner_ex = flags.f_owner_ex{ r#type: flags.F_OWNER_PID, pid: arg.(i32) }
+        if arg.(i32) < 0 {
+            ex.r#type = flags.F_OWNER_PGRP
+            ex.pid = (-arg.(i32))
+        }
+        ex_ptr := (&ex).^usize
+        r0 := sc.syscall3(nums.SYS_fcntl.(i64), fd.(i64), flags.F_SETOWN_EX.(i64), ex_ptr.(i64))
+        if r0 != -22 { // -EINVAL
+            return sc.__syscall_ret(r0).(i32)
+        }
+    }
+    if cmd == flags.F_GETOWN_EX or cmd == flags.F_SETOWN_EX {
+        r := sc.syscall3_ret(nums.SYS_fcntl.(i64), fd.(i64), cmd.(i64), a.(i64))
+        return r.(i32)
+    }
+    if cmd == flags.F_GETLK or cmd == flags.F_SETLK or cmd == flags.F_SETLKW {
+        r := sc.syscall3_ret(nums.SYS_fcntl.(i64), fd.(i64), cmd.(i64), a.(i64))
+        return r.(i32)
+    }
+    if cmd == flags.F_DUPFD_CLOEXEC {
+        r0 := sc.syscall3(nums.SYS_fcntl.(i64), fd.(i64), cmd.(i64), a.(i64))
+        if r0 != -22 { // -EINVAL
+            if r0 >= 0 {
+                _ = sc.syscall3_ret(nums.SYS_fcntl.(i64), r0, flags.F_SETFD.(i64), flags.FD_CLOEXEC.(i64))
+            }
+            return sc.__syscall_ret(r0).(i32)
+        }
+
+        // Fallback: F_DUPFD then set FD_CLOEXEC
+        r1 := sc.syscall3_ret(nums.SYS_fcntl.(i64), fd.(i64), flags.F_DUPFD.(i64), a.(i64))
+        if r1 >= 0 {
+            _ = sc.syscall3_ret(nums.SYS_fcntl.(i64), r1, flags.F_SETFD.(i64), flags.FD_CLOEXEC.(i64))
+        }
+        return r1.(i32)
+    }
+
+    r := sc.syscall3_ret(nums.SYS_fcntl.(i64), fd.(i64), cmd.(i64), a.(i64))
+    return r.(i32)
+}

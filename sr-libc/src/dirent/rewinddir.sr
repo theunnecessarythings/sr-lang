@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/dirent/rewinddir.c
+
+stdio_h :: import "libc/include/stdio"
+lseek_mod :: import "libc/src/unistd/lseek"
+
+rewinddir :: proc(dir: *DIR) void {
+    if dir == null { return }
+    _ = lseek_mod.lseek(dir.fd, 0, stdio_h.SEEK_SET)
+    dir.buf_pos = 0
+    dir.buf_end = 0
+    dir.tell = 0
+}

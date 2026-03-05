@@ -1,0 +1,20 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/mtx_timedlock.c
+
+timed_mod :: import "libc/src/thread/pthread_mutex_timedlock"
+errno_mod :: import "libc/include/errno"
+alltypes :: import "libc/include/alltypes"
+
+thrd_success :: 0
+thrd_error :: 2
+thrd_timedout :: 4
+
+mtx_timedlock :: proc(m: *mtx_t restrict, ts: *const alltypes.timespec restrict) i32 {
+    ret := timed_mod.__pthread_mutex_timedlock(m.^*alltypes.pthread_mutex_t, ts)
+    switch ret {
+        0 => { return thrd_success }
+        errno_mod.ETIMEDOUT => { return thrd_timedout }
+        else => { return thrd_error }
+    }
+}

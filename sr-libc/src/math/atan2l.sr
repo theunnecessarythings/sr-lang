@@ -1,0 +1,52 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/atan2l.c (113-bit path).
+
+basic :: import "libc/src/math/basic"
+inv :: import "libc/src/math/invtrigl"
+
+atan2l :: proc(y: f128, x: f128) f128 {
+    if basic.isnanl(x) or basic.isnanl(y) { return x + y }
+    if x == 1.0 { return atanl(y) }
+
+    ux := x.^u128
+    uy := y.^u128
+    ex := ((ux >> 112) & 0x7fff).(i32)
+    ey := ((uy >> 112) & 0x7fff).(i32)
+    m := (2 * ((ux >> 127) & 1) + ((uy >> 127) & 1)).(i32)
+
+    if y == 0.0 {
+        if m == 0 or m == 1 { return y }
+        if m == 2 { return 2.0 * inv.pio2_hi }
+        return -2.0 * inv.pio2_hi
+    }
+    if x == 0.0 { return if (m & 1) != 0 { -inv.pio2_hi } else { inv.pio2_hi } }
+
+    if ex == 0x7fff {
+        if ey == 0x7fff {
+            if m == 0 { return inv.pio2_hi / 2.0 }
+            if m == 1 { return -inv.pio2_hi / 2.0 }
+            if m == 2 { return 1.5 * inv.pio2_hi }
+            return -1.5 * inv.pio2_hi
+        } else {
+            if m == 0 { return 0.0 }
+            if m == 1 { return -0.0 }
+            if m == 2 { return 2.0 * inv.pio2_hi }
+            return -2.0 * inv.pio2_hi
+        }
+    }
+
+    if ex + 120 < ey or ey == 0x7fff { return if (m & 1) != 0 { -inv.pio2_hi } else { inv.pio2_hi } }
+
+    z: f128
+    if (m & 2) != 0 and (ey + 120 < ex) {
+        z = 0.0
+    } else {
+        z = atanl(basic.fabsl(y / x))
+    }
+
+    if m == 0 { return z }
+    if m == 1 { return -z }
+    if m == 2 { return 2.0 * inv.pio2_hi - (z - 2.0 * inv.pio2_lo) }
+    return (z - 2.0 * inv.pio2_lo) - 2.0 * inv.pio2_hi
+}

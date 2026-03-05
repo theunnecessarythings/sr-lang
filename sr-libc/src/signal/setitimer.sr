@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/setitimer.c
+
+nums :: import "libc/include/syscall"
+sc :: import "libc/src/syscall/syscall"
+
+setitimer :: proc(which: i32, new: *const itimerval, old: ?*itimerval) i32 {
+    old_ptr := if old != 0 { old.^usize } else { 0 }
+    r := sc.syscall3_ret(nums.SYS_setitimer.(i64), which.(i64), new.^usize.(i64), old_ptr.(i64))
+    return r.(i32)
+}

@@ -888,14 +888,14 @@ fn clearDeclTypes(ast_unit: *ast.Ast, decl_id: ast.DeclId) void {
 /// Return true when `k` represents a numeric type (including tensors/complex).
 pub fn isNumericKind(_: *const Checker, k: types.TypeKind) bool {
     return switch (k) {
-        .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .F64, .Usize, .Tensor, .Simd, .Complex => true,
+        .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .F64, .F128, .Usize, .Isize, .Tensor, .Simd, .Complex => true,
         else => false,
     };
 }
 /// Return true when `k` is an integer kind (signed or unsigned).
 pub fn isIntegerKind(_: *const Checker, k: types.TypeKind) bool {
     return switch (k) {
-        .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => true,
+        .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .Isize => true,
         else => false,
     };
 }
@@ -914,7 +914,8 @@ pub fn typeAlign(ctx: *const compile.Context, ty_id: types.TypeId) usize {
         .Bool, .I8, .U8 => 1,
         .I16, .U16 => 2,
         .I32, .U32, .F32 => 4,
-        .I64, .U64, .Usize, .F64, .Ptr, .MlirModule, .MlirAttribute, .MlirType, .Function, .Closure, .Code => 8,
+        .I64, .U64, .Usize, .Isize, .F64, .Ptr, .MlirModule, .MlirAttribute, .MlirType, .Function, .Closure, .Code => 8,
+        .F128 => 16,
         .Simd => blk: { // Assume natural vector alignment (at least 16) on 64-bit targets
             const elem_align = typeAlign(ctx, ctx.type_store.get(.Simd, ty_id).elem);
             break :blk if (elem_align < 16) 16 else elem_align;
@@ -967,7 +968,8 @@ pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) usize {
         .I8, .U8, .Bool => 1,
         .I16, .U16 => 2,
         .I32, .U32, .F32 => 4,
-        .I64, .U64, .F64, .Usize => 8, // best-effort default for 64-bit targets
+        .I64, .U64, .F64, .Usize, .Isize => 8, // best-effort default for 64-bit targets
+        .F128 => 16,
         .Ptr, .Code => 8, // best-effort default for 64-bit targets
         .MlirModule, .MlirAttribute, .MlirType => 8,
         .Closure => 16, // fn ptr + env ptr
@@ -1428,15 +1430,15 @@ pub fn typeFromTypeExprWithBindings(
 
             // 2. Check Primitives (Optimized Lookup)
             const ident_name = ast_unit.exprs.strs.get(name);
-            const PrimitiveTag = enum { bool, i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, usize, char, string, void, any, err, type_type, code };
+            const PrimitiveTag = enum { bool, i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, f128, usize, isize, char, string, void, any, err, type_type, code };
             const map = std.StaticStringMap(PrimitiveTag).initComptime(.{
-                .{ "bool", .bool }, .{ "i8", .i8 },         .{ "i16", .i16 },
-                .{ "i32", .i32 },   .{ "i64", .i64 },       .{ "u8", .u8 },
-                .{ "u16", .u16 },   .{ "u32", .u32 },       .{ "u64", .u64 },
-                .{ "f32", .f32 },   .{ "f64", .f64 },       .{ "usize", .usize },
-                .{ "char", .char }, .{ "string", .string }, .{ "void", .void },
-                .{ "any", .any },   .{ "Error", .err },     .{ "type", .type_type },
-                .{ "Code", .code },
+                .{ "bool", .bool },     .{ "i8", .i8 },          .{ "i16", .i16 },
+                .{ "i32", .i32 },       .{ "i64", .i64 },        .{ "u8", .u8 },
+                .{ "u16", .u16 },       .{ "u32", .u32 },        .{ "u64", .u64 },
+                .{ "f32", .f32 },       .{ "f64", .f64 },        .{ "f128", .f128 },
+                .{ "usize", .usize },   .{ "isize", .isize },    .{ "char", .char },
+                .{ "string", .string }, .{ "void", .void },      .{ "any", .any },
+                .{ "Error", .err },     .{ "type", .type_type }, .{ "Code", .code },
             });
 
             if (map.get(ident_name)) |tag| {
@@ -1452,7 +1454,9 @@ pub fn typeFromTypeExprWithBindings(
                     .u64 => ts.tU64(),
                     .f32 => ts.tF32(),
                     .f64 => ts.tF64(),
+                    .f128 => ts.tF128(),
                     .usize => ts.tUsize(),
+                    .isize => ts.tIsize(),
                     .char => ts.tU32(),
                     .string => ts.tString(),
                     .void => ts.tVoid(),
@@ -1966,6 +1970,13 @@ pub fn typeFromTypeExprWithBindings(
             }
             const res_res = if (!fnr.result_ty.isNone()) (try typeFromTypeExprWithBindings(self, ctx, ast_unit, fnr.result_ty.unwrap(), bindings)) else .{ true, ts.tVoid() };
             break :blk_fn .{ status and res_res[0], ts.mkFunction(pbuf, res_res[1], fnr.flags.is_variadic, !fnr.flags.is_proc, fnr.flags.is_extern) };
+        },
+        .Match => blk_match: {
+            if (status) {
+                const loc = ast_unit.exprs.locs.get(ast_unit.exprs.get(.Match, id).loc);
+                try self.context.diags.addError(loc, .expected_type_expression, .{});
+            }
+            break :blk_match .{ false, ts.tTypeError() };
         },
         .FieldAccess => blk_fa: {
             const raw_id = id.toRaw();

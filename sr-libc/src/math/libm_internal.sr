@@ -1,0 +1,96 @@
+package libc
+
+// Internal libm helpers translated from musl src/internal/libm.h.
+
+WANT_ROUNDING :: 1
+WANT_SNAN :: 0
+TOINT_INTRINSICS :: 0
+
+issignaling_inline :: fn(x: f64) bool { _ = x; return false }
+issignalingf_inline :: fn(x: f32) bool { _ = x; return false }
+
+clz64 :: fn(x: u64) i32 {
+    if x == 0 { return 64 }
+    n: i32 = 0
+    v := x
+    while (v >> 63) == 0 {
+        n += 1
+        v <<= 1
+    }
+    return n
+}
+
+predict_true :: fn(x: bool) bool { return x }
+predict_false :: fn(x: bool) bool { return x }
+
+asuint :: fn(x: f32) u32 { return x.^u32 }
+asfloat :: fn(x: u32) f32 { return x.^f32 }
+asuint64 :: fn(x: f64) u64 { return x.^u64 }
+asdouble :: fn(x: u64) f64 { return x.^f64 }
+
+get_high_word :: fn(x: f64) u32 { return (asuint64(x) >> 32).(u32) }
+get_low_word :: fn(x: f64) u32 { return (asuint64(x) & 0xffff_ffff).(u32) }
+set_high_word :: fn(x: f64, hi: u32) f64 {
+    bits := (asuint64(x) & 0xffff_ffff) | (hi.(u64) << 32)
+    return asdouble(bits)
+}
+set_low_word :: fn(x: f64, lo: u32) f64 {
+    bits := (asuint64(x) & 0xffff_ffff_0000_0000) | lo.(u64)
+    return asdouble(bits)
+}
+
+get_float_word :: fn(x: f32) u32 { return asuint(x) }
+set_float_word :: fn(x: f32, w: u32) f32 { _ = x; return asfloat(w) }
+
+eval_as_float :: fn(x: f32) f32 { y := x; return y }
+eval_as_double :: fn(x: f64) f64 { y := x; return y }
+
+// fp_barrier/force_eval are best-effort in sr-lang (no fenv control).
+fp_barrierf :: fn(x: f32) f32 { y := x; return y }
+fp_barrier :: fn(x: f64) f64 { y := x; return y }
+fp_barrierl :: fn(x: f128) f128 { y := x; return y }
+
+fp_force_evalf :: proc(x: f32) void { y := x; _ = y }
+fp_force_eval :: proc(x: f64) void { y := x; _ = y }
+fp_force_evall :: proc(x: f128) void { y := x; _ = y }
+
+__math_xflow :: proc(sign: u32, y: f64) f64 {
+    return eval_as_double(fp_barrier(if sign != 0 { -y } else { y }) * y)
+}
+
+__math_oflow :: proc(sign: u32) f64 { return __math_xflow(sign, 0x1p769) }
+__math_uflow :: proc(sign: u32) f64 { return __math_xflow(sign, 0x1p-767) }
+
+__math_divzero :: proc(sign: u32) f64 {
+    return fp_barrier(if sign != 0 { -1.0 } else { 1.0 }) / 0.0
+}
+
+__math_oflowf :: proc(sign: u32) f32 {
+    return (fp_barrierf(if sign != 0 { -1.0f } else { 1.0f }) * 0x1p97f).(f32)
+}
+
+__math_uflowf :: proc(sign: u32) f32 {
+    return (fp_barrierf(if sign != 0 { -1.0f } else { 1.0f }) * 0x1p-95f * 0x1p-95f).(f32)
+}
+
+__math_divzerof :: proc(sign: u32) f32 {
+    return fp_barrierf(if sign != 0 { -1.0f } else { 1.0f }) / 0.0f
+}
+
+__math_invalid :: proc(x: f64) f64 { return (x - x) / (x - x) }
+__math_invalidf :: proc(x: f32) f32 { return (x - x) / (x - x) }
+__math_invalidl :: proc(x: f128) f128 { return (x - x) / (x - x) }
+
+__expo2 :: proc(x: f64, sign: f64) f64 {
+    k :: 2043
+    kln2 :: 0x1.62066151add8bp+10
+    scale := set_high_word(0.0, ((0x3ff + k / 2) << 20).(u32))
+    return exp(x - kln2) * (sign * scale) * scale
+}
+
+__expo2f :: proc(x: f32, sign: f32) f32 {
+    k :: 235
+    kln2 :: 0x1.45c778p+7f
+    scale := set_float_word(0.0f, ((0x7f + k / 2) << 23).(u32))
+    return expf(x - kln2) * (sign * scale) * scale
+}

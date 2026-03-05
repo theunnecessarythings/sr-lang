@@ -1,0 +1,20 @@
+package libc
+
+// Derived from musl-1.2.5/src/time/gettimeofday.c
+
+alltypes :: import "libc/include/alltypes"
+
+clock_gettime :: extern proc(i32, *alltypes.timespec) i32
+CLOCK_REALTIME :: 0
+
+gettimeofday :: proc(tv: *alltypes.timeval, tz: *void) i32 {
+    if tv == 0 {
+        return 0
+    }
+    
+    ts: alltypes.timespec
+    clock_gettime(CLOCK_REALTIME, &ts)
+    tv.tv_sec = ts.tv_sec
+    tv.tv_usec = (ts.tv_nsec / 1000).(i64)
+    return 0
+}

@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/sethostname.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+sethostname :: proc(name: *const u8, len: usize) i32 {
+    r := sc.syscall2_ret(nums.SYS_sethostname.(i64), name.^usize.(i64), len.(i64))
+    return r.(i32)
+}

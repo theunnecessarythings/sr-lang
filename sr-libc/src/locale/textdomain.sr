@@ -1,0 +1,47 @@
+package libc
+
+// Derived from musl-1.2.5/src/locale/textdomain.c
+
+string_h :: import "libc/src/string"
+strdup_mod :: import "libc/src/string/strdup"
+free :: extern proc(p: *void) void
+
+__domain: *u8 = "messages"
+__domain_alloced: i32 = 0
+
+__gettextdomain :: proc() *u8 {
+    return __domain
+}
+
+textdomain :: proc(domainname: *const u8) *u8 {
+    if domainname == null {
+        return __domain
+    }
+    if domainname[0] == 0 {
+        if __domain_alloced != 0 {
+            free(__domain.^*void)
+            __domain_alloced = 0
+        }
+        __domain = "messages"
+        return __domain
+    }
+    if string_h.strcmp(domainname, __domain) == 0 {
+        return __domain
+    }
+    dup := strdup_mod.strdup(domainname)
+    if dup == null { return null }
+    if __domain_alloced != 0 {
+        free(__domain.^*void)
+    }
+    __domain = dup
+    __domain_alloced = 1
+    return __domain
+}
+
+gettext :: proc(msgid: *const u8) *u8 {
+    return dgettext(null, msgid)
+}
+
+ngettext :: proc(msgid1: *const u8, msgid2: *const u8, n: u64) *u8 {
+    return dngettext(null, msgid1, msgid2, n)
+}

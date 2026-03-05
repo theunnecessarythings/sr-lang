@@ -1,0 +1,44 @@
+package libc
+
+// Derived from musl-1.2.5/src/conf/confstr.c
+
+errno_h :: import "libc/include/errno"
+
+// Configuration string queries
+// In musl this was mostly stubbed out returning empty strings.
+// The only special case is _CS_PATH which returns the standard PATH.
+
+_CS_PATH :: 0
+_CS_POSIX_V6_ILP32_OFF32_CFLAGS :: 1116
+
+confstr :: proc(name: i32, buf: *u8, len: usize) usize {
+    s: *const u8 = ""
+    
+    if name == 0 {
+        // _CS_PATH
+        s = "/bin:/usr/bin"
+    } else if (name & ~4) != 1 && (name - _CS_POSIX_V6_ILP32_OFF32_CFLAGS) > 35 {
+        errno_h.errno().* = errno_h.EINVAL
+        return 0
+    }
+    
+    // Simple string copy (avoiding snprintf for minimal build)
+    result_len: usize = 0
+    while s[result_len] != 0 {
+        result_len += 1
+    }
+    
+    if buf != 0 &&len > 0 {
+        copy_len := if result_len < len { result_len } else { len - 1 }
+        i: usize = 0
+        while i < copy_len {
+            buf[i] = s[i]
+            i += 1
+        }
+        if len > 0 {
+            buf[copy_len] = 0
+        }
+    }
+    
+    return result_len + 1
+}

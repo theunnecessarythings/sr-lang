@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/swap.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+swapon :: proc(path: *const u8, flags: i32) i32 {
+    r := sc.syscall2_ret(nums.SYS_swapon.(i64), path.^usize.(i64), flags.(i64))
+    return r.(i32)
+}
+
+swapoff :: proc(path: *const u8) i32 {
+    r := sc.syscall1_ret(nums.SYS_swapoff.(i64), path.^usize.(i64))
+    return r.(i32)
+}

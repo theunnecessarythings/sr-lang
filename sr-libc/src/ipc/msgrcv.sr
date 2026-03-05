@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/ipc/msgrcv.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/msg.h>
+// #include <syscall.h>
+// #include <ipc.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+msgrcv :: proc(q: i32, m: *void, len: usize, type: i64, flag: i32) isize {
+    return sc.syscall5_ret(nums.SYS_msgrcv.(i64), q.(i64), m.^usize.(i64), len.(i64), type.(i64), flag.(i64)).(isize)
+}

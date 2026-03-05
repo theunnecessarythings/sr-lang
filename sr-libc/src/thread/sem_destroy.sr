@@ -1,0 +1,8 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/sem_destroy.c
+
+sem_destroy :: proc(sem: *sem_t) i32 {
+    _ = sem
+    return 0
+}

@@ -1,0 +1,66 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/netlink.c
+
+string_h :: import "libc/src/string"
+nums :: import "libc/include/syscall"
+sc :: import "libc/src/syscall/syscall"
+socket_mod :: import "libc/src/network/socket"
+send_mod :: import "libc/src/network/send"
+recv_mod :: import "libc/src/network/recv"
+close_mod :: import "libc/src/unistd/close"
+netlink_h :: import "libc/include/netlink"
+
+__netlink_enumerate :: proc(fd: i32, seq: u32, typ: i32, af: i32, cb: proc(*void, *netlink_h.nlmsghdr) i32, ctx: *void) i32 {
+    h: *netlink_h.nlmsghdr
+    u_buf: [8192]u8
+    r: i32
+    ret: i32
+
+    // Build request in place at start of u_buf
+    req := u_buf.^*netlink_h.nlmsghdr
+    req.* = netlink_h.nlmsghdr{ nlmsg_len: (sizeof(netlink_h.nlmsghdr) + sizeof(netlink_h.rtgenmsg)).(u32) }
+    req.nlmsg_type = typ.(u16)
+    req.nlmsg_flags = (netlink_h.NLM_F_DUMP | netlink_h.NLM_F_REQUEST).(u16)
+    req.nlmsg_seq = seq
+    req.nlmsg_pid = 0
+    g := (u_buf.^usize + sizeof(netlink_h.nlmsghdr)).(usize).^*netlink_h.rtgenmsg
+    g.rtgen_family = af.(u8)
+
+    _ = string_h.memset((u_buf.^*void), 0, (sizeof(netlink_h.nlmsghdr) + sizeof(netlink_h.rtgenmsg)).(usize))
+    req.nlmsg_len = (sizeof(netlink_h.nlmsghdr) + sizeof(netlink_h.rtgenmsg)).(u32)
+    req.nlmsg_type = typ.(u16)
+    req.nlmsg_flags = (netlink_h.NLM_F_DUMP | netlink_h.NLM_F_REQUEST).(u16)
+    req.nlmsg_seq = seq
+    req.nlmsg_pid = 0
+    g.rtgen_family = af.(u8)
+
+    r = send_mod.send(fd, req.^*const void, req.nlmsg_len.(usize), 0).(i32)
+    if r < 0 { return r }
+
+    while true {
+        r = recv_mod.recv(fd, &u_buf[0], 8192, MSG_DONTWAIT).(i32)
+        if r <= 0 { return -1 }
+        h = &u_buf[0].^*netlink_h.nlmsghdr
+        end := (&u_buf[r.(usize)]).^*void
+        while netlink_h.NLMSG_OK(h, end) {
+            if h.nlmsg_type == netlink_h.NLMSG_DONE { return 0 }
+            if h.nlmsg_type == netlink_h.NLMSG_ERROR { return -1 }
+            ret = cb(ctx, h)
+            if ret != 0 { return ret }
+            h = netlink_h.NLMSG_NEXT(h)
+        }
+    }
+}
+
+__rtnetlink_enumerate :: proc(link_af: i32, addr_af: i32, cb: proc(*void, *netlink_h.nlmsghdr) i32, ctx: *void) i32 {
+    fd: i32
+    r: i32
+
+    fd = socket_mod.socket(PF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, netlink_h.NETLINK_ROUTE)
+    if fd < 0 { return -1 }
+    r = __netlink_enumerate(fd, 1, netlink_h.RTM_GETLINK, link_af, cb, ctx)
+    if r == 0 { r = __netlink_enumerate(fd, 2, netlink_h.RTM_GETADDR, addr_af, cb, ctx) }
+    _ = close_mod.close(fd)
+    return r
+}

@@ -1,0 +1,34 @@
+package libc
+
+// Derived from musl-1.2.5/src/select/ppoll.c
+
+errno_h :: import "libc/include/errno"
+nums :: import "libc/include/syscall"
+poll_h :: import "libc/include/poll"
+alltypes :: import "libc/include/alltypes"
+sc :: import "libc/src/syscall/syscall"
+
+ppoll :: proc(fds: *poll_h.pollfd, n: poll_h.nfds_t, ts: *const alltypes.timespec, sigmask: *const alltypes.sigset_t) i32 {
+    ts_local: alltypes.timespec
+    ts_ptr: usize = 0
+
+    if ts != 0 {
+        if ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000 {
+            errno_h.errno().* = errno_h.EINVAL
+            return -1
+        }
+        ts_local.tv_sec = ts.tv_sec
+        ts_local.tv_nsec = ts.tv_nsec
+        ts_ptr = (&ts_local).(usize)
+    }
+
+    r := sc.syscall5_ret(
+        nums.SYS_ppoll.(i64),
+        fds.^usize.(i64),
+        n.(i64),
+        ts_ptr.(i64),
+        sigmask.^usize.(i64),
+        sizeof(alltypes.sigset_t).(i64),
+    )
+    return r.(i32)
+}

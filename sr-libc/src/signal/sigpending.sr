@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/sigpending.c
+
+nums :: import "libc/include/syscall"
+sc :: import "libc/src/syscall/syscall"
+
+sigpending :: proc(set: *alltypes.sigset_t) i32 {
+    r := sc.syscall2_ret(
+        nums.SYS_rt_sigpending.(i64),
+        set.^usize.(i64),
+        sizeof(alltypes.sigset_t).(i64),
+    )
+    return r.(i32)
+}

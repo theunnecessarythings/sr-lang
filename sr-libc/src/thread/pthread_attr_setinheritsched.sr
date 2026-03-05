@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_attr_setinheritsched.c
+
+attr_int :: import "libc/src/thread/pthread_attr_internal"
+errno_mod :: import "libc/include/errno"
+
+pthread_attr_setinheritsched :: proc(a: *alltypes.pthread_attr_t, inherit: i32) i32 {
+    if inherit > 1 { return errno_mod.EINVAL }
+    attr_int.attr_sched(a).* = inherit
+    return 0
+}

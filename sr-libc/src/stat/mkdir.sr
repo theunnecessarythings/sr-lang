@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/stat/mkdir.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+mkdir :: proc(path: *const u8, mode: mode_t) i32 {
+    r := sc.syscall2_ret(nums.SYS_mkdir.(i64), path.^usize.(i64), mode.(i64))
+    return r.(i32)
+}

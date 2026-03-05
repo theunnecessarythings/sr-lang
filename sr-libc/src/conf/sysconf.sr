@@ -1,0 +1,417 @@
+package libc
+
+// Derived from musl-1.2.5/src/conf/sysconf.c
+
+errno_h :: import "libc/include/errno"
+res :: import "libc/include/sys/resource"
+nums :: import "libc/include/syscall"
+sc :: import "libc/src/syscall/syscall"
+aux :: import "libc/src/misc/getauxval"
+lsysinfo :: import "libc/src/linux/sysinfo"
+info_h :: import "libc/include/sys/sysinfo"
+
+// local constants (x86_64 musl)
+LONG_MAX :: 0x7fff_ffff_ffff_ffff
+ARG_MAX :: 131072
+TZNAME_MAX :: 6
+IOV_MAX :: 1024
+TTY_NAME_MAX :: 32
+LOGIN_NAME_MAX :: 256
+PTHREAD_DESTRUCTOR_ITERATIONS :: 4
+PTHREAD_KEYS_MAX :: 128
+PTHREAD_STACK_MIN :: 2048
+SEM_NSEMS_MAX :: 256
+SEM_VALUE_MAX :: 0x7fffffff
+DELAYTIMER_MAX :: 0x7fffffff
+MQ_PRIO_MAX :: 32768
+BC_BASE_MAX :: 99
+BC_DIM_MAX :: 2048
+BC_SCALE_MAX :: 99
+BC_STRING_MAX :: 1000
+COLL_WEIGHTS_MAX :: 2
+RE_DUP_MAX :: 255
+NZERO :: 20
+HOST_NAME_MAX :: 255
+SYMLOOP_MAX :: 40
+PAGE_SIZE :: 4096
+MINSIGSTKSZ :: 2048
+SIGSTKSZ :: 8192
+_NSIG :: 65
+_POSIX_VERSION :: 200809
+_XOPEN_VERSION :: 700
+
+_SC_ARG_MAX :: 0
+_SC_CHILD_MAX :: 1
+_SC_CLK_TCK :: 2
+_SC_NGROUPS_MAX :: 3
+_SC_OPEN_MAX :: 4
+_SC_STREAM_MAX :: 5
+_SC_TZNAME_MAX :: 6
+_SC_JOB_CONTROL :: 7
+_SC_SAVED_IDS :: 8
+_SC_REALTIME_SIGNALS :: 9
+_SC_PRIORITY_SCHEDULING :: 10
+_SC_TIMERS :: 11
+_SC_ASYNCHRONOUS_IO :: 12
+_SC_PRIORITIZED_IO :: 13
+_SC_SYNCHRONIZED_IO :: 14
+_SC_FSYNC :: 15
+_SC_MAPPED_FILES :: 16
+_SC_MEMLOCK :: 17
+_SC_MEMLOCK_RANGE :: 18
+_SC_MEMORY_PROTECTION :: 19
+_SC_MESSAGE_PASSING :: 20
+_SC_SEMAPHORES :: 21
+_SC_SHARED_MEMORY_OBJECTS :: 22
+_SC_AIO_LISTIO_MAX :: 23
+_SC_AIO_MAX :: 24
+_SC_AIO_PRIO_DELTA_MAX :: 25
+_SC_DELAYTIMER_MAX :: 26
+_SC_MQ_OPEN_MAX :: 27
+_SC_MQ_PRIO_MAX :: 28
+_SC_VERSION :: 29
+_SC_PAGE_SIZE :: 30
+_SC_RTSIG_MAX :: 31
+_SC_SEM_NSEMS_MAX :: 32
+_SC_SEM_VALUE_MAX :: 33
+_SC_SIGQUEUE_MAX :: 34
+_SC_TIMER_MAX :: 35
+_SC_BC_BASE_MAX :: 36
+_SC_BC_DIM_MAX :: 37
+_SC_BC_SCALE_MAX :: 38
+_SC_BC_STRING_MAX :: 39
+_SC_COLL_WEIGHTS_MAX :: 40
+_SC_EXPR_NEST_MAX :: 42
+_SC_LINE_MAX :: 43
+_SC_RE_DUP_MAX :: 44
+_SC_2_VERSION :: 46
+_SC_2_C_BIND :: 47
+_SC_2_C_DEV :: 48
+_SC_2_FORT_DEV :: 49
+_SC_2_FORT_RUN :: 50
+_SC_2_SW_DEV :: 51
+_SC_2_LOCALEDEF :: 52
+_SC_IOV_MAX :: 60
+_SC_THREADS :: 67
+_SC_THREAD_SAFE_FUNCTIONS :: 68
+_SC_GETGR_R_SIZE_MAX :: 69
+_SC_GETPW_R_SIZE_MAX :: 70
+_SC_LOGIN_NAME_MAX :: 71
+_SC_TTY_NAME_MAX :: 72
+_SC_THREAD_DESTRUCTOR_ITERATIONS :: 73
+_SC_THREAD_KEYS_MAX :: 74
+_SC_THREAD_STACK_MIN :: 75
+_SC_THREAD_THREADS_MAX :: 76
+_SC_THREAD_ATTR_STACKADDR :: 77
+_SC_THREAD_ATTR_STACKSIZE :: 78
+_SC_THREAD_PRIORITY_SCHEDULING :: 79
+_SC_THREAD_PRIO_INHERIT :: 80
+_SC_THREAD_PRIO_PROTECT :: 81
+_SC_THREAD_PROCESS_SHARED :: 82
+_SC_NPROCESSORS_CONF :: 83
+_SC_NPROCESSORS_ONLN :: 84
+_SC_PHYS_PAGES :: 85
+_SC_AVPHYS_PAGES :: 86
+_SC_ATEXIT_MAX :: 87
+_SC_PASS_MAX :: 88
+_SC_XOPEN_VERSION :: 89
+_SC_XOPEN_XCU_VERSION :: 90
+_SC_XOPEN_UNIX :: 91
+_SC_XOPEN_CRYPT :: 92
+_SC_XOPEN_ENH_I18N :: 93
+_SC_XOPEN_SHM :: 94
+_SC_2_CHAR_TERM :: 95
+_SC_2_UPE :: 97
+_SC_XOPEN_XPG2 :: 98
+_SC_XOPEN_XPG3 :: 99
+_SC_XOPEN_XPG4 :: 100
+_SC_NZERO :: 109
+_SC_XBS5_ILP32_OFF32 :: 125
+_SC_XBS5_ILP32_OFFBIG :: 126
+_SC_XBS5_LP64_OFF64 :: 127
+_SC_XBS5_LPBIG_OFFBIG :: 128
+_SC_XOPEN_LEGACY :: 129
+_SC_XOPEN_REALTIME :: 130
+_SC_XOPEN_REALTIME_THREADS :: 131
+_SC_ADVISORY_INFO :: 132
+_SC_BARRIERS :: 133
+_SC_CLOCK_SELECTION :: 137
+_SC_CPUTIME :: 138
+_SC_THREAD_CPUTIME :: 139
+_SC_MONOTONIC_CLOCK :: 149
+_SC_READER_WRITER_LOCKS :: 153
+_SC_SPIN_LOCKS :: 154
+_SC_REGEXP :: 155
+_SC_SHELL :: 157
+_SC_SPAWN :: 159
+_SC_SPORADIC_SERVER :: 160
+_SC_THREAD_SPORADIC_SERVER :: 161
+_SC_TIMEOUTS :: 164
+_SC_TYPED_MEMORY_OBJECTS :: 165
+_SC_2_PBS :: 168
+_SC_2_PBS_ACCOUNTING :: 169
+_SC_2_PBS_LOCATE :: 170
+_SC_2_PBS_MESSAGE :: 171
+_SC_2_PBS_TRACK :: 172
+_SC_SYMLOOP_MAX :: 173
+_SC_STREAMS :: 174
+_SC_2_PBS_CHECKPOINT :: 175
+_SC_V6_ILP32_OFF32 :: 176
+_SC_V6_ILP32_OFFBIG :: 177
+_SC_V6_LP64_OFF64 :: 178
+_SC_V6_LPBIG_OFFBIG :: 179
+_SC_HOST_NAME_MAX :: 180
+_SC_TRACE :: 181
+_SC_TRACE_EVENT_FILTER :: 182
+_SC_TRACE_INHERIT :: 183
+_SC_TRACE_LOG :: 184
+_SC_IPV6 :: 235
+_SC_RAW_SOCKETS :: 236
+_SC_V7_ILP32_OFF32 :: 237
+_SC_V7_ILP32_OFFBIG :: 238
+_SC_V7_LP64_OFF64 :: 239
+_SC_V7_LPBIG_OFFBIG :: 240
+_SC_SS_REPL_MAX :: 241
+_SC_TRACE_EVENT_NAME_MAX :: 242
+_SC_TRACE_NAME_MAX :: 243
+_SC_TRACE_SYS_MAX :: 244
+_SC_TRACE_USER_EVENT_MAX :: 245
+_SC_XOPEN_STREAMS :: 246
+_SC_THREAD_ROBUST_PRIO_INHERIT :: 247
+_SC_THREAD_ROBUST_PRIO_PROTECT :: 248
+_SC_MINSIGSTKSZ :: 249
+_SC_SIGSTKSZ :: 250
+
+JT :: fn(x: i32) i32 { return -256 | x }
+RLIM :: fn(x: i32) i32 { return -32768 | x }
+
+VER :: JT(1)
+JT_ARG_MAX :: JT(2)
+JT_MQ_PRIO_MAX :: JT(3)
+JT_PAGE_SIZE :: JT(4)
+JT_SEM_VALUE_MAX :: JT(5)
+JT_NPROCESSORS_CONF :: JT(6)
+JT_NPROCESSORS_ONLN :: JT(7)
+JT_PHYS_PAGES :: JT(8)
+JT_AVPHYS_PAGES :: JT(9)
+JT_ZERO :: JT(10)
+JT_DELAYTIMER_MAX :: JT(11)
+JT_MINSIGSTKSZ :: JT(12)
+JT_SIGSTKSZ :: JT(13)
+
+AT_MINSIGSTKSZ :: 51
+
+get_value :: fn(name: i32) i32 {
+    switch name {
+    case _SC_ARG_MAX: return JT_ARG_MAX
+    case _SC_CHILD_MAX: return RLIM(res.RLIMIT_NPROC)
+    case _SC_CLK_TCK: return 100
+    case _SC_NGROUPS_MAX: return 32
+    case _SC_OPEN_MAX: return RLIM(res.RLIMIT_NOFILE)
+    case _SC_STREAM_MAX: return -1
+    case _SC_TZNAME_MAX: return TZNAME_MAX
+    case _SC_JOB_CONTROL: return 1
+    case _SC_SAVED_IDS: return 1
+    case _SC_REALTIME_SIGNALS: return VER
+    case _SC_PRIORITY_SCHEDULING: return -1
+    case _SC_TIMERS: return VER
+    case _SC_ASYNCHRONOUS_IO: return VER
+    case _SC_PRIORITIZED_IO: return -1
+    case _SC_SYNCHRONIZED_IO: return -1
+    case _SC_FSYNC: return VER
+    case _SC_MAPPED_FILES: return VER
+    case _SC_MEMLOCK: return VER
+    case _SC_MEMLOCK_RANGE: return VER
+    case _SC_MEMORY_PROTECTION: return VER
+    case _SC_MESSAGE_PASSING: return VER
+    case _SC_SEMAPHORES: return VER
+    case _SC_SHARED_MEMORY_OBJECTS: return VER
+    case _SC_AIO_LISTIO_MAX: return -1
+    case _SC_AIO_MAX: return -1
+    case _SC_AIO_PRIO_DELTA_MAX: return JT_ZERO
+    case _SC_DELAYTIMER_MAX: return JT_DELAYTIMER_MAX
+    case _SC_MQ_OPEN_MAX: return -1
+    case _SC_MQ_PRIO_MAX: return JT_MQ_PRIO_MAX
+    case _SC_VERSION: return VER
+    case _SC_PAGE_SIZE: return JT_PAGE_SIZE
+    case _SC_RTSIG_MAX: return _NSIG - 1 - 31 - 3
+    case _SC_SEM_NSEMS_MAX: return SEM_NSEMS_MAX
+    case _SC_SEM_VALUE_MAX: return JT_SEM_VALUE_MAX
+    case _SC_SIGQUEUE_MAX: return -1
+    case _SC_TIMER_MAX: return -1
+    case _SC_BC_BASE_MAX: return BC_BASE_MAX
+    case _SC_BC_DIM_MAX: return BC_DIM_MAX
+    case _SC_BC_SCALE_MAX: return BC_SCALE_MAX
+    case _SC_BC_STRING_MAX: return BC_STRING_MAX
+    case _SC_COLL_WEIGHTS_MAX: return COLL_WEIGHTS_MAX
+    case _SC_EXPR_NEST_MAX: return -1
+    case _SC_LINE_MAX: return -1
+    case _SC_RE_DUP_MAX: return RE_DUP_MAX
+    case _SC_2_VERSION: return VER
+    case _SC_2_C_BIND: return VER
+    case _SC_2_C_DEV: return -1
+    case _SC_2_FORT_DEV: return -1
+    case _SC_2_FORT_RUN: return -1
+    case _SC_2_SW_DEV: return -1
+    case _SC_2_LOCALEDEF: return -1
+    case _SC_IOV_MAX: return IOV_MAX
+    case _SC_THREADS: return VER
+    case _SC_THREAD_SAFE_FUNCTIONS: return VER
+    case _SC_GETGR_R_SIZE_MAX: return -1
+    case _SC_GETPW_R_SIZE_MAX: return -1
+    case _SC_LOGIN_NAME_MAX: return LOGIN_NAME_MAX
+    case _SC_TTY_NAME_MAX: return TTY_NAME_MAX
+    case _SC_THREAD_DESTRUCTOR_ITERATIONS: return PTHREAD_DESTRUCTOR_ITERATIONS
+    case _SC_THREAD_KEYS_MAX: return PTHREAD_KEYS_MAX
+    case _SC_THREAD_STACK_MIN: return PTHREAD_STACK_MIN
+    case _SC_THREAD_THREADS_MAX: return -1
+    case _SC_THREAD_ATTR_STACKADDR: return VER
+    case _SC_THREAD_ATTR_STACKSIZE: return VER
+    case _SC_THREAD_PRIORITY_SCHEDULING: return VER
+    case _SC_THREAD_PRIO_INHERIT: return -1
+    case _SC_THREAD_PRIO_PROTECT: return -1
+    case _SC_THREAD_PROCESS_SHARED: return VER
+    case _SC_NPROCESSORS_CONF: return JT_NPROCESSORS_CONF
+    case _SC_NPROCESSORS_ONLN: return JT_NPROCESSORS_ONLN
+    case _SC_PHYS_PAGES: return JT_PHYS_PAGES
+    case _SC_AVPHYS_PAGES: return JT_AVPHYS_PAGES
+    case _SC_ATEXIT_MAX: return -1
+    case _SC_PASS_MAX: return -1
+    case _SC_XOPEN_VERSION: return _XOPEN_VERSION
+    case _SC_XOPEN_XCU_VERSION: return _XOPEN_VERSION
+    case _SC_XOPEN_UNIX: return 1
+    case _SC_XOPEN_CRYPT: return -1
+    case _SC_XOPEN_ENH_I18N: return 1
+    case _SC_XOPEN_SHM: return 1
+    case _SC_2_CHAR_TERM: return -1
+    case _SC_2_UPE: return -1
+    case _SC_XOPEN_XPG2: return -1
+    case _SC_XOPEN_XPG3: return -1
+    case _SC_XOPEN_XPG4: return -1
+    case _SC_NZERO: return NZERO
+    case _SC_XBS5_ILP32_OFF32: return -1
+    case _SC_XBS5_ILP32_OFFBIG: return -1
+    case _SC_XBS5_LP64_OFF64: return 1
+    case _SC_XBS5_LPBIG_OFFBIG: return -1
+    case _SC_XOPEN_LEGACY: return -1
+    case _SC_XOPEN_REALTIME: return -1
+    case _SC_XOPEN_REALTIME_THREADS: return -1
+    case _SC_ADVISORY_INFO: return VER
+    case _SC_BARRIERS: return VER
+    case _SC_CLOCK_SELECTION: return VER
+    case _SC_CPUTIME: return VER
+    case _SC_THREAD_CPUTIME: return VER
+    case _SC_MONOTONIC_CLOCK: return VER
+    case _SC_READER_WRITER_LOCKS: return VER
+    case _SC_SPIN_LOCKS: return VER
+    case _SC_REGEXP: return 1
+    case _SC_SHELL: return 1
+    case _SC_SPAWN: return VER
+    case _SC_SPORADIC_SERVER: return -1
+    case _SC_THREAD_SPORADIC_SERVER: return -1
+    case _SC_TIMEOUTS: return VER
+    case _SC_TYPED_MEMORY_OBJECTS: return -1
+    case _SC_2_PBS: return -1
+    case _SC_2_PBS_ACCOUNTING: return -1
+    case _SC_2_PBS_LOCATE: return -1
+    case _SC_2_PBS_MESSAGE: return -1
+    case _SC_2_PBS_TRACK: return -1
+    case _SC_SYMLOOP_MAX: return SYMLOOP_MAX
+    case _SC_STREAMS: return JT_ZERO
+    case _SC_2_PBS_CHECKPOINT: return -1
+    case _SC_V6_ILP32_OFF32: return -1
+    case _SC_V6_ILP32_OFFBIG: return -1
+    case _SC_V6_LP64_OFF64: return 1
+    case _SC_V6_LPBIG_OFFBIG: return -1
+    case _SC_HOST_NAME_MAX: return HOST_NAME_MAX
+    case _SC_TRACE: return -1
+    case _SC_TRACE_EVENT_FILTER: return -1
+    case _SC_TRACE_INHERIT: return -1
+    case _SC_TRACE_LOG: return -1
+    case _SC_IPV6: return VER
+    case _SC_RAW_SOCKETS: return VER
+    case _SC_V7_ILP32_OFF32: return -1
+    case _SC_V7_ILP32_OFFBIG: return -1
+    case _SC_V7_LP64_OFF64: return 1
+    case _SC_V7_LPBIG_OFFBIG: return -1
+    case _SC_SS_REPL_MAX: return -1
+    case _SC_TRACE_EVENT_NAME_MAX: return -1
+    case _SC_TRACE_NAME_MAX: return -1
+    case _SC_TRACE_SYS_MAX: return -1
+    case _SC_TRACE_USER_EVENT_MAX: return -1
+    case _SC_XOPEN_STREAMS: return JT_ZERO
+    case _SC_THREAD_ROBUST_PRIO_INHERIT: return -1
+    case _SC_THREAD_ROBUST_PRIO_PROTECT: return -1
+    case _SC_MINSIGSTKSZ: return JT_MINSIGSTKSZ
+    case _SC_SIGSTKSZ: return JT_SIGSTKSZ
+    else: return 0
+    }
+}
+
+sysconf :: proc(name: i32) i64 {
+    v := get_value(name)
+    if v == 0 {
+        errno_h.errno().* = errno_h.EINVAL
+        return -1
+    }
+    if v >= -1 { return v.(i64) }
+
+    if v < -256 {
+        lim: res.rlimit
+        _ = res.getrlimit(v & 16383, &lim)
+        if lim.rlim_cur == res.RLIM_INFINITY { return -1 }
+        if lim.rlim_cur > LONG_MAX.(u64) { return LONG_MAX }
+        return lim.rlim_cur.(i64)
+    }
+
+    switch (v & 0xff) {
+    case VER & 255: return _POSIX_VERSION
+    case JT_ARG_MAX & 255: return ARG_MAX
+    case JT_MQ_PRIO_MAX & 255: return MQ_PRIO_MAX
+    case JT_PAGE_SIZE & 255: return PAGE_SIZE
+    case JT_SEM_VALUE_MAX & 255: return SEM_VALUE_MAX
+    case JT_DELAYTIMER_MAX & 255: return DELAYTIMER_MAX
+    case JT_NPROCESSORS_CONF & 255:
+    case JT_NPROCESSORS_ONLN & 255: {
+        set: [128]u8
+        set[0] = 1
+        _ = sc.syscall3(nums.SYS_sched_getaffinity.(i64), 0, set.len.(i64), (&set[0]).^usize.(i64))
+        i: i32 = 0
+        cnt: i32 = 0
+        while i < set.len {
+            b := set[i.(usize)]
+            while b != 0 {
+                b &= b - 1
+                cnt += 1
+            }
+            i += 1
+        }
+        return cnt
+    }
+    case JT_PHYS_PAGES & 255:
+    case JT_AVPHYS_PAGES & 255: {
+        si: info_h.sysinfo
+        _ = lsysinfo.__lsysinfo(&si)
+        if si.mem_unit == 0 { si.mem_unit = 1 }
+        mem: u64
+        if name == _SC_PHYS_PAGES {
+            mem = si.totalram
+        } else {
+            mem = si.freeram + si.bufferram
+        }
+        mem = mem * si.mem_unit
+        mem = mem / PAGE_SIZE
+        if mem > LONG_MAX.(u64) { return LONG_MAX }
+        return mem.(i64)
+    }
+    case JT_MINSIGSTKSZ & 255:
+    case JT_SIGSTKSZ & 255: {
+        val := aux.__getauxval(AT_MINSIGSTKSZ).(i64)
+        if val < MINSIGSTKSZ { val = MINSIGSTKSZ }
+        if v == JT_SIGSTKSZ { val += SIGSTKSZ - MINSIGSTKSZ }
+        return val
+    }
+    case JT_ZERO & 255: return 0
+    else: return v
+    }
+}

@@ -1,0 +1,44 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/acosl.c (113-bit path).
+
+basic :: import "libc/src/math/basic"
+inv :: import "libc/src/math/invtrigl"
+
+clear_bottom :: fn(bits: u128) u128 {
+    return bits & ~0xffffffffffffffffu128
+}
+
+acosl :: proc(x: f128) f128 {
+    bits := x.^u128
+    exp := ((bits >> 112) & 0x7fff).(u16)
+    z: f128
+    s: f128
+    c: f128
+    f: f128
+
+    if exp >= 0x3fff {
+        if x == 1.0 { return 0.0 }
+        if x == -1.0 { return 2.0 * inv.pio2_hi + 0x1p-120 }
+        return 0.0 / (x - x)
+    }
+
+    if exp < (0x3fff - 1) {
+        if exp < 0x3fff - 113 - 1 { return inv.pio2_hi + 0x1p-120 }
+        return inv.pio2_hi - (inv.__invtrigl_R(x * x) * x - inv.pio2_lo + x)
+    }
+
+    if ((bits >> 127) & 1) != 0 {
+        z = (1.0 + x) * 0.5
+        s = sqrtl(z)
+        return 2.0 * (inv.pio2_hi - (inv.__invtrigl_R(z) * s - inv.pio2_lo + s))
+    }
+
+    z = (1.0 - x) * 0.5
+    s = sqrtl(z)
+    u := s.^u128
+    u = clear_bottom(u)
+    f = u.^f128
+    c = (z - f * f) / (s + f)
+    return 2.0 * (inv.__invtrigl_R(z) * s + c + f)
+}

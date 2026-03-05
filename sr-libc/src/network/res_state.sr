@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/res_state.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <resolv.h>
+
+__res_state_storage: __res_state
+
+__res_state :: proc() *__res_state {
+    return &__res_state_storage
+}

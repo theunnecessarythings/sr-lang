@@ -1,0 +1,61 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/atan2.c.
+
+libm :: import "libc/src/math/libm_internal"
+basic :: import "libc/src/math/basic"
+
+pi :: 3.1415926535897931160E+00
+pi_lo :: 1.2246467991473531772E-16
+
+atan2 :: proc(y: f64, x: f64) f64 {
+    z: f64
+    m: u32
+    lx: u32
+    ly: u32
+    ix: u32
+    iy: u32
+
+    if basic.isnan(x) != 0 or basic.isnan(y) != 0 { return x + y }
+    ix = libm.get_high_word(x)
+    lx = libm.get_low_word(x)
+    iy = libm.get_high_word(y)
+    ly = libm.get_low_word(y)
+    if ((ix - 0x3ff00000) | lx) == 0 { return atan(y) }
+    m = ((iy >> 31) & 1) | ((ix >> 30) & 2)
+    ix &= 0x7fffffff
+    iy &= 0x7fffffff
+
+    if ((iy | ly) == 0) {
+        if m == 0 or m == 1 { return y }
+        if m == 2 { return pi }
+        return -pi
+    }
+    if ((ix | lx) == 0) {
+        return if (m & 1) != 0 { -pi / 2.0 } else { pi / 2.0 }
+    }
+    if ix == 0x7ff00000 {
+        if iy == 0x7ff00000 {
+            if m == 0 { return pi / 4.0 }
+            if m == 1 { return -pi / 4.0 }
+            if m == 2 { return 3.0 * pi / 4.0 }
+            return -3.0 * pi / 4.0
+        }
+        if m == 0 { return 0.0 }
+        if m == 1 { return -0.0 }
+        if m == 2 { return pi }
+        return -pi
+    }
+    if ix + (64 << 20) < iy or iy == 0x7ff00000 {
+        return if (m & 1) != 0 { -pi / 2.0 } else { pi / 2.0 }
+    }
+    if (m & 2) != 0 and iy + (64 << 20) < ix {
+        z = 0.0
+    } else {
+        z = atan(basic.fabs(y / x))
+    }
+    if m == 0 { return z }
+    if m == 1 { return -z }
+    if m == 2 { return pi - (z - pi_lo) }
+    return (z - pi_lo) - pi
+}

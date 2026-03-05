@@ -1,0 +1,52 @@
+package libc
+
+// Derived from musl-1.2.5/src/legacy/getusershell.c
+
+fopen_mod :: import "libc/src/stdio/fopen"
+fclose_mod :: import "libc/src/stdio/fclose"
+fgets_mod :: import "libc/src/stdio/fgets"
+rewind_mod :: import "libc/src/stdio/rewind"
+pwf :: import "libc/src/passwd/pwf"
+
+__usershell_file: *alltypes.FILE = null
+__usershell_buf: [256]u8
+__default_shells: [3]*u8 = { "/bin/sh", "/bin/bash", null }
+__default_idx: usize = 0
+
+endusershell :: proc() void {
+    if __usershell_file != null {
+        _ = fclose_mod.fclose(__usershell_file)
+        __usershell_file = null
+    }
+    __default_idx = 0
+}
+
+setusershell :: proc() void {
+    if __usershell_file == null {
+        __usershell_file = fopen_mod.fopen("/etc/shells", "r")
+    } else {
+        rewind_mod.rewind(__usershell_file)
+    }
+    __default_idx = 0
+}
+
+getusershell :: proc() *u8 {
+    if __usershell_file == null {
+        __usershell_file = fopen_mod.fopen("/etc/shells", "r")
+    }
+
+    if __usershell_file == null {
+        s := __default_shells[__default_idx]
+        if s == null { return null }
+        __default_idx += 1
+        return s
+    }
+
+    while true {
+        s := fgets_mod.fgets(&__usershell_buf[0], 256, __usershell_file)
+        if s == null { return null }
+        pwf.strip_newline(s)
+        if s[0] == 0 || s[0] == '#'.(u8) { continue }
+        return s
+    }
+}

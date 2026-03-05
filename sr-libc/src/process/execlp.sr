@@ -1,0 +1,36 @@
+package libc
+
+// Derived from musl-1.2.5/src/process/execlp.c
+
+stdarg_mod :: import "libc/include/stdarg"
+errno_mod :: import "libc/include/errno"
+malloc_mod :: import "libc/src/malloc/mallocng/malloc"
+free_mod :: import "libc/src/malloc/free"
+
+execlp :: proc(file: *const u8, argv0: *const u8, /* TODO */ ...) i32 {
+    ap: stdarg_mod.va_list
+    stdarg_mod.va_start(&ap)
+    argc: i32 = 1
+    while stdarg_mod.va_arg(*const u8, &ap) != null { argc += 1 }
+    stdarg_mod.va_end(&ap)
+
+    argv := malloc_mod.malloc((argc + 1).(usize) * sizeof(*u8)).(**u8)
+    if argv == null {
+        errno_mod.errno().* = errno_mod.ENOMEM
+        return -1
+    }
+
+    stdarg_mod.va_start(&ap)
+    argv[0] = argvnull
+    i: i32 = 1
+    while i < argc {
+        argv[i] = stdarg_mod.va_arg(*u8, &ap)
+        i += 1
+    }
+    argv[i] = null
+    stdarg_mod.va_end(&ap)
+
+    r := execvp(file, argv)
+    free_mod.free(argv.^*void)
+    return r
+}

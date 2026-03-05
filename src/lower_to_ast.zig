@@ -349,7 +349,11 @@ fn lowerStmtFromDecl(self: *Lower, id: cst.DeclId) !ast.StmtId {
         },
         .Continue => blk: {
             const r = self.cst_program.exprs.get(.Continue, d.rhs);
-            break :blk self.ast_unit.stmts.add(.Continue, .{ .label = r.label, .loc = r.loc });
+            break :blk self.ast_unit.stmts.add(.Continue, .{
+                .label = r.label,
+                .value = if (!r.value.isNone()) .some(try self.lowerExpr(r.value.unwrap())) else .none(),
+                .loc = r.loc,
+            });
         },
         .Unreachable => blk: {
             const r = self.cst_program.exprs.get(.Unreachable, d.rhs);
@@ -606,6 +610,7 @@ fn lowerExpr(self: *Lower, id: cst.ExprId) anyerror!ast.ExprId {
             break :blk self.ast_unit.exprs.add(.Match, .{
                 .expr = try self.lowerExpr(r.expr),
                 .arms = try self.lowerMatchArms(r.arms),
+                .label = r.label,
                 .loc = r.loc,
             });
         },
@@ -619,7 +624,11 @@ fn lowerExpr(self: *Lower, id: cst.ExprId) anyerror!ast.ExprId {
         },
         .Continue => blk: {
             const r = self.cst_program.exprs.get(.Continue, id);
-            break :blk self.ast_unit.exprs.add(.Continue, .{ .loc = r.loc, .label = r.label });
+            break :blk self.ast_unit.exprs.add(.Continue, .{
+                .loc = r.loc,
+                .label = r.label,
+                .value = if (!r.value.isNone()) .some(try self.lowerExpr(r.value.unwrap())) else .none(),
+            });
         },
         .Unreachable => blk: {
             const r = self.cst_program.exprs.get(.Unreachable, id);
@@ -1124,23 +1133,127 @@ fn patternFromExpr(self: *Lower, id: cst.ExprId) !?ast.PatternId {
 }
 
 const LiteralScanner = struct {
+    fn hexVal(c: u8) ?u8 {
+        return switch (c) {
+            '0'...'9' => c - '0',
+            'a'...'f' => c - 'a' + 10,
+            'A'...'F' => c - 'A' + 10,
+            else => null,
+        };
+    }
+
+    fn parseHexByte(text: []const u8, start: usize) ?u8 {
+        if (start + 1 >= text.len) return null;
+        const hi = hexVal(text[start]) orelse return null;
+        const lo = hexVal(text[start + 1]) orelse return null;
+        return (hi << 4) | lo;
+    }
+
+    fn parseUnicodeEscape(text: []const u8, start: usize) ?struct { codepoint: u32, end: usize } {
+        // Expect text[start] == '{'
+        var i = start + 1;
+        if (i >= text.len) return null;
+        var value: u32 = 0;
+        var saw_digit = false;
+        while (i < text.len and text[i] != '}') : (i += 1) {
+            const v = hexVal(text[i]) orelse return null;
+            saw_digit = true;
+            value = value * 16 + v;
+            if (value > 0x10FFFF) return null;
+        }
+        if (!saw_digit) return null;
+        if (i >= text.len or text[i] != '}') return null;
+        if (value >= 0xD800 and value <= 0xDFFF) return null;
+        return .{ .codepoint = value, .end = i };
+    }
+
+    fn appendUtf8(buf: *std.ArrayList(u8), gpa: std.mem.Allocator, codepoint: u32) !void {
+        var tmp: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(@as(u21, @intCast(codepoint)), &tmp) catch {
+            try buf.append(gpa, '?');
+            return;
+        };
+        try buf.appendSlice(gpa, tmp[0..len]);
+    }
+
     fn unescapeString(gpa: std.mem.Allocator, strs: *ast.StringInterner, quoted_str: []const u8, raw: bool) !ast.StrId {
         const inner = if (raw) std.mem.trim(u8, quoted_str[1..], "\"#") else quoted_str[1 .. quoted_str.len - 1];
+        if (raw) return strs.intern(inner);
         var buf: std.ArrayList(u8) = std.ArrayList(u8){};
         defer buf.deinit(gpa);
 
         var i: usize = 0;
-        while (i < inner.len) : (i += 1) {
+        while (i < inner.len) {
             if (inner[i] == '\\' and i + 1 < inner.len) {
                 i += 1;
                 switch (inner[i]) {
-                    'n' => try buf.append(gpa, '\n'),
-                    't' => try buf.append(gpa, '\t'),
-                    'r' => try buf.append(gpa, '\r'),
-                    '0' => try buf.append(gpa, 0),
-                    else => try buf.append(gpa, inner[i]),
+                    'n' => {
+                        try buf.append(gpa, '\n');
+                        i += 1;
+                        continue;
+                    },
+                    't' => {
+                        try buf.append(gpa, '\t');
+                        i += 1;
+                        continue;
+                    },
+                    'r' => {
+                        try buf.append(gpa, '\r');
+                        i += 1;
+                        continue;
+                    },
+                    '0' => {
+                        try buf.append(gpa, 0);
+                        i += 1;
+                        continue;
+                    },
+                    '\\' => {
+                        try buf.append(gpa, '\\');
+                        i += 1;
+                        continue;
+                    },
+                    '"' => {
+                        try buf.append(gpa, '"');
+                        i += 1;
+                        continue;
+                    },
+                    '\'' => {
+                        try buf.append(gpa, '\'');
+                        i += 1;
+                        continue;
+                    },
+                    'x' => {
+                        if (parseHexByte(inner, i + 1)) |byte| {
+                            try buf.append(gpa, byte);
+                            i += 3;
+                            continue;
+                        }
+                        try buf.append(gpa, 'x');
+                        i += 1;
+                        continue;
+                    },
+                    'u' => {
+                        if (i + 1 < inner.len and inner[i + 1] == '{') {
+                            if (parseUnicodeEscape(inner, i + 1)) |esc| {
+                                try appendUtf8(&buf, gpa, esc.codepoint);
+                                i = esc.end + 1;
+                                continue;
+                            }
+                        }
+                        try buf.append(gpa, 'u');
+                        i += 1;
+                        continue;
+                    },
+                    else => {
+                        try buf.append(gpa, inner[i]);
+                        i += 1;
+                        continue;
+                    },
                 }
-            } else try buf.append(gpa, inner[i]);
+            } else {
+                try buf.append(gpa, inner[i]);
+                i += 1;
+            }
         }
         return strs.intern(buf.items);
     }
@@ -1148,17 +1261,27 @@ const LiteralScanner = struct {
     fn unescapeChar(quoted_char: []const u8) !u32 {
         const inner = quoted_char[1 .. quoted_char.len - 1];
         if (inner.len == 1) return inner[0];
-        if (inner.len == 2 and inner[0] == '\\') {
-            return switch (inner[1]) {
-                'n' => 10,
-                't' => 9,
-                'r' => 13,
-                '\\' => 92,
-                '"' => 34,
-                '\'' => 39,
-                '0' => 0,
-                else => inner[1],
-            };
+        if (inner.len >= 2 and inner[0] == '\\') {
+            switch (inner[1]) {
+                'n' => return 10,
+                't' => return 9,
+                'r' => return 13,
+                '\\' => return 92,
+                '"' => return 34,
+                '\'' => return 39,
+                '0' => return 0,
+                'x' => {
+                    if (parseHexByte(inner, 2)) |byte| return byte;
+                    return '?';
+                },
+                'u' => {
+                    if (inner.len >= 4 and inner[2] == '{') {
+                        if (parseUnicodeEscape(inner, 2)) |esc| return esc.codepoint;
+                    }
+                    return '?';
+                },
+                else => return inner[1],
+            }
         }
         return '?';
     }
@@ -1219,7 +1342,7 @@ const LiteralScanner = struct {
         return .{ .value = val, .base = base, .valid = true };
     }
 
-    fn parseFloatLiteralText(gpa: std.mem.Allocator, text: []const u8) !struct { value: f64, valid: bool } {
+    fn parseFloatLiteralText(gpa: std.mem.Allocator, text: []const u8) !struct { value: f128, valid: bool } {
         if (text.len == 0) return .{ .value = 0.0, .valid = false };
 
         // Same stack optimization logic for floats
@@ -1249,7 +1372,7 @@ const LiteralScanner = struct {
             }
         }
 
-        const val = std.fmt.parseFloat(f64, ptr[0..idx]) catch return .{ .value = 0.0, .valid = false };
+        const val = std.fmt.parseFloat(f128, ptr[0..idx]) catch return .{ .value = 0.0, .valid = false };
         return .{ .value = val, .valid = true };
     }
 };

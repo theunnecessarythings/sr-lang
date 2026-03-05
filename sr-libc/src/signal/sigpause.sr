@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/sigpause.c
+
+sigprocmask_mod :: import "libc/src/signal/sigprocmask"
+sigdelset_mod :: import "libc/src/signal/sigdelset"
+
+sigpause :: proc(sig: i32) i32 {
+    mask: alltypes.sigset_t
+    _ = sigprocmask_mod.sigprocmask(0, null, &mask)
+    _ = sigdelset_mod.sigdelset(&mask, sig)
+    return sigsuspend(&mask)
+}

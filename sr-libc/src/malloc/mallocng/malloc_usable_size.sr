@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/malloc/mallocng/malloc_usable_size.c
+
+meta_mod :: import "libc/src/malloc/mallocng/meta"
+
+malloc_usable_size :: proc(p: *void) usize {
+    if p == null { return 0 }
+    g := meta_mod.get_meta(p.^*const u8)
+    if g == null { return 0 }
+    stride := meta_mod.get_stride(g)
+    return if stride > meta_mod.IB { stride - meta_mod.IB } else { 0 }
+}

@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/getsockopt.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <sys/time.h>
+// #include <errno.h>
+// #include <syscall.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+getsockopt :: proc(fd: i32, level: i32, optname: i32, optval: *void restrict, optlen: *socklen_t restrict) i32 {
+    r := sc.syscall5_ret(nums.SYS_getsockopt.(i64), fd.(i64), level.(i64), optname.(i64), optval.^usize.(i64), optlen.^usize.(i64))
+    return r.(i32)
+}

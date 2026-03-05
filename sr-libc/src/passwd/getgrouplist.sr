@@ -1,0 +1,66 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/getgrouplist.c
+
+errno_h :: import "libc/include/errno"
+grp_h :: import "libc/include/grp"
+strcmp_mod :: import "libc/src/string/strcmp"
+fopen_mod :: import "libc/src/stdio/fopen"
+fclose_mod :: import "libc/src/stdio/fclose"
+getgrent_a :: import "libc/src/passwd/getgrent_a"
+
+getgrouplist :: proc(user: *const u8, gid: gid_t, groups: *gid_t, ngroups: *i32) i32 {
+    if user == null || groups == null || ngroups == null {
+        errno_h.errno().* = errno_h.EINVAL
+        return -1
+    }
+
+    max := ngroups.*
+    count: i32 = 0
+    if max > 0 {
+        groups[0] = gid
+        count = 1
+    }
+
+    f := fopen_mod.fopen("/etc/group", "r")
+    if f == null { return -1 }
+
+    line: [1024]u8
+    mem: [256]usize
+    gr: grp_h.group
+    res: *grp_h.group = null
+
+    while true {
+        r := getgrent_a.__getgrent_a(f, &gr, &line[0], 1024, (&mem[0]).^*u8, sizeof(mem), &res)
+        if r != 0 || res == null { break }
+
+        m := res.gr_mem
+        i: usize = 0
+        while m != null && m[i] != null {
+            if strcmp_mod.strcmp(m[i], user) == 0 {
+                // check duplicate
+                dup := false
+                j: i32 = 0
+                while j < count {
+                    if groups[j] == res.gr_gid { dup = true; break }
+                    j += 1
+                }
+                if !dup {
+                    if count >= max {
+                        _ = fclose_mod.fclose(f)
+                        ngroups.* = count + 1
+                        return -1
+                    }
+                    groups[count] = res.gr_gid
+                    count += 1
+                }
+                break
+            }
+            i += 1
+        }
+    }
+
+    _ = fclose_mod.fclose(f)
+    ngroups.* = count
+    return count
+}

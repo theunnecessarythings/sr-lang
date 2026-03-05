@@ -1,0 +1,63 @@
+package libc
+
+// Derived from musl-1.2.5/include/arpa/nameser.h (minimal subset).
+
+NS_PACKETSZ :: 512
+NS_MAXDNAME :: 1025
+NS_MAXMSG :: 65535
+NS_MAXCDNAME :: 255
+NS_MAXLABEL :: 63
+NS_HFIXEDSZ :: 12
+NS_QFIXEDSZ :: 4
+NS_RRFIXEDSZ :: 10
+NS_INT32SZ :: 4
+NS_INT16SZ :: 2
+NS_INT8SZ :: 1
+NS_INADDRSZ :: 4
+NS_IN6ADDRSZ :: 16
+NS_CMPRSFLGS :: 0xc0
+NS_DEFAULTPORT :: 53
+
+ns_s_qd :: 0
+ns_s_zn :: 0
+ns_s_an :: 1
+ns_s_pr :: 1
+ns_s_ns :: 2
+ns_s_ud :: 2
+ns_s_ar :: 3
+ns_s_max :: 4
+
+ns_sect :: i32
+
+ns_msg :: struct {
+    _msg: *const u8,
+    _eom: *const u8,
+    _id: u16,
+    _flags: u16,
+    _counts: [ns_s_max]u16,
+    _sections: [ns_s_max]*const u8,
+    _sect: ns_sect,
+    _rrnum: i32,
+    _msg_ptr: *const u8,
+}
+
+_ns_flagdata :: struct { mask: i32, shift: i32 }
+_ns_flagdata :: extern [_] _ns_flagdata
+
+ns_rr :: struct {
+    name: [NS_MAXDNAME]u8,
+    type: u16,
+    rr_class: u16,
+    ttl: u32,
+    rdlength: u16,
+    rdata: *const u8,
+}
+
+ns_get16 :: proc(cp: *const u8) u32
+ns_get32 :: proc(cp: *const u8) u64
+ns_put16 :: proc(s: u32, cp: *u8) void
+ns_put32 :: proc(l: u64, cp: *u8) void
+ns_initparse :: proc(msg: *const u8, msglen: i32, handle: *ns_msg) i32
+ns_skiprr :: proc(ptr: *const u8, eom: *const u8, section: ns_sect, count: i32) i32
+ns_parserr :: proc(handle: *ns_msg, section: ns_sect, rrnum: i32, rr: *ns_rr) i32
+ns_name_uncompress :: proc(msg: *const u8, eom: *const u8, src: *const u8, dst: *u8, dstsiz: usize) i32

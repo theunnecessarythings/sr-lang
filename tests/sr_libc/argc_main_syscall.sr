@@ -1,0 +1,13 @@
+package main
+
+libc_sys :: import "libc/include/syscall"
+libc_call :: import "libc/src/syscall/syscall"
+
+main :: fn(argc: i32, argv: **u8, envp: **u8) i32 {
+    _ = argc
+    _ = argv
+    _ = envp
+    msg := "argc-main sr-libc\n"
+    _ = libc_call.syscall3_ptr(libc_sys.SYS_write.(i64), 1, msg.ptr, msg.len)
+    return 0
+}

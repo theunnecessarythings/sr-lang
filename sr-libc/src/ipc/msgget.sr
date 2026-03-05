@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/ipc/msgget.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/msg.h>
+// #include <syscall.h>
+// #include <ipc.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+msgget :: proc(k: key_t, flag: i32) i32 {
+    return sc.syscall2_ret(nums.SYS_msgget.(i64), k.(i64), flag.(i64)).(i32)
+}

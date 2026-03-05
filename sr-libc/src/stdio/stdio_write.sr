@@ -1,0 +1,43 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/__stdio_write.c.
+
+unistd :: import "libc/include/unistd"
+impl :: import "libc/src/stdio/stdio_impl"
+alltypes :: import "libc/include/alltypes"
+
+__stdio_write :: proc(f: *alltypes.FILE, buf: *const u8, len: usize) usize {
+    iov0: alltypes.iovec = alltypes.iovec{ iov_base: f.wbase.^*void, iov_len: (f.wpos.^usize - f.wbase.^usize) }
+    iov1: alltypes.iovec = alltypes.iovec{ iov_base: buf.^*void, iov_len: len }
+    iovs: [2]alltypes.iovec = [iov0, iov1]
+    iovp := &iovs[0]
+    rem := iovp[0].iov_len + iovp[1].iov_len
+    iovcnt: i32 = 2
+
+    while true {
+        cnt := unistd.writev(f.fd, iovp, iovcnt)
+        if cnt == rem.(isize) {
+            f.wend = (f.buf.^usize + f.buf_size).(usize).^*u8
+            f.wpos = f.buf
+            f.wbase = f.buf
+            return len
+        }
+        if cnt < 0 {
+            f.wpos = (0.(usize)).^*u8
+            f.wbase = (0.(usize)).^*u8
+            f.wend = (0.(usize)).^*u8
+            f.flags = f.flags | impl.F_ERR.(u32)
+            if iovcnt == 2 { return 0 }
+            return len - iovp[0].iov_len
+        }
+
+        rem -= cnt.(usize)
+        if cnt.(usize) > iovp[0].iov_len {
+            cnt = (cnt.(usize) - iovp[0].iov_len).(isize)
+            iovp = (&iovp[1]).^*alltypes.iovec
+            iovcnt -= 1
+        }
+        iovp[0].iov_base = (iovp[0].iov_base.^usize + cnt.(usize)).^*void
+        iovp[0].iov_len -= cnt.(usize)
+    }
+}

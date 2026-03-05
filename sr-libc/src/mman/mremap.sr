@@ -1,0 +1,34 @@
+package libc
+
+// Derived from musl-1.2.5/src/mman/mremap.c
+
+syscall :: import "libc/src/syscall/syscall"
+errno_h :: import "libc/include/errno"
+
+SYS_mremap :: 25
+MREMAP_MAYMOVE : i32 = 1
+MREMAP_FIXED : i32 = 2
+PTRDIFF_MAX :: 0x7fffffffffffffff
+MAP_FAILED :: (0.(usize) - 1).(usize).^*void
+
+__vm_wait :: proc() {}
+
+ptr_arg :: proc(p: ?*void) i64 {
+    return (if p != null { (p?).^usize } else { 0.(usize) }).(i64)
+}
+
+__mremap :: proc(old_addr: *void, old_len: usize, new_len: usize, flags: i32, new_addr: ?*void) *void {
+    if new_len >= PTRDIFF_MAX {
+        errno_h.errno().* = errno_h.ENOMEM
+        return MAP_FAILED
+    }
+    
+    if (flags & MREMAP_FIXED) != 0 {
+        __vm_wait()
+    }
+
+    r := syscall.syscall5(SYS_mremap.(i64), ptr_arg(old_addr), old_len.(i64), new_len.(i64), flags.(i64), ptr_arg(new_addr))
+    return r.(usize).^*void
+}
+
+mremap :: __mremap

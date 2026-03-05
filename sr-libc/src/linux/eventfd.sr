@@ -1,0 +1,31 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/eventfd.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+err :: import "libc/include/errno"
+read_mod :: import "libc/src/unistd/read"
+write_mod :: import "libc/src/unistd/write"
+
+// eventfd() with fallback to SYS_eventfd when flags==0
+
+eventfd :: proc(count: u32, flags: i32) i32 {
+    r := sc.syscall2(nums.SYS_eventfd2.(i64), count.(i64), flags.(i64))
+    if r == -err.ENOSYS and flags == 0 {
+        r = sc.syscall1(nums.SYS_eventfd.(i64), count.(i64))
+    }
+    r = sc.__syscall_ret(r)
+    return r.(i32)
+}
+
+eventfd_read :: proc(fd: i32, value: *eventfd_t) i32 {
+    n := read_mod.read(fd, value.^*u8, sizeof(eventfd_t))
+    return if n == sizeof(eventfd_t) { 0 } else { -1 }
+}
+
+eventfd_write :: proc(fd: i32, value: eventfd_t) i32 {
+    v := value
+    n := write_mod.write(fd, &v.^*u8, sizeof(eventfd_t))
+    return if n == sizeof(eventfd_t) { 0 } else { -1 }
+}

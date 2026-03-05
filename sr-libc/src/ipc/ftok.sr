@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/ipc/ftok.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/ipc.h>
+// #include <sys/stat.h>
+
+stat_mod :: import "libc/src/stat/stat"
+stat_h :: import "libc/include/sys/stat"
+
+ftok :: proc(path: *const u8, id: i32) key_t {
+    st: stat_h.stat
+    if stat_mod.stat(path, &st) < 0 { return -1 }
+    return ((st.st_ino & 0xffff).(key_t) | ((st.st_dev & 0xff).(key_t) << 16) | ((id & 0xff).(key_t) << 24))
+}

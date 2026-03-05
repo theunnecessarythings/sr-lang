@@ -1,0 +1,37 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/tanhf.c.
+
+libm :: import "libc/src/math/libm_internal"
+
+tanhf :: proc(x: f32) f32 {
+    u := libm.asuint(x)
+    w: u32
+    sign: u32
+    t: f32
+
+    sign = u >> 31
+    u &= 0x7fffffff
+    x = libm.asfloat(u)
+    w = u
+
+    if w > 0x3f0c9f54 {
+        if w > 0x41200000 {
+            t = 1.0f + 0.0f / x
+        } else {
+            t = expm1f(2.0f * x)
+            t = 1.0f - 2.0f / (t + 2.0f)
+        }
+    } else if w > 0x3e82c578 {
+        t = expm1f(2.0f * x)
+        t = t / (t + 2.0f)
+    } else if w >= 0x00800000 {
+        t = expm1f(-2.0f * x)
+        t = -t / (t + 2.0f)
+    } else {
+        libm.fp_force_evalf(x * x)
+        t = x
+    }
+
+    return if sign != 0 { -t } else { t }
+}

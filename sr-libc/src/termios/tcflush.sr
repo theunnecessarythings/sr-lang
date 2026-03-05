@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/termios/tcflush.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <termios.h>
+// #include <sys/ioctl.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+ioctl_consts :: import "libc/include/sys/ioctl"
+
+tcflush :: proc(fd: i32, queue: i32) i32 {
+    r := sc.syscall3_ret(nums.SYS_ioctl.(i64), fd.(i64), ioctl_consts.TCFLSH.(i64), queue.(i64))
+    return r.(i32)
+}

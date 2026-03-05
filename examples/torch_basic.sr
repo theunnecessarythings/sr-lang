@@ -18,7 +18,7 @@ main :: proc() {
     x := torch.Tensor.rand(&shape[0], 2, kind, device)
 
     // y = x + x
-    y := x.add(x.t)
+    y := x.add(x)
 
     y.print()
 }

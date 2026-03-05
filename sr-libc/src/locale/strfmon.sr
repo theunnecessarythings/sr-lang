@@ -1,0 +1,23 @@
+package libc
+
+// Derived from musl-1.2.5/src/locale/strfmon.c
+
+errno_h :: import "libc/include/errno"
+
+vstrfmon_l :: proc(s: *u8, n: usize, loc: locale_t, fmt: *const u8, ap: va_list) isize {
+    _ = s; _ = n; _ = loc; _ = fmt; _ = ap
+    errno_h.errno().* = errno_h.ENOSYS
+    return -1
+}
+
+strfmon_l :: proc(s: *u8, n: usize, loc: locale_t, fmt: *const u8, /* TODO */ ...) isize {
+    _ = s; _ = n; _ = loc; _ = fmt
+    errno_h.errno().* = errno_h.ENOSYS
+    return -1
+}
+
+strfmon :: proc(s: *u8, n: usize, fmt: *const u8, /* TODO */ ...) isize {
+    _ = s; _ = n; _ = fmt
+    errno_h.errno().* = errno_h.ENOSYS
+    return -1
+}

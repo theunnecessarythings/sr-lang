@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/conjl.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+conjl :: proc(z: complex(f128)) complex(f128) {
+    return impl.cmplxl(z.real, -z.imag)
+}

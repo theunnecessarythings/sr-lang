@@ -1,0 +1,20 @@
+package libc
+
+// Derived from musl-1.2.5/src/ipc/shmget.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/shm.h>
+// #include <stdint.h>
+// #include <syscall.h>
+// #include <ipc.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+PTRDIFF_MAX :: 0x7fffffffffffffff
+
+shmget :: proc(key: key_t, size: usize, flag: i32) i32 {
+    sz := size
+    if sz > PTRDIFF_MAX.(usize) { sz = (~0).(usize) }
+    return sc.syscall3_ret(nums.SYS_shmget.(i64), key.(i64), sz.(i64), flag.(i64)).(i32)
+}

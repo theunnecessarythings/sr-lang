@@ -1,0 +1,56 @@
+package libc
+
+// Derived from musl-1.2.5/src/malloc/calloc.c
+
+malloc_mod :: import "libc/src/malloc/mallocng/malloc"
+meta_mod :: import "libc/src/malloc/mallocng/meta"
+replaced :: import "libc/src/malloc/replaced"
+errno_mod :: import "libc/include/errno"
+string :: import "libc/src/string/memset"
+
+// Helper for optimized zeroing check/clear
+mal0_clear :: proc(p: *void, n: usize) usize {
+    pagesz: usize = 4096
+    if n < pagesz { return n }
+
+    pp := (p.^usize + n).(usize).^*u8
+    i: usize = pp.^usize & (pagesz - 1)
+
+    while true {
+        pp = string.memset((pp.^usize - i).(usize).^*void, 0, i).^*u8
+        if (pp.^usize - p.^usize) < pagesz { return pp.^usize - p.^usize }
+
+        i = pagesz
+        while i != 0 {
+            pp = (pp.^usize - 16).(usize).^*u8
+            v1 := ((pp.^usize + 8).(usize).^*u64).*
+            v2 := ((pp.^usize).(usize).^*u64).*
+            if (v1 | v2) != 0 { break }
+            i -= 16
+        }
+    }
+    return 0
+}
+
+calloc :: proc(m: usize, n: usize) ?*void {
+    if n != 0 and m > ((0.(usize) - 1) / n) {
+        errno_mod.__errno_location().* = errno_mod.ENOMEM
+        return null
+    }
+    
+    len := n * m
+    p := malloc_mod.malloc(len)
+    
+    // if (!p || (!__malloc_replaced && __malloc_allzerop(p))) return p;
+    // __malloc_allzerop maps to is_allzero in mallocng via alias or distinct check.
+    // We use meta_mod.is_allzero.
+    
+    if p == null { return null }
+    
+    if replaced.__malloc_replaced == 0 and meta_mod.is_allzero(p?) != 0 {
+        return p
+    }
+    
+    len = mal0_clear(p?, len)
+    return string.memset(p?, 0, len)
+}

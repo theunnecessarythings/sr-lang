@@ -25,6 +25,7 @@ pub const Interpreter = struct {
     method_table: std.AutoHashMap(MethodKey, ast.ExprId),
     get_module_symtab: ?*const fn (*anyopaque, u32) ?*@import("symbols.zig").SymbolStore = null,
     checker_context: *anyopaque = undefined,
+    resolving_decls: std.AutoHashMap(ast.DeclId, void),
 
     pub const Error = error{
         UnsupportedExpr,
@@ -57,6 +58,7 @@ pub const Interpreter = struct {
             .get_module_symtab = get_sym,
             .checker_context = ctx,
             .method_table = std.AutoHashMap(MethodKey, ast.ExprId).init(allocator),
+            .resolving_decls = std.AutoHashMap(ast.DeclId, void).init(allocator),
         };
         try interp.registerMethods();
         return interp;
@@ -65,6 +67,7 @@ pub const Interpreter = struct {
     pub fn deinit(self: *Interpreter) void {
         self.bindings.deinit(self.allocator);
         self.method_table.deinit();
+        self.resolving_decls.deinit();
     }
 
     pub fn store(self: *Interpreter) *comptime_mod.ValueStore {
@@ -385,7 +388,7 @@ pub const Interpreter = struct {
             },
             .Int => {
                 const i = s.get(.Int, val).value;
-                if (k == .F32 or k == .F64) return s.add(.Float, .{ .value = @floatFromInt(i) });
+                if (k == .F32 or k == .F64 or k == .F128) return s.add(.Float, .{ .value = @floatFromInt(i) });
                 return val;
             },
             else => val,
@@ -393,7 +396,7 @@ pub const Interpreter = struct {
     }
     inline fn isIntType(k: types.TypeKind) bool {
         return switch (k) {
-            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => true,
+            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .Isize => true,
             else => false,
         };
     }
@@ -1878,7 +1881,14 @@ pub const Interpreter = struct {
 
         if (self.ast.type_info.getExport(name)) |e| {
             const r = self.ast.exprs.Decl.get(e.decl_id);
-            if (isTypeExpr(self.ast.kind(r.value))) return self.evalExpr(r.value);
+            if (isTypeExpr(self.ast.kind(r.value))) {
+                if (self.resolving_decls.contains(e.decl_id)) {
+                    return self.store().add(.Type, .{ .ty = ts.tAny() });
+                }
+                try self.resolving_decls.put(e.decl_id, {});
+                defer _ = self.resolving_decls.remove(e.decl_id);
+                return self.evalExpr(r.value);
+            }
             return self.store().add(.Type, .{ .ty = e.ty });
         }
         if (comptime_mod.builtinTypeId(ts, self.ast.exprs.strs.get(name))) |t| return self.store().add(.Type, .{ .ty = t });
@@ -1889,7 +1899,14 @@ pub const Interpreter = struct {
                 const pat_id = r.pattern.unwrap();
                 if (self.ast.kind(pat_id) == .Binding) {
                     if (self.ast.pats.get(.Binding, pat_id).name.eq(name)) {
-                        if (isTypeExpr(self.ast.kind(r.value))) return self.evalExpr(r.value);
+                        if (isTypeExpr(self.ast.kind(r.value))) {
+                            if (self.resolving_decls.contains(d)) {
+                                return self.store().add(.Type, .{ .ty = ts.tAny() });
+                            }
+                            try self.resolving_decls.put(d, {});
+                            defer _ = self.resolving_decls.remove(d);
+                            return self.evalExpr(r.value);
+                        }
                     }
                 }
             }
@@ -1951,7 +1968,7 @@ pub const Interpreter = struct {
                     },
                     .Float => {
                         const rf = s.get(.Float, r).value;
-                        return s.add(.Float, .{ .value = fOp(@as(f64, @floatFromInt(li)), rf, op) });
+                        return s.add(.Float, .{ .value = fOp(@as(f128, @floatFromInt(li)), rf, op) });
                     },
                     else => {},
                 }
@@ -1961,7 +1978,7 @@ pub const Interpreter = struct {
                 switch (s.kind(r)) {
                     .Int => {
                         const ri = s.get(.Int, r).value;
-                        return s.add(.Float, .{ .value = fOp(lf, @as(f64, @floatFromInt(ri)), op) });
+                        return s.add(.Float, .{ .value = fOp(lf, @as(f128, @floatFromInt(ri)), op) });
                     },
                     .Float => {
                         const rf = s.get(.Float, r).value;
@@ -1974,7 +1991,7 @@ pub const Interpreter = struct {
         }
         return Error.InvalidBinaryOperand;
     }
-    fn fOp(a: f64, b: f64, op: Op) f64 {
+    fn fOp(a: f128, b: f128, op: Op) f128 {
         return switch (op) {
             .Add => a + b,
             .Sub => a - b,
@@ -1995,7 +2012,7 @@ pub const Interpreter = struct {
                     },
                     .Float => {
                         const rf = s.get(.Float, r).value;
-                        return cOp(@as(f64, @floatFromInt(li)), rf, op);
+                        return cOp(@as(f128, @floatFromInt(li)), rf, op);
                     },
                     else => {},
                 }
@@ -2005,7 +2022,7 @@ pub const Interpreter = struct {
                 switch (s.kind(r)) {
                     .Int => {
                         const ri = s.get(.Int, r).value;
-                        return cOp(lf, @as(f64, @floatFromInt(ri)), op);
+                        return cOp(lf, @as(f128, @floatFromInt(ri)), op);
                     },
                     .Float => {
                         const rf = s.get(.Float, r).value;
@@ -2177,7 +2194,7 @@ pub const Interpreter = struct {
                 const li = s.get(.Int, l).value;
                 break :blk switch (rk) {
                     .Int => li == s.get(.Int, r).value,
-                    .Float => @as(f64, @floatFromInt(li)) == s.get(.Float, r).value,
+                    .Float => @as(f128, @floatFromInt(li)) == s.get(.Float, r).value,
                     .Bool => li == @intFromBool(s.get(.Bool, r).value),
                     else => false,
                 };
@@ -2186,8 +2203,8 @@ pub const Interpreter = struct {
                 const lf = s.get(.Float, l).value;
                 break :blk switch (rk) {
                     .Float => lf == s.get(.Float, r).value,
-                    .Int => lf == @as(f64, @floatFromInt(s.get(.Int, r).value)),
-                    .Bool => lf == @as(f64, @floatFromInt(@intFromBool(s.get(.Bool, r).value))),
+                    .Int => lf == @as(f128, @floatFromInt(s.get(.Int, r).value)),
+                    .Bool => lf == @as(f128, @floatFromInt(@intFromBool(s.get(.Bool, r).value))),
                     else => false,
                 };
             },
@@ -2196,7 +2213,7 @@ pub const Interpreter = struct {
                 break :blk switch (rk) {
                     .Bool => lb == s.get(.Bool, r).value,
                     .Int => @intFromBool(lb) == s.get(.Int, r).value,
-                    .Float => @as(f64, @floatFromInt(@intFromBool(lb))) == s.get(.Float, r).value,
+                    .Float => @as(f128, @floatFromInt(@intFromBool(lb))) == s.get(.Float, r).value,
                     else => false,
                 };
             },

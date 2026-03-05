@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/include/langinfo.h (minimal).
+
+nl_item :: i32
+
+CODESET :: 14
+
+nl_langinfo :: proc(item: nl_item) *u8
+nl_langinfo_l :: proc(item: nl_item, loc: locale_t) *u8

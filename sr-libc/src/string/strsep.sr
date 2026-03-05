@@ -1,0 +1,20 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/strsep.c.
+
+strcspn_mod :: import "libc/src/string/strcspn"
+
+strsep :: proc(strp: *?*u8, sep: *const u8) ?*u8 {
+    s := strp.*
+    if s == null { return null }
+    s_ptr := s?
+    end := strcspn_mod.strcspn(s_ptr, sep)
+    p := (&s_ptr[end]).^*u8
+    if p[0] != 0 {
+        p[0] = 0
+        strp.* = (&p[1]).^?*u8
+    } else {
+        strp.* = null
+    }
+    return s_ptr
+}

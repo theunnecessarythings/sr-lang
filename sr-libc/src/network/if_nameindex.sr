@@ -1,0 +1,134 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/if_nameindex.c
+
+netif_h :: import "libc/include/net/if"
+netlink_h :: import "libc/include/netlink"
+netlink_mod :: import "libc/src/network/netlink"
+errno_mod :: import "libc/include/errno"
+string_h :: import "libc/src/string"
+realloc_mod :: import "libc/src/stdlib/realloc"
+malloc_mod :: import "libc/src/stdlib/malloc"
+free_mod :: import "libc/src/stdlib/free"
+pthread_cancel_mod :: import "libc/src/thread/pthread_setcancelstate"
+
+IFADDRS_HASH_SIZE :: 64
+
+ifnamemap :: struct {
+    hash_next: u32,
+    index: u32,
+    namelen: u8,
+    name: [netif_h.IFNAMSIZ]u8,
+}
+
+ifnameindexctx :: struct {
+    num: u32,
+    allocated: u32,
+    str_bytes: u32,
+    list: *ifnamemap,
+    hash: [IFADDRS_HASH_SIZE]u32,
+}
+
+netlink_msg_to_nameindex :: proc(pctx: *void, h: *netlink_h.nlmsghdr) i32 {
+    ctx := pctx.^*ifnameindexctx
+    map: *ifnamemap
+    rta: *netlink_h.rtattr
+    index: i32
+    typ: i32
+    namelen: i32
+    bucket: i32
+    i: u32
+
+    if h.nlmsg_type == netlink_h.RTM_NEWLINK {
+        ifi := netlink_h.NLMSG_DATA(h).^*netlink_h.ifinfomsg
+        index = ifi.ifi_index
+        typ = netlink_h.IFLA_IFNAME
+        rta = netlink_h.NLMSG_RTA(h, sizeof(netlink_h.ifinfomsg))
+    } else {
+        ifa := netlink_h.NLMSG_DATA(h).^*netlink_h.ifaddrmsg
+        index = ifa.ifa_index.(i32)
+        typ = netlink_h.IFA_LABEL
+        rta = netlink_h.NLMSG_RTA(h, sizeof(netlink_h.ifaddrmsg))
+    }
+
+    while netlink_h.NLMSG_RTAOK(rta, h) {
+        if rta.rta_type != typ.(u16) {
+            rta = netlink_h.RTA_NEXT(rta)
+            continue
+        }
+
+        namelen = netlink_h.RTA_DATALEN(rta).(i32) - 1
+        if namelen > netif_h.IFNAMSIZ.(i32) { return 0 }
+
+        bucket = index % IFADDRS_HASH_SIZE
+        i = ctx.hash[bucket.(usize)]
+        while i != 0 {
+            map = (&ctx.list[i - 1]).^*ifnamemap
+            if map.index == index.(u32) && map.namelen == namelen.(u8) &&
+               string_h.memcmp(&map.name[0].^*const void, netlink_h.RTA_DATA(rta), namelen.(usize)) == 0 {
+                return 0
+            }
+            i = map.hash_next
+        }
+
+        if ctx.num >= ctx.allocated {
+            a := if ctx.allocated != 0 { ctx.allocated * 2 + 1 } else { 8 }
+            if a > (((~0).(usize) / sizeof(ifnamemap)).(u32)) { return -1 }
+            map = realloc_mod.realloc(ctx.list.^*void, a.(usize) * sizeof(ifnamemap)).^*ifnamemap
+            if map == null { return -1 }
+            ctx.list = map
+            ctx.allocated = a
+        }
+        map = &ctx.list[ctx.num]
+        map.index = index.(u32)
+        map.namelen = namelen.(u8)
+        _ = string_h.memcpy(&map.name[0].^*void, netlink_h.RTA_DATA(rta), namelen.(usize))
+        ctx.str_bytes += (namelen + 1).(u32)
+        ctx.num += 1
+        map.hash_next = ctx.hash[bucket.(usize)]
+        ctx.hash[bucket.(usize)] = ctx.num
+        return 0
+    }
+    return 0
+}
+
+if_nameindex :: proc() *netif_h.if_nameindex {
+    ctx: ifnameindexctx
+    ifs: *netif_h.if_nameindex = null
+    d: *netif_h.if_nameindex
+    s: *ifnamemap
+    p: *u8
+    i: u32
+    cs: i32
+
+    _ = pthread_cancel_mod.pthread_setcancelstate(pthread_cancel_mod.PTHREAD_CANCEL_DISABLE, &cs)
+    _ = string_h.memset(&ctx.^*void, 0, sizeof(ifnameindexctx))
+    if netlink_mod.__rtnetlink_enumerate(AF_UNSPEC, AF_INET, netlink_msg_to_nameindex, &ctx) < 0 { goto err }
+
+    ifs = malloc_mod.malloc(sizeof(netif_h.if_nameindex) * (ctx.num + 1).(usize) + ctx.str_bytes.(usize)).^*netif_h.if_nameindex
+    if ifs == null { goto err }
+
+    p = (ifs.^usize + sizeof(netif_h.if_nameindex) * (ctx.num + 1).(usize)).(usize).^*u8
+    i = ctx.num
+    d = ifs
+    s = ctx.list
+    while i != 0 {
+        d.if_index = s.index
+        d.if_name = p
+        _ = string_h.memcpy(p.^*void, &s.name[0].^*const void, s.namelen.(usize))
+        p = (&p[s.namelen.(usize)]).^*u8
+        p[0] = 0
+        p = (&p[1]).^*u8
+        d = (&d[1]).^*netif_h.if_nameindex
+        s = (&s[1]).^*ifnamemap
+        i -= 1
+    }
+    d.if_index = 0
+    d.if_name = null
+
+err:
+    _ = pthread_cancel_mod.pthread_setcancelstate(cs, null)
+    free_mod.free(ctx.list.^*void)
+    errno_mod.errno().* = errno_mod.ENOBUFS
+    return ifs
+}

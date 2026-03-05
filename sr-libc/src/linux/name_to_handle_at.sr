@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/name_to_handle_at.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+name_to_handle_at :: proc(dirfd: i32, pathname: *const u8, handle: *file_handle, mount_id: *i32, flags: i32) i32 {
+    r := sc.syscall5_ret(
+        nums.SYS_name_to_handle_at.(i64),
+        dirfd.(i64),
+        pathname.^usize.(i64),
+        handle.^usize.(i64),
+        mount_id.^usize.(i64),
+        flags.(i64),
+    )
+    return r.(i32)
+}

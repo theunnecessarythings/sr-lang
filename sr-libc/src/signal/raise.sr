@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/raise.c
+
+kill_mod :: import "libc/src/signal/kill"
+getpid_mod :: import "libc/src/unistd/getpid"
+
+raise :: proc(sig: i32) i32 {
+    return kill_mod.kill(getpid_mod.getpid(), sig)
+}

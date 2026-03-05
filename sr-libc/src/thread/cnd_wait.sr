@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/cnd_wait.c
+
+timedwait_mod :: import "libc/src/thread/cnd_timedwait"
+alltypes :: import "libc/include/alltypes"
+
+cnd_wait :: proc(c: *cnd_t, m: *mtx_t) i32 {
+    return timedwait_mod.cnd_timedwait(c, m, null)
+}

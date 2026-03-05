@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_attr_setstack.c
+
+attr_int :: import "libc/src/thread/pthread_attr_internal"
+errno_mod :: import "libc/include/errno"
+
+pthread_attr_setstack :: proc(a: *alltypes.pthread_attr_t, addr: *void, size: usize) i32 {
+    if (size - attr_int.PTHREAD_STACK_MIN.(usize)) > ((~0).(usize) / 4) { return errno_mod.EINVAL }
+    attr_int.attr_stackaddr(a).* = (addr.^usize + size)
+    attr_int.attr_stacksize(a).* = size
+    return 0
+}

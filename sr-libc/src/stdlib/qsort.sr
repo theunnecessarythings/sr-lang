@@ -1,0 +1,94 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdlib/qsort.c and qsort_nr.c (simplified quicksort).
+
+mem :: import "libc/src/string/memcpy"
+
+swap_bytes :: fn(a: *u8, b: *u8, width: usize) void {
+    if a == b or width == 0 { return }
+    tmp: [256]u8
+    w := width
+    pa := a
+    pb := b
+    while w > 0 {
+        chunk := if w > 256 { 256 } else { w }
+        _ = mem.memcpy((&tmp[0]).^*void, pa.^*const void, chunk)
+        _ = mem.memcpy(pa.^*void, pb.^*const void, chunk)
+        _ = mem.memcpy(pb.^*void, (&tmp[0]).^*const void, chunk)
+        pa = (pa.^usize + chunk).(usize).^*u8
+        pb = (pb.^usize + chunk).(usize).^*u8
+        w -= chunk
+    }
+}
+
+elem_ptr :: fn(base: *u8, idx: isize, width: usize) *u8 {
+    return (base.^usize + width * idx.(usize)).(usize).^*u8
+}
+
+qsort_r_range :: fn(base: *u8, lo: isize, hi: isize, width: usize, cmp: fn(*const void, *const void, *void) i32, arg: *void) void {
+    if lo >= hi { return }
+    i := lo
+    j := hi
+    pivot := lo + (hi - lo) / 2
+
+    while true {
+        while cmp(elem_ptr(base, i, width).^*const void, elem_ptr(base, pivot, width).^*const void, arg) < 0 {
+            i += 1
+        }
+        while cmp(elem_ptr(base, j, width).^*const void, elem_ptr(base, pivot, width).^*const void, arg) > 0 {
+            j -= 1
+        }
+        if i > j { break }
+        if i != j {
+            swap_bytes(elem_ptr(base, i, width), elem_ptr(base, j, width), width)
+            if pivot == i { pivot = j }
+            else if pivot == j { pivot = i }
+        }
+        i += 1
+        j -= 1
+    }
+
+    if lo < j { qsort_r_range(base, lo, j, width, cmp, arg) }
+    if i < hi { qsort_r_range(base, i, hi, width, cmp, arg) }
+}
+
+qsort_range :: fn(base: *u8, lo: isize, hi: isize, width: usize, cmp: fn(*const void, *const void) i32) void {
+    if lo >= hi { return }
+    i := lo
+    j := hi
+    pivot := lo + (hi - lo) / 2
+
+    while true {
+        while cmp(elem_ptr(base, i, width).^*const void, elem_ptr(base, pivot, width).^*const void) < 0 {
+            i += 1
+        }
+        while cmp(elem_ptr(base, j, width).^*const void, elem_ptr(base, pivot, width).^*const void) > 0 {
+            j -= 1
+        }
+        if i > j { break }
+        if i != j {
+            swap_bytes(elem_ptr(base, i, width), elem_ptr(base, j, width), width)
+            if pivot == i { pivot = j }
+            else if pivot == j { pivot = i }
+        }
+        i += 1
+        j -= 1
+    }
+
+    if lo < j { qsort_range(base, lo, j, width, cmp) }
+    if i < hi { qsort_range(base, i, hi, width, cmp) }
+}
+
+__qsort_r :: proc(base: *void, nel: usize, width: usize, cmp: fn(*const void, *const void, *void) i32, arg: *void) void {
+    if nel < 2 or width == 0 { return }
+    qsort_r_range(base.^*u8, 0, (nel - 1).(isize), width, cmp, arg)
+}
+
+qsort_r :: proc(base: *void, nel: usize, width: usize, cmp: fn(*const void, *const void, *void) i32, arg: *void) void {
+    __qsort_r(base, nel, width, cmp, arg)
+}
+
+qsort :: proc(base: *void, nel: usize, width: usize, cmp: fn(*const void, *const void) i32) void {
+    if nel < 2 or width == 0 { return }
+    qsort_range(base.^*u8, 0, (nel - 1).(isize), width, cmp)
+}

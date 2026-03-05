@@ -1,0 +1,73 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/__fdopen.c.
+
+errno_mod :: import "libc/include/errno"
+fcntl_consts :: import "libc/include/fcntl"
+fcntl_mod :: import "libc/src/fcntl/fcntl"
+memset_mod :: import "libc/src/string/memset"
+str :: import "libc/src/string/strchr"
+ioctl_mod :: import "libc/src/misc/ioctl"
+ioctl_consts :: import "libc/include/sys/ioctl"
+impl :: import "libc/src/stdio/stdio_impl"
+alloc_mod :: import "libc/src/malloc/mallocng/malloc"
+alltypes :: import "libc/include/alltypes"
+stdio_h :: import "libc/include/stdio"
+stdio_read_mod :: import "libc/src/stdio/stdio_read"
+stdio_write_mod :: import "libc/src/stdio/stdio_write"
+stdio_seek_mod :: import "libc/src/stdio/stdio_seek"
+stdio_close_mod :: import "libc/src/stdio/stdio_close"
+ofl_add_mod :: import "libc/src/stdio/ofl_add"
+
+__fdopen :: proc(fd: i32, mode: *const u8) *alltypes.FILE {
+    wsz: alltypes.winsize
+
+    if mode[0] != 114 and mode[0] != 119 and mode[0] != 97 {
+        errno_mod.__errno_location().* = errno_mod.EINVAL
+        return (0.(usize)).^*alltypes.FILE
+    }
+
+    total := sizeof(alltypes.FILE).(usize) + impl.UNGET.(usize) + stdio_h.BUFSIZ.(usize)
+    raw: ?*void = alloc_mod.malloc(total)
+    if raw == null { return (0.(usize)).^*alltypes.FILE }
+    f := (raw?).^*alltypes.FILE
+
+    _ = memset_mod.memset(f.^*void, 0, sizeof(alltypes.FILE))
+
+    if str.strchr(mode, 43) == null {
+        if mode[0] == 114 { f.flags = impl.F_NOWR.(u32) } else { f.flags = impl.F_NORD.(u32) }
+    }
+
+    if str.strchr(mode, 101) != null {
+        _ = fcntl_mod.fcntl(fd, fcntl_consts.F_SETFD, fcntl_consts.FD_CLOEXEC.(usize))
+    }
+
+    if mode[0] == 97 {
+        flags := fcntl_mod.fcntl(fd, fcntl_consts.F_GETFL, 0)
+        if (flags & fcntl_consts.O_APPEND.(i32)) == 0 {
+            _ = fcntl_mod.fcntl(fd, fcntl_consts.F_SETFL, (flags | fcntl_consts.O_APPEND.(i32)).(usize))
+        }
+        f.flags = f.flags | impl.F_APP.(u32)
+    }
+
+    f.fd = fd
+    f.buf = (f.^usize + sizeof(alltypes.FILE).(usize) + impl.UNGET.(usize)).^*u8
+    f.buf_size = stdio_h.BUFSIZ
+
+    f.lbf = stdio_h.EOF
+    if (f.flags & impl.F_NOWR.(u32)) == 0 {
+        if ioctl_mod.ioctl(fd, ioctl_consts.TIOCGWINSZ, (&wsz).^*void) == 0 {
+            f.lbf = 10
+        }
+    }
+
+    f.read = stdio_read_mod.__stdio_read
+    f.write = stdio_write_mod.__stdio_write
+    f.seek = stdio_seek_mod.__stdio_seek
+    f.close = stdio_close_mod.__stdio_close
+    f.lock = -1
+
+    return ofl_add_mod.__ofl_add(f)
+}
+
+fdopen :: proc(fd: i32, mode: *const u8) *alltypes.FILE { return __fdopen(fd, mode) }

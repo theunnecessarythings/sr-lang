@@ -1,0 +1,19 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/sem_trywait.c
+
+errno_mod :: import "libc/include/errno"
+atomic :: import "libc/src/internal/atomic"
+
+SEM_VALUE_MAX :: 0x7fffffff
+
+sem_trywait :: proc(sem: *sem_t) i32 {
+    val: i32
+    while true {
+        val = sem.__val[0]
+        if (val & SEM_VALUE_MAX) == 0 { break }
+        if atomic.a_cas(&sem.__val[0], val, val - 1) == val { return 0 }
+    }
+    errno_mod.errno().* = errno_mod.EAGAIN
+    return -1
+}

@@ -1,0 +1,16 @@
+package main
+
+io :: import "std/io"
+math :: import "math_lib"
+
+main :: proc() {
+    // Question: How do we import a local module?
+    // Answer: Use `import "math_lib"` when `math_lib.sr` is in the same folder.
+    v1 := math.Vector{ x: 1.0, y: 2.0 }
+    v2 := math.Vector{ x: 3.0, y: 4.0 }
+
+    v3 := math.add(v1, v2)
+    v4 := math.scale(v3, 0.5)
+
+    io.println("v4=(%f,%f)", v4.x, v4.y)
+}

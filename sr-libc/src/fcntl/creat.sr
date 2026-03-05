@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/fcntl/creat.c.
+
+flags :: import "libc/include/fcntl"
+unistd :: import "libc/src/unistd/open"
+
+creat :: proc(filename: *const u8, mode: mode_t) i32 {
+    return unistd.open(filename, flags.O_CREAT | flags.O_WRONLY | flags.O_TRUNC, mode)
+}

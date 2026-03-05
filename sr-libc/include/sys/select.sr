@@ -1,0 +1,49 @@
+package libc
+
+// Derived from musl-1.2.5/include/sys/select.h
+
+alltypes :: import "libc/include/alltypes"
+
+FD_SETSIZE :: 1024
+
+fd_set :: struct {
+    fds_bits: [FD_SETSIZE / 64]u64,
+}
+
+FD_ZERO :: proc(set: *fd_set) void {
+    if set == null { return }
+    i: usize = 0
+    while i < (FD_SETSIZE / 64) {
+        set.fds_bits[i] = 0
+        i += 1
+    }
+}
+
+FD_SET :: proc(fd: i32, set: *fd_set) void {
+    if set == null || fd < 0 { return }
+    idx := (fd / 64).(usize)
+    bit := (fd % 64).(u32)
+    if idx < (FD_SETSIZE / 64) {
+        set.fds_bits[idx] |= (1.(u64) << bit)
+    }
+}
+
+FD_CLR :: proc(fd: i32, set: *fd_set) void {
+    if set == null || fd < 0 { return }
+    idx := (fd / 64).(usize)
+    bit := (fd % 64).(u32)
+    if idx < (FD_SETSIZE / 64) {
+        set.fds_bits[idx] &= ~(1.(u64) << bit)
+    }
+}
+
+FD_ISSET :: proc(fd: i32, set: *fd_set) i32 {
+    if set == null || fd < 0 { return 0 }
+    idx := (fd / 64).(usize)
+    bit := (fd % 64).(u32)
+    if idx >= (FD_SETSIZE / 64) { return 0 }
+    return if (set.fds_bits[idx] & (1.(u64) << bit)) != 0 { 1 } else { 0 }
+}
+
+select :: proc(n: i32, rfds: *fd_set, wfds: *fd_set, efds: *fd_set, tv: *alltypes.timeval) i32
+pselect :: proc(n: i32, rfds: *fd_set, wfds: *fd_set, efds: *fd_set, ts: *const alltypes.timespec, mask: *const alltypes.sigset_t) i32

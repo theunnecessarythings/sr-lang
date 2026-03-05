@@ -1,0 +1,219 @@
+package libc
+
+// Derived from musl-1.2.5/include/math.h (partial).
+
+fabs :: proc(x: f64) f64
+fabsf :: proc(x: f32) f32
+fabsl :: proc(x: f128) f128
+
+floor :: proc(x: f64) f64
+floorf :: proc(x: f32) f32
+floorl :: proc(x: f128) f128
+
+ceil :: proc(x: f64) f64
+ceilf :: proc(x: f32) f32
+ceill :: proc(x: f128) f128
+
+trunc :: proc(x: f64) f64
+truncf :: proc(x: f32) f32
+truncl :: proc(x: f128) f128
+
+sqrt :: proc(x: f64) f64
+sqrtf :: proc(x: f32) f32
+sqrtl :: proc(x: f128) f128
+
+fmod :: proc(x: f64, y: f64) f64
+fmodf :: proc(x: f32, y: f32) f32
+fmodl :: proc(x: f128, y: f128) f128
+
+fmax :: proc(x: f64, y: f64) f64
+fmaxf :: proc(x: f32, y: f32) f32
+fmaxl :: proc(x: f128, y: f128) f128
+
+fmin :: proc(x: f64, y: f64) f64
+fminf :: proc(x: f32, y: f32) f32
+fminl :: proc(x: f128, y: f128) f128
+
+copysign :: proc(x: f64, y: f64) f64
+copysignf :: proc(x: f32, y: f32) f32
+copysignl :: proc(x: f128, y: f128) f128
+
+scalbn :: proc(x: f64, n: i32) f64
+scalbnf :: proc(x: f32, n: i32) f32
+scalbnl :: proc(x: f128, n: i32) f128
+ilogb :: proc(x: f64) i32
+ilogbf :: proc(x: f32) i32
+ilogbl :: proc(x: f128) i32
+logb :: proc(x: f64) f64
+logbf :: proc(x: f32) f32
+logbl :: proc(x: f128) f128
+
+frexp :: proc(x: f64, e: *i32) f64
+frexpf :: proc(x: f32, e: *i32) f32
+frexpl :: proc(x: f128, e: *i32) f128
+
+isnan :: proc(x: f64) i32
+isnanf :: proc(x: f32) i32
+isnanl :: proc(x: f128) bool
+isinf :: proc(x: f64) i32
+isinff :: proc(x: f32) i32
+isinfl :: proc(x: f128) bool
+isfinite :: proc(x: f64) i32
+isfinitef :: proc(x: f32) i32
+isfinitel :: proc(x: f128) bool
+isnormal :: proc(x: f64) i32
+isnormalf :: proc(x: f32) i32
+signbit :: proc(x: f64) i32
+signbitf :: proc(x: f32) i32
+signbitl :: proc(x: f128) i32
+
+fpclassify :: proc(x: f64) i32
+fpclassifyf :: proc(x: f32) i32
+
+isgreater :: proc(x: f64, y: f64) i32
+isgreaterequal :: proc(x: f64, y: f64) i32
+isless :: proc(x: f64, y: f64) i32
+islessequal :: proc(x: f64, y: f64) i32
+islessgreater :: proc(x: f64, y: f64) i32
+isunordered :: proc(x: f64, y: f64) i32
+
+isgreaterf :: proc(x: f32, y: f32) i32
+isgreaterequalf :: proc(x: f32, y: f32) i32
+islessf :: proc(x: f32, y: f32) i32
+islessequalf :: proc(x: f32, y: f32) i32
+islessgreaterf :: proc(x: f32, y: f32) i32
+isunorderedf :: proc(x: f32, y: f32) i32
+
+exp :: proc(x: f64) f64
+expf :: proc(x: f32) f32
+expl :: proc(x: f128) f128
+exp2 :: proc(x: f64) f64
+exp2f :: proc(x: f32) f32
+exp2l :: proc(x: f128) f128
+expm1 :: proc(x: f64) f64
+expm1f :: proc(x: f32) f32
+expm1l :: proc(x: f128) f128
+exp10l :: proc(x: f128) f128
+
+log :: proc(x: f64) f64
+logf :: proc(x: f32) f32
+logl :: proc(x: f128) f128
+log2 :: proc(x: f64) f64
+log2f :: proc(x: f32) f32
+log2l :: proc(x: f128) f128
+log10 :: proc(x: f64) f64
+log10f :: proc(x: f32) f32
+log10l :: proc(x: f128) f128
+log1p :: proc(x: f64) f64
+log1pf :: proc(x: f32) f32
+log1pl :: proc(x: f128) f128
+
+sin :: proc(x: f64) f64
+sinf :: proc(x: f32) f32
+sinl :: proc(x: f128) f128
+cos :: proc(x: f64) f64
+cosf :: proc(x: f32) f32
+cosl :: proc(x: f128) f128
+tan :: proc(x: f64) f64
+tanf :: proc(x: f32) f32
+tanl :: proc(x: f128) f128
+
+asin :: proc(x: f64) f64
+asinf :: proc(x: f32) f32
+asinl :: proc(x: f128) f128
+acos :: proc(x: f64) f64
+acosf :: proc(x: f32) f32
+acosl :: proc(x: f128) f128
+atan :: proc(x: f64) f64
+atanf :: proc(x: f32) f32
+atanl :: proc(x: f128) f128
+atan2 :: proc(y: f64, x: f64) f64
+atan2f :: proc(y: f32, x: f32) f32
+atan2l :: proc(y: f128, x: f128) f128
+
+sinh :: proc(x: f64) f64
+sinhf :: proc(x: f32) f32
+sinhl :: proc(x: f128) f128
+cosh :: proc(x: f64) f64
+coshf :: proc(x: f32) f32
+coshl :: proc(x: f128) f128
+tanh :: proc(x: f64) f64
+tanhf :: proc(x: f32) f32
+tanhl :: proc(x: f128) f128
+asinh :: proc(x: f64) f64
+asinhf :: proc(x: f32) f32
+asinhl :: proc(x: f128) f128
+acosh :: proc(x: f64) f64
+acoshf :: proc(x: f32) f32
+acoshl :: proc(x: f128) f128
+atanh :: proc(x: f64) f64
+atanhf :: proc(x: f32) f32
+atanhl :: proc(x: f128) f128
+
+pow :: proc(x: f64, y: f64) f64
+powf :: proc(x: f32, y: f32) f32
+powl :: proc(x: f128, y: f128) f128
+hypot :: proc(x: f64, y: f64) f64
+hypotf :: proc(x: f32, y: f32) f32
+hypotl :: proc(x: f128, y: f128) f128
+cbrt :: proc(x: f64) f64
+cbrtf :: proc(x: f32) f32
+cbrtl :: proc(x: f128) f128
+
+remainder :: proc(x: f64, y: f64) f64
+remainderf :: proc(x: f32, y: f32) f32
+remainderl :: proc(x: f128, y: f128) f128
+remquo :: proc(x: f64, y: f64, quo: *i32) f64
+remquof :: proc(x: f32, y: f32, quo: *i32) f32
+remquol :: proc(x: f128, y: f128, quo: *i32) f128
+nearbyint :: proc(x: f64) f64
+nearbyintf :: proc(x: f32) f32
+rint :: proc(x: f64) f64
+rintf :: proc(x: f32) f32
+lrint :: proc(x: f64) i64
+llrint :: proc(x: f64) i64
+lrintf :: proc(x: f32) i64
+llrintf :: proc(x: f32) i64
+round :: proc(x: f64) f64
+roundf :: proc(x: f32) f32
+lround :: proc(x: f64) i64
+llround :: proc(x: f64) i64
+lroundf :: proc(x: f32) i64
+llroundf :: proc(x: f32) i64
+
+fdim :: proc(x: f64, y: f64) f64
+fdimf :: proc(x: f32, y: f32) f32
+fma :: proc(x: f64, y: f64, z: f64) f64
+fmaf :: proc(x: f32, y: f32, z: f32) f32
+fmal :: proc(x: f128, y: f128, z: f128) f128
+nan :: proc(tagp: *const u8) f64
+nanf :: proc(tagp: *const u8) f32
+
+modfl :: proc(x: f128, iptr: *f128) f128
+
+nextafter :: proc(x: f64, y: f64) f64
+nextafterf :: proc(x: f32, y: f32) f32
+nextafterl :: proc(x: f128, y: f128) f128
+nexttoward :: proc(x: f64, y: f128) f64
+nexttowardf :: proc(x: f32, y: f128) f32
+nexttowardl :: proc(x: f128, y: f128) f128
+
+lerp :: proc(a: f64, b: f64, t: f64) f64
+lerpf :: proc(a: f32, b: f32, t: f32) f32
+
+erf :: proc(x: f64) f64
+erff :: proc(x: f32) f32
+erfc :: proc(x: f64) f64
+erfcf :: proc(x: f32) f32
+erfl :: proc(x: f128) f128
+erfcl :: proc(x: f128) f128
+
+lgamma :: proc(x: f64) f64
+lgammaf :: proc(x: f32) f32
+lgammal :: proc(x: f128) f128
+lgamma_r :: proc(x: f64, signgamp: *i32) f64
+lgammaf_r :: proc(x: f32, signgamp: *i32) f32
+lgammal_r :: proc(x: f128, signgamp: *i32) f128
+tgamma :: proc(x: f64) f64
+tgammaf :: proc(x: f32) f32
+tgammal :: proc(x: f128) f128

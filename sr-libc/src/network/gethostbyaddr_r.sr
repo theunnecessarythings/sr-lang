@@ -1,0 +1,61 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/gethostbyaddr_r.c
+
+string_h :: import "libc/src/string"
+errno_mod :: import "libc/include/errno"
+netdb_h :: import "libc/include/netdb"
+
+gethostbyaddr_r :: proc(a: *const void, l: socklen_t, af: i32, h: *hostent, buf: *u8, buflen: usize, res: **hostent, err: *i32) i32 {
+    sa4 := sockaddr_in{ sin_family: af }
+    sa6 := sockaddr_in6{ sin6_family: af }
+    sa: *sockaddr
+    sl: socklen_t
+
+    res.* = null
+
+    if af == AF_INET6 && l == 16 {
+        _ = string_h.memcpy((&sa6.sin6_addr).^*void, a, 16)
+        sa = &sa6.^*sockaddr
+        sl = sizeof(sockaddr_in6).(u32)
+    } else if af == AF_INET && l == 4 {
+        _ = string_h.memcpy((&sa4.sin_addr).^*void, a, 4)
+        sa = &sa4.^*sockaddr
+        sl = sizeof(sockaddr_in).(u32)
+    } else {
+        err.* = netdb_h.NO_RECOVERY
+        return errno_mod.EINVAL
+    }
+
+    i := buf.^usize & (sizeof(*u8) - 1)
+    if i == 0 { i = sizeof(*u8) }
+    if buflen <= (5 * sizeof(*u8) - i + l.(usize)) { return errno_mod.ERANGE }
+    buf = (buf.^usize + (sizeof(*u8) - i)).(usize).^*u8
+    buflen -= (5 * sizeof(*u8) - i + l.(usize))
+
+    h.h_addr_list = buf.^**u8
+    buf = (buf.^usize + 2 * sizeof(*u8)).(usize).^*u8
+    h.h_aliases = buf.^**u8
+    buf = (buf.^usize + 2 * sizeof(*u8)).(usize).^*u8
+
+    h.h_addr_list[0] = buf
+    _ = string_h.memcpy(h.h_addr_list[0].^*void, a, l.(usize))
+    buf = (buf.^usize + l.(usize)).(usize).^*u8
+    h.h_addr_list[1] = null
+    h.h_aliases[0] = buf
+    h.h_aliases[1] = null
+
+    switch getnameinfo(sa, sl, buf, buflen.(socklen_t), null, 0, 0) {
+        netdb_h.EAI_AGAIN => { err.* = netdb_h.TRY_AGAIN; return errno_mod.EAGAIN }
+        netdb_h.EAI_OVERFLOW => { return errno_mod.ERANGE }
+        netdb_h.EAI_FAIL => { err.* = netdb_h.NO_RECOVERY; return errno_mod.EBADMSG }
+        netdb_h.EAI_SYSTEM => { err.* = netdb_h.NO_RECOVERY; return errno_mod.errno().* }
+        else => {}
+    }
+
+    h.h_addrtype = af
+    h.h_length = l.(i32)
+    h.h_name = h.h_aliases[0]
+    res.* = h
+    return 0
+}

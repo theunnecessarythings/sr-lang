@@ -1,0 +1,73 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_mutex_unlock.c
+
+mutex_int :: import "libc/src/thread/pthread_mutex_internal"
+atomic :: import "libc/src/internal/atomic"
+errno_mod :: import "libc/include/errno"
+pthread_impl :: import "libc/src/internal/pthread_impl"
+lock_mod :: import "libc/src/internal/lock"
+vmlock_mod :: import "libc/src/thread/vmlock"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+FUTEX_UNLOCK_PI :: 7
+
+__pthread_mutex_unlock :: proc(m: *alltypes.pthread_mutex_t) i32 {
+    self: *pthread_impl.pthread = null
+    waiters := mutex_int.m_waiters(m).*
+    cont: i32
+    typ := mutex_int.m_type(m).* & 15
+    priv := (mutex_int.m_type(m).* & 128) ^ 128
+    new: i32 = 0
+    old: i32 = 0
+
+    if typ != mutex_int.PTHREAD_MUTEX_NORMAL {
+        self = pthread_impl.__pthread_self()
+        old = mutex_int.m_lock(m).*
+        own := old & 0x3fffffff
+        if own != self.tid { return errno_mod.EPERM }
+        if (typ & 3) == mutex_int.PTHREAD_MUTEX_RECURSIVE && mutex_int.m_count(m).* != 0 {
+            mutex_int.m_count(m).* -= 1
+            return 0
+        }
+        if (typ & 4) != 0 && (old & 0x40000000) != 0 {
+            new = 0x7fffffff
+        }
+        if priv == 0 {
+            self.robust_list.pending = (&mutex_int.m_next(m)).^*void
+            vmlock_mod.__vm_lock()
+        }
+        prev := mutex_int.m_prev(m).*
+        next := mutex_int.m_next(m).*
+        (prev.^**void).* = next.^*void
+        if next != (&self.robust_list.head).^*void {
+            ((next.^usize - sizeof(*void)).(usize).^**void).* = prev.^*void
+        }
+    }
+
+    if (typ & 8) != 0 {
+        if old < 0 || atomic.a_cas(mutex_int.m_lock(m), old, new) != old {
+            if new != 0 { atomic.a_store(mutex_int.m_waiters(m), -1) }
+            _ = sc.syscall3(nums.SYS_futex.(i64), mutex_int.m_lock(m).^usize.(i64), (FUTEX_UNLOCK_PI | priv).(i64), 0)
+        }
+        cont = 0
+        waiters = 0
+    } else {
+        cont = atomic.a_swap(mutex_int.m_lock(m), new)
+    }
+
+    if typ != mutex_int.PTHREAD_MUTEX_NORMAL && priv == 0 {
+        self.robust_list.pending = null
+        vmlock_mod.__vm_unlock()
+    }
+
+    if waiters != 0 || cont < 0 {
+        lock_mod.__wake(mutex_int.m_lock(m).^*void, 1, priv)
+    }
+    return 0
+}
+
+pthread_mutex_unlock :: proc(m: *alltypes.pthread_mutex_t) i32 {
+    return __pthread_mutex_unlock(m)
+}

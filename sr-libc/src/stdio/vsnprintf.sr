@@ -1,0 +1,50 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/vsnprintf.c.
+
+memcpy_mod :: import "libc/src/string/memcpy"
+stdarg_mod :: import "libc/include/stdarg"
+
+cookie :: struct {
+    s: *u8,
+    n: usize,
+}
+
+min_usize :: fn(a: usize, b: usize) usize { if a < b { return a } return b }
+
+sn_write :: proc(f: *alltypes.FILE, s: *const u8, l: usize) usize {
+    c := f.cookie.^*cookie
+    k := min_usize(c.n, f.wpos.^usize - f.wbase.^usize)
+    if k != 0 {
+        _ = memcpy_mod.memcpy(c.s.^*void, f.wbase.^*const void, k)
+        c.s = c.s + k
+        c.n -= k
+    }
+    k = min_usize(c.n, l)
+    if k != 0 {
+        _ = memcpy_mod.memcpy(c.s.^*void, s.^*const void, k)
+        c.s = c.s + k
+        c.n -= k
+    }
+    c.s.* = 0
+    f.wpos = f.buf
+    f.wbase = f.buf
+    return l
+}
+
+vsnprintf :: proc(s: *u8, n: usize, fmt: *const u8, ap: stdarg_mod.va_list) i32 {
+    buf: [1]u8
+    dummy: [1]u8
+    c: cookie = cookie{ s: if n != 0 { s } else { &dummy[0] }, n: if n != 0 { n - 1 } else { 0 } }
+    f: alltypes.FILE = alltypes.FILE{
+        lbf: EOF,
+        write: sn_write,
+        lock: -1,
+        buf: &buf[0],
+        buf_size: 1,
+        cookie: (&c).^*void,
+    }
+
+    c.s.* = 0
+    return vfprintf(&f, fmt, ap)
+}

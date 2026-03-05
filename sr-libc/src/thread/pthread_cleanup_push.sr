@@ -1,0 +1,26 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_cleanup_push.c
+
+pthread_impl :: import "libc/src/internal/pthread_impl"
+
+__do_cleanup_push :: proc(cb: *pthread_impl.__ptcb) void {
+    self := pthread_impl.__pthread_self()
+    cb.__next = self.cancelbuf.^*pthread_impl.__ptcb
+    self.cancelbuf = cb.^*void
+}
+
+__do_cleanup_pop :: proc(cb: *pthread_impl.__ptcb) void {
+    pthread_impl.__pthread_self().cancelbuf = cb.__next.^*void
+}
+
+_pthread_cleanup_push :: proc(cb: *pthread_impl.__ptcb, f: *proc(*void) void, x: *void) void {
+    cb.__f = f
+    cb.__x = x
+    __do_cleanup_push(cb)
+}
+
+_pthread_cleanup_pop :: proc(cb: *pthread_impl.__ptcb, run: i32) void {
+    __do_cleanup_pop(cb)
+    if run != 0 { cb.__f(cb.__x) }
+}

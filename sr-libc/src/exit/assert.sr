@@ -1,0 +1,19 @@
+package libc
+
+// Derived from musl-1.2.5/src/exit/assert.c
+
+fprintf_mod :: import "libc/src/stdio/fprintf"
+stderr_mod :: import "libc/src/stdio/stderr"
+abort_mod :: import "libc/src/exit/abort"
+
+__assert_fail :: proc(expr: *const u8, file: *const u8, line: i32, func: *const u8) void {
+    _ = fprintf_mod.fprintf(
+        stderr_mod.stderr,
+        "Assertion failed: %s, function %s, file %s, line %d\n",
+        expr,
+        func,
+        file,
+        line,
+    )
+    abort_mod.abort()
+}

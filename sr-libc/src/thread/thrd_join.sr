@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/thrd_join.c
+
+join_mod :: import "libc/src/thread/pthread_join"
+
+thrd_success :: 0
+
+thrd_join :: proc(t: thrd_t, res: *i32) i32 {
+    pthread_res: *void = null
+    _ = join_mod.__pthread_join(t, &pthread_res)
+    if res != null { res.* = pthread_res.(isize).(i32) }
+    return thrd_success
+}

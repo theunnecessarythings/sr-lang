@@ -1,0 +1,19 @@
+package libc
+
+regex_h :: import "libc/include/regex"
+string_h :: import "libc/src/string"
+
+regerror :: proc(errcode: i32, preg: *const regex_h.regex_t, buf: *u8, size: usize) usize {
+    _ = preg
+    msg := "unknown error"
+    if errcode == 0 { msg = "no error" }
+    else if errcode == regex_h.REG_NOMATCH { msg = "no match" }
+    else if errcode == regex_h.REG_BADPAT { msg = "invalid pattern" }
+    else if errcode == regex_h.REG_EESCAPE { msg = "invalid escape" }
+    else if errcode == regex_h.REG_ESPACE { msg = "out of memory" }
+
+    if buf != null && size != 0 {
+        _ = string_h.strlcpy(buf, msg, size)
+    }
+    return string_h.strlen(msg) + 1
+}

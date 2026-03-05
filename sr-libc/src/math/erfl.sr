@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/erfl.c.
+// f128 uses the fallback to double as in musl's 113-bit path.
+
+erfl :: proc(x: f128) f128 {
+    return erf(x.(f64)).(f128)
+}
+
+erfcl :: proc(x: f128) f128 {
+    return erfc(x.(f64)).(f128)
+}

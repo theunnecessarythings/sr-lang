@@ -1,0 +1,18 @@
+package main
+
+io :: import "std/io"
+
+main :: proc() {
+    // Question: Can we compute values at compile time?
+    // Answer: Use `comptime { ... }` expressions.
+    answer :: comptime { 40 + 2 }
+
+    io.println("answer=%d", answer)
+
+    // Question: Can a comptime block contain statements?
+    // Answer: Yes.
+    comptime {
+        tmp := 7 * 6
+        _ = tmp
+    }
+}

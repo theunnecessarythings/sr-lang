@@ -1,0 +1,61 @@
+package libc
+
+// Derived from musl-1.2.5/src/crypt/crypt_sha256.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <ctype.h>
+// #include <stdlib.h>
+// #include <stdio.h>
+// #include <string.h>
+// #include <stdint.h>
+
+ror :: proc(n: uint32_t, k: i32) uint32_t {
+    // TODO: Translate function body
+    unreachable
+}
+
+processblock :: proc(s: struct sha256, buf: uint8_t) void {
+    // TODO: Translate function body
+    unreachable
+}
+
+pad :: proc(s: struct sha256) void {
+    // TODO: Translate function body
+    unreachable
+}
+
+sha256_init :: proc(s: struct sha256) void {
+    // TODO: Translate function body
+    unreachable
+}
+
+sha256_sum :: proc(s: struct sha256, md: uint8_t) void {
+    // TODO: Translate function body
+    unreachable
+}
+
+sha256_update :: proc(s: struct sha256, m: void, len: u64) void {
+    // TODO: Translate function body
+    unreachable
+}
+
+to64 :: proc(s: u8, u: u32, n: i32) u8 {
+    // TODO: Translate function body
+    unreachable
+}
+
+hashmd :: proc(s: struct sha256, n: u32, md: void) void {
+    // TODO: Translate function body
+    unreachable
+}
+
+sha256crypt :: proc(key: u8, setting: u8, output: u8) u8 {
+    // TODO: Translate function body
+    unreachable
+}
+
+__crypt_sha256 :: proc(key: u8, setting: u8, output: u8) u8 {
+    // TODO: Translate function body
+    unreachable
+}
+

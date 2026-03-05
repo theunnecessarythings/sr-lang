@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/prng/lcong48.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <stdlib.h>
+// #include <string.h>
+// #include <rand48.h>
+
+memcpy_mod :: import "libc/src/string/memcpy"
+rand48_mod :: import "libc/src/prng/rand48_impl"
+
+lcong48 :: proc(p: *u16) void {
+    _ = memcpy_mod.memcpy((&rand48_mod.__seed48[0]).^*void, p.^*const void, sizeof(rand48_mod.__seed48))
+}

@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/casinhl.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+casinhl :: proc(z: complex(f128)) complex(f128) {
+    z = casinl(impl.cmplxl(-z.imag, z.real))
+    return impl.cmplxl(z.imag, -z.real)
+}

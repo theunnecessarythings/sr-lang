@@ -1,0 +1,48 @@
+package libc
+
+// Derived from musl-1.2.5/src/crypt/crypt_blowfish.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <string.h>
+// #include <stdint.h>
+
+BF_decode :: proc(dst: BF_word, src: u8, size: i32) i32 {
+    // TODO: Translate function body
+    unreachable
+}
+
+BF_encode :: proc(dst: u8, src: BF_word, size: i32) void {
+    // TODO: Translate function body
+    unreachable
+}
+
+BF_swap :: proc(x: BF_word, count: i32) void {
+    // TODO: Translate function body
+    unreachable
+}
+
+BF_encrypt :: proc(ctx: BF_ctx, L: BF_word, R: BF_word, start: BF_word, end: BF_word) BF_word {
+    // TODO: Translate function body
+    unreachable
+}
+
+for :: proc(i+=2: int i=0; i<16;) else {
+    // TODO: Translate function body
+    unreachable
+}
+
+BF_set_key :: proc(key: u8, expanded: BF_key, initial: BF_key, flags: u8) void {
+    // TODO: Translate function body
+    unreachable
+}
+
+BF_crypt :: proc(key: u8, setting: u8, output: u8, min: BF_word) u8 {
+    // TODO: Translate function body
+    unreachable
+}
+
+__crypt_blowfish :: proc(key: u8, setting: u8, output: u8) u8 {
+    // TODO: Translate function body
+    unreachable
+}
+

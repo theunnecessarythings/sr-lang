@@ -1,0 +1,34 @@
+package libc
+
+// Derived from musl-1.2.5/src/process/posix_spawnattr_sched.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <spawn.h>
+// #include <sched.h>
+// #include <errno.h>
+
+errno_mod :: import "libc/include/errno"
+
+posix_spawnattr_getschedparam :: proc(attr: *const posix_spawnattr_t restrict, schedparam: *struct sched_param restrict) i32 {
+    _ = attr
+    _ = schedparam
+    return errno_mod.ENOSYS
+}
+
+posix_spawnattr_setschedparam :: proc(attr: *posix_spawnattr_t restrict, schedparam: *const struct sched_param restrict) i32 {
+    _ = attr
+    _ = schedparam
+    return errno_mod.ENOSYS
+}
+
+posix_spawnattr_getschedpolicy :: proc(attr: *const posix_spawnattr_t restrict, policy: *i32 restrict) i32 {
+    _ = attr
+    _ = policy
+    return errno_mod.ENOSYS
+}
+
+posix_spawnattr_setschedpolicy :: proc(attr: *posix_spawnattr_t, policy: i32) i32 {
+    _ = attr
+    _ = policy
+    return errno_mod.ENOSYS
+}

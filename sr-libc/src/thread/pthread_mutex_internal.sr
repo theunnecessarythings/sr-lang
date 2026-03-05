@@ -1,0 +1,27 @@
+package libc
+
+// Internal layout helpers for pthread mutex (musl-compatible).
+
+alltypes :: import "libc/include/alltypes"
+
+pthread_mutex_u :: union {
+    __i: [10]i32,
+    __vi: [10]i32,
+    __p: [5]?*void,
+    __opaque: [40]u8,
+}
+
+pthread_mutex_internal :: struct { __u: pthread_mutex_u }
+
+mutex_internal :: fn(m: ?*alltypes.pthread_mutex_t) *pthread_mutex_internal { return (m?).^*pthread_mutex_internal }
+
+m_type :: fn(m: ?*alltypes.pthread_mutex_t) *i32 { return &mutex_internal(m).*.__u.__i[0] }
+m_lock :: fn(m: ?*alltypes.pthread_mutex_t) *i32 { return &mutex_internal(m).*.__u.__vi[1] }
+m_waiters :: fn(m: ?*alltypes.pthread_mutex_t) *i32 { return &mutex_internal(m).*.__u.__vi[2] }
+m_prev :: fn(m: ?*alltypes.pthread_mutex_t) *?*void { return &mutex_internal(m).*.__u.__p[3] }
+m_next :: fn(m: ?*alltypes.pthread_mutex_t) *?*void { return &mutex_internal(m).*.__u.__p[4] }
+m_count :: fn(m: ?*alltypes.pthread_mutex_t) *i32 { return &mutex_internal(m).*.__u.__i[5] }
+
+PTHREAD_MUTEX_NORMAL :: 0
+PTHREAD_MUTEX_RECURSIVE :: 1
+PTHREAD_MUTEX_ERRORCHECK :: 2

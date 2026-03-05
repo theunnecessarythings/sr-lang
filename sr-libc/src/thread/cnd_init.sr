@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/cnd_init.c
+
+string_h :: import "libc/src/string"
+
+thrd_success :: 0
+
+cnd_init :: proc(c: *cnd_t) i32 {
+    _ = string_h.memset(c.^*void, 0, sizeof(cnd_t))
+    return thrd_success
+}

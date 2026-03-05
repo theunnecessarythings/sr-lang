@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/sigaltstack.c
+
+nums :: import "libc/include/syscall"
+sc :: import "libc/src/syscall/syscall"
+
+sigaltstack :: proc(ss: *const stack_t, old: ?*stack_t) i32 {
+    old_ptr := if old != 0 { old.^usize } else { 0 }
+    r := sc.syscall2_ret(nums.SYS_sigaltstack.(i64), ss.^usize.(i64), old_ptr.(i64))
+    return r.(i32)
+}

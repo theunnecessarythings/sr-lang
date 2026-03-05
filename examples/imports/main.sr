@@ -5,7 +5,7 @@ package main
 
 // The `import` expression returns a module object.
 // We assign it to a constant named `math`.
-math :: import "math"
+math :: import "math_lib"
 io :: import "std/io"
 
 // The main entry point of our program.

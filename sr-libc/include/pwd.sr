@@ -1,0 +1,24 @@
+package libc
+
+// Derived from musl-1.2.5/include/pwd.h
+
+alltypes :: import "libc/include/alltypes"
+
+passwd :: struct {
+    pw_name: *u8,
+    pw_passwd: *u8,
+    pw_uid: alltypes.uid_t,
+    pw_gid: alltypes.gid_t,
+    pw_gecos: *u8,
+    pw_dir: *u8,
+    pw_shell: *u8,
+}
+
+getpwnam :: proc(name: *const u8) *passwd
+getpwuid :: proc(uid: alltypes.uid_t) *passwd
+getpwnam_r :: proc(name: *const u8, pw: *passwd, buf: *u8, size: usize, res: **passwd) i32
+getpwuid_r :: proc(uid: alltypes.uid_t, pw: *passwd, buf: *u8, size: usize, res: **passwd) i32
+getpwent :: proc() *passwd
+setpwent :: proc() void
+fgetpwent :: proc(f: *alltypes.FILE) *passwd
+putpwent :: proc(pw: *passwd, f: *alltypes.FILE) i32

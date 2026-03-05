@@ -1,0 +1,26 @@
+package libc
+
+// Minimal regex API.
+
+regex_t :: struct {
+    re_nsub: usize,
+    __pattern: *u8,
+    __flags: i32,
+}
+
+regmatch_t :: struct {
+    rm_so: isize,
+    rm_eo: isize,
+}
+
+REG_NOMATCH :: 1
+REG_BADPAT :: 2
+REG_EESCAPE :: 5
+REG_ESPACE :: 12
+
+REG_NOSUB :: 8
+
+regcomp :: proc(preg: *regex_t, pattern: *const u8, cflags: i32) i32
+regexec :: proc(preg: *const regex_t, str: *const u8, nmatch: usize, pmatch: *regmatch_t, eflags: i32) i32
+regerror :: proc(errcode: i32, preg: *const regex_t, buf: *u8, size: usize) usize
+regfree :: proc(preg: *regex_t) void

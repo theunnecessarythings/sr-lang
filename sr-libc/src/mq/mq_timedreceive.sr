@@ -1,0 +1,19 @@
+package libc
+
+// Derived from musl-1.2.5/src/mq/mq_timedreceive.c
+
+mq_h :: import "libc/include/mqueue"
+nums :: import "libc/include/syscall"
+sc :: import "libc/src/syscall/syscall"
+
+mq_timedreceive :: proc(mqd: mq_h.mqd_t, msg: *u8, len: usize, prio: *u32, at: *const timespec) isize {
+    r := sc.syscall5_ret(
+        nums.SYS_mq_timedreceive.(i64),
+        mqd.(i64),
+        msg.^usize.(i64),
+        len.(i64),
+        prio.^usize.(i64),
+        at.^usize.(i64),
+    )
+    return r.(isize)
+}

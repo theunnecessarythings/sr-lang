@@ -1,0 +1,6 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/lckpwdf.c
+
+lckpwdf :: proc() i32 { return 0 }
+ulckpwdf :: proc() i32 { return 0 }

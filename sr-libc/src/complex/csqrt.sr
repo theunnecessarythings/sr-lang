@@ -1,0 +1,51 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/csqrt.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+THRESH :: 0x1.a827999fcef32p+1022
+
+csqrt :: proc(z: complex(f64)) complex(f64) {
+    a := z.real
+    b := z.imag
+
+    if a == 0.0 and b == 0.0 {
+        return impl.cmplx(0.0, b)
+    }
+    if isinf(b) != 0 {
+        return impl.cmplx(1.0 / 0.0, b)
+    }
+    if isnan(a) != 0 {
+        t := (b - b) / (b - b)
+        return impl.cmplx(a, t)
+    }
+    if isinf(a) != 0 {
+        if signbit(a) != 0 {
+            return impl.cmplx(fabs(b - b), copysign(a, b))
+        }
+        return impl.cmplx(a, copysign(b - b, b))
+    }
+
+    scale := 0
+    if fabs(a) >= THRESH or fabs(b) >= THRESH {
+        a *= 0.25
+        b *= 0.25
+        scale = 1
+    }
+
+    result: complex(f64)
+    if a >= 0.0 {
+        t := sqrt((a + hypot(a, b)) * 0.5)
+        result = impl.cmplx(t, b / (2.0 * t))
+    } else {
+        t := sqrt((-a + hypot(a, b)) * 0.5)
+        result = impl.cmplx(fabs(b) / (2.0 * t), copysign(t, b))
+    }
+
+    if scale != 0 {
+        result = result * 2.0
+    }
+
+    return result
+}

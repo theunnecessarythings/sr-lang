@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/process/posix_spawnattr_getpgroup.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <spawn.h>
+
+posix_spawnattr_getpgroup :: proc(attr: *const posix_spawnattr_t restrict, pgrp: *alltypes.pid_t restrict) i32 {
+    pgrp.* = attr.__pgrp
+    return 0
+}

@@ -1,0 +1,28 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdlib/bsearch.c
+
+bsearch :: proc(
+    key: *const void,
+    base: *const void,
+    nel: usize,
+    width: usize,
+    cmp: fn(*const void, *const void) i32,
+) *void {
+    n := nel
+    b := base
+    while n > 0 {
+        mid := n / 2
+        try_ptr := (b.^usize + width * mid).(usize).^*const void
+        sign := cmp(key, try_ptr)
+        if sign < 0 {
+            n = mid
+        } else if sign > 0 {
+            b = (try_ptr.^usize + width).(usize).^*const void
+            n = n - mid - 1
+        } else {
+            return try_ptr.^*void
+        }
+    }
+    return null
+}

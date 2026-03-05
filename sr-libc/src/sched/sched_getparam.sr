@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/sched/sched_getparam.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sched.h>
+// #include <errno.h>
+// #include <syscall.h>
+
+sc :: import "libc/src/syscall/syscall"
+errno_mod :: import "libc/include/errno"
+
+sched_getparam :: proc(pid: alltypes.pid_t, param: *struct sched_param) i32 {
+    _ = pid
+    _ = param
+    return sc.__syscall_ret((-errno_mod.ENOSYS).(i64)).(i32)
+}

@@ -1,0 +1,32 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdlib/fcvt.c.
+
+strcspn_mod :: import "libc/src/string/strcspn"
+strspn_mod :: import "libc/src/string/strspn"
+
+__fcvt_zeros: [16]u8 = [16]u8{ 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 0 }
+
+fcvt :: proc(x: f64, n: i32, dp: *i32, sign: *i32) *u8 {
+    tmp: [1500]u8
+    nd := n
+    if nd > 1400 { nd = 1400 }
+
+    _ = sprintf(&tmp[0], "%.*f", nd, x)
+    i: i32 = if tmp[0] == 45 { 1 } else { 0 }
+    lz: i32
+    if tmp[i] == 48 {
+        lz = strspn_mod.strspn(&tmp[(i + 2).(usize)], "0").(i32)
+    } else {
+        lz = -strcspn_mod.strcspn(&tmp[i.(usize)], ".").(i32)
+    }
+
+    if nd <= lz {
+        sign.* = i
+        dp.* = 1
+        if nd > 14 { nd = 14 }
+        return (&__fcvt_zeros[(14 - nd).(usize)]).^*u8
+    }
+
+    return ecvt(x, nd - lz, dp, sign)
+}

@@ -1,0 +1,125 @@
+package libc
+
+// Derived from musl-1.2.5/include/netdb.h
+
+addrinfo :: struct {
+    ai_flags: i32,
+    ai_family: i32,
+    ai_socktype: i32,
+    ai_protocol: i32,
+    ai_addrlen: socklen_t,
+    ai_addr: *sockaddr,
+    ai_canonname: *u8,
+    ai_next: *addrinfo,
+}
+
+AI_PASSIVE :: 0x01
+AI_CANONNAME :: 0x02
+AI_NUMERICHOST :: 0x04
+AI_V4MAPPED :: 0x08
+AI_ALL :: 0x10
+AI_ADDRCONFIG :: 0x20
+AI_NUMERICSERV :: 0x400
+
+NI_NUMERICHOST :: 0x01
+NI_NUMERICSERV :: 0x02
+NI_NOFQDN :: 0x04
+NI_NAMEREQD :: 0x08
+NI_DGRAM :: 0x10
+NI_NUMERICSCOPE :: 0x100
+
+EAI_BADFLAGS :: -1
+EAI_NONAME :: -2
+EAI_AGAIN :: -3
+EAI_FAIL :: -4
+EAI_NODATA :: -5
+EAI_FAMILY :: -6
+EAI_SOCKTYPE :: -7
+EAI_SERVICE :: -8
+EAI_MEMORY :: -10
+EAI_SYSTEM :: -11
+EAI_OVERFLOW :: -12
+
+getaddrinfo :: proc(node: *const u8 restrict, service: *const u8 restrict, hints: *const addrinfo restrict, res: **addrinfo restrict) i32
+freeaddrinfo :: proc(ai: *addrinfo) void
+getnameinfo :: proc(sa: *const sockaddr restrict, salen: socklen_t, host: *u8 restrict, hostlen: socklen_t, serv: *u8 restrict, servlen: socklen_t, flags: i32) i32
+gai_strerror :: proc(ecode: i32) *const u8
+
+netent :: struct {
+    n_name: *u8,
+    n_aliases: **u8,
+    n_addrtype: i32,
+    n_net: u32,
+}
+
+hostent :: struct {
+    h_name: *u8,
+    h_aliases: **u8,
+    h_addrtype: i32,
+    h_length: i32,
+    h_addr_list: **u8,
+}
+
+servent :: struct {
+    s_name: *u8,
+    s_aliases: **u8,
+    s_port: i32,
+    s_proto: *u8,
+}
+
+protoent :: struct {
+    p_name: *u8,
+    p_aliases: **u8,
+    p_proto: i32,
+}
+
+sethostent :: proc(stayopen: i32) void
+endhostent :: proc() void
+gethostent :: proc() *hostent
+
+setnetent :: proc(stayopen: i32) void
+endnetent :: proc() void
+getnetent :: proc() *netent
+getnetbyaddr :: proc(net: u32, type: i32) *netent
+getnetbyname :: proc(name: *const u8) *netent
+
+setservent :: proc(stayopen: i32) void
+endservent :: proc() void
+getservent :: proc() *servent
+getservbyname :: proc(name: *const u8, proto: *const u8) *servent
+getservbyport :: proc(port: i32, proto: *const u8) *servent
+
+setprotoent :: proc(stayopen: i32) void
+endprotoent :: proc() void
+getprotoent :: proc() *protoent
+getprotobyname :: proc(name: *const u8) *protoent
+getprotobynumber :: proc(proto: i32) *protoent
+
+gethostbyname :: proc(name: *const u8) *hostent
+gethostbyaddr :: proc(addr: *const void, len: socklen_t, type: i32) *hostent
+__h_errno_location :: proc() *i32
+h_errno :: proc() *i32
+HOST_NOT_FOUND :: 1
+TRY_AGAIN :: 2
+NO_RECOVERY :: 3
+NO_DATA :: 4
+NO_ADDRESS :: NO_DATA
+
+herror :: proc(msg: *const u8) void
+hstrerror :: proc(ecode: i32) *const u8
+gethostbyname_r :: proc(name: *const u8, ret: *hostent, buf: *u8, buflen: usize, result: **hostent, h_errnop: *i32) i32
+gethostbyname2_r :: proc(name: *const u8, af: i32, ret: *hostent, buf: *u8, buflen: usize, result: **hostent, h_errnop: *i32) i32
+gethostbyname2 :: proc(name: *const u8, af: i32) *hostent
+gethostbyaddr_r :: proc(addr: *const void, len: socklen_t, type: i32, ret: *hostent, buf: *u8, buflen: usize, result: **hostent, h_errnop: *i32) i32
+getservbyport_r :: proc(port: i32, proto: *const u8, ret: *servent, buf: *u8, buflen: usize, result: **servent) i32
+getservbyname_r :: proc(name: *const u8, proto: *const u8, ret: *servent, buf: *u8, buflen: usize, result: **servent) i32
+
+EAI_ADDRFAMILY :: -9
+EAI_INPROGRESS :: -100
+EAI_CANCELED :: -101
+EAI_NOTCANCELED :: -102
+EAI_ALLDONE :: -103
+EAI_INTR :: -104
+EAI_IDN_ENCODE :: -105
+NI_MAXHOST :: 255
+NI_MAXSERV :: 32

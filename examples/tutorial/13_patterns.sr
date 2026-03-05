@@ -1,0 +1,52 @@
+package main
+
+io :: import "std/io"
+
+Point :: struct { x: i32, y: i32 }
+OptionI32 :: variant { Some(i32), None }
+
+main :: proc() {
+    // Question: What patterns are available?
+    // Answer: literals, ranges, or-patterns, bindings, and more.
+    value := 7
+    match value {
+        0 => io.print("zero\n"),
+        1 | 2 => io.print("one or two\n"),
+        3..=9 => io.print("three to nine\n"),
+        n @ (10..20) if n % 2 == 0 => io.print("even in range\n"),
+        _ => io.print("other\n"),
+    }
+
+    // Tuple patterns.
+    t := (1, 2)
+    match t {
+        (a, b) => io.println("%d %d", a, b),
+    }
+
+    // Array/slice patterns.
+    arr := [1, 2, 3, 4]
+    match arr {
+        [first, second, ..rest] => io.println("%d %d %d", first, second, rest.len),
+        _ => io.print("no match\n"),
+    }
+
+    // Struct patterns.
+    p := Point{ x: 0, y: 5 }
+    Point{ x: px, y: py } := p
+    _ = px
+    _ = py
+    match p {
+        Point{ x: 0, y } => io.println("y=%d", y),
+        Point{ .. } => io.print("other point\n"),
+    }
+
+    // Variant patterns.
+    opt := OptionI32.Some(9)
+    OptionI32.Some(v2) := opt
+    _ = v2
+    match opt {
+        OptionI32.Some(v) => io.println("v=%d", v),
+        OptionI32.None => io.print("none\n"),
+    }
+
+}

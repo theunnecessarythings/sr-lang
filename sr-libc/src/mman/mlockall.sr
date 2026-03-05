@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/mman/mlockall.c
+
+syscall :: import "libc/src/syscall"
+
+SYS_mlockall :: 151
+
+mlockall :: proc(flags: i32) i32 {
+    return syscall.syscall1(SYS_mlockall, flags.(u64)).(i32)
+}

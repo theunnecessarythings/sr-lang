@@ -1,0 +1,121 @@
+package libc
+
+// Minimal fnmatch implementation.
+
+fnm_h :: import "libc/include/fnmatch"
+
+to_lower :: fn(c: u8) u8 {
+    if c >= 'A'.(u8) && c <= 'Z'.(u8) { return c + 32 }
+    return c
+}
+
+match_range :: fn(p: *const u8, c: u8, flags: i32, consumed: *usize) bool {
+    i: usize = 0
+    neg := false
+    matched := false
+    if p[i] == '!'.(u8) || p[i] == '^'.(u8) {
+        neg = true
+        i += 1
+    }
+    last: u8 = 0
+    has_last := false
+    loop {
+        ch := p[i]
+        if ch == 0 { break }
+        if ch == ']'.(u8) && i > 0 { i += 1; break }
+        if ch == '\\'.(u8) && (flags & fnm_h.FNM_NOESCAPE) == 0 {
+            i += 1
+            ch = p[i]
+        }
+        if ch == '-' .(u8) && has_last && p[i + 1] != 0 && p[i + 1] != ']'.(u8) {
+            i += 1
+            hi := p[i]
+            if (flags & fnm_h.FNM_NOESCAPE) == 0 && hi == '\\'.(u8) {
+                i += 1
+                hi = p[i]
+            }
+            lo := last
+            if (flags & fnm_h.FNM_CASEFOLD) != 0 {
+                lo = to_lower(lo)
+                hi = to_lower(hi)
+            }
+            cc := c
+            if (flags & fnm_h.FNM_CASEFOLD) != 0 { cc = to_lower(cc) }
+            if cc >= lo && cc <= hi { matched = true }
+            last = hi
+            has_last = true
+            i += 1
+            continue
+        }
+        last = ch
+        has_last = true
+        cc := c
+        if (flags & fnm_h.FNM_CASEFOLD) != 0 {
+            ch = to_lower(ch)
+            cc = to_lower(cc)
+        }
+        if ch == cc { matched = true }
+        i += 1
+    }
+    consumed.* = i
+    return if neg { !matched } else { matched }
+}
+
+match_here :: fn(pat: *const u8, str: *const u8, flags: i32) bool {
+    p := pat
+    s := str
+    while true {
+        c := p[0]
+        if c == 0 { return s[0] == 0 }
+        if c == '*'.(u8) {
+            while p[0] == '*'.(u8) { p = (p.^usize + 1).(usize).^*const u8 }
+            if p[0] == 0 { return if (flags & fnm_h.FNM_PATHNAME) != 0 { true } else { true } }
+            while s[0] != 0 {
+                if (flags & fnm_h.FNM_PATHNAME) != 0 && s[0] == '/'.(u8) { break }
+                if match_here(p, s, flags) { return true }
+                s = (s.^usize + 1).(usize).^*const u8
+            }
+            return match_here(p, s, flags)
+        }
+        if c == '?'.(u8) {
+            if s[0] == 0 { return false }
+            if (flags & fnm_h.FNM_PATHNAME) != 0 && s[0] == '/'.(u8) { return false }
+            if (flags & fnm_h.FNM_PERIOD) != 0 && s[0] == '.'.(u8) && (str == s) {
+                return false
+            }
+            p = (p.^usize + 1).(usize).^*const u8
+            s = (s.^usize + 1).(usize).^*const u8
+            continue
+        }
+        if c == '['.(u8) {
+            if s[0] == 0 { return false }
+            if (flags & fnm_h.FNM_PATHNAME) != 0 && s[0] == '/'.(u8) { return false }
+            consumed: usize = 0
+            ok := match_range((p.^usize + 1).(usize).^*const u8, s[0], flags, &consumed)
+            if !ok { return false }
+            p = (p.^usize + 1 + consumed).(usize).^*const u8
+            s = (s.^usize + 1).(usize).^*const u8
+            continue
+        }
+        if c == '\\'.(u8) && (flags & fnm_h.FNM_NOESCAPE) == 0 {
+            p = (p.^usize + 1).(usize).^*const u8
+            c = p[0]
+        }
+        if s[0] == 0 { return false }
+        cc := c
+        sc := s[0]
+        if (flags & fnm_h.FNM_CASEFOLD) != 0 {
+            cc = to_lower(cc)
+            sc = to_lower(sc)
+        }
+        if cc != sc { return false }
+        p = (p.^usize + 1).(usize).^*const u8
+        s = (s.^usize + 1).(usize).^*const u8
+    }
+    return false
+}
+
+fnmatch :: proc(pattern: *const u8, str: *const u8, flags: i32) i32 {
+    if match_here(pattern, str, flags) { return 0 }
+    return fnm_h.FNM_NOMATCH
+}

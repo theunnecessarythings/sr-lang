@@ -1,0 +1,527 @@
+package libc
+
+// Derived from musl-1.2.5/src/internal/floatscan.c (f128 focus).
+
+alltypes :: import "libc/include/alltypes"
+ctype_mod :: import "libc/src/ctype/ctype"
+sh :: import "libc/src/internal/shgetc"
+errno_mod :: import "libc/include/errno"
+math_mod :: import "libc/include/math"
+
+FLT_MANT_DIG :: 24.(i32)
+FLT_MIN_EXP :: (-125).(i32)
+DBL_MANT_DIG :: 53.(i32)
+DBL_MIN_EXP :: (-1021).(i32)
+LDBL_MANT_DIG :: 113.(i32)
+LDBL_MIN_EXP :: (-16381).(i32)
+LDBL_EPSILON :: 1.925929944387235853055977942584927e-34.(f128)
+LDBL_MAX :: 1.189731495357231765e4932.(f128)
+LDBL_MIN :: 3.362103143112093506e-4932.(f128)
+INT_MAX :: 0x7fff_ffff.(i32)
+I64_MIN_SENTINEL :: (-9223372036854775807 - 1).(i64)
+
+KMAX :: 2048
+MASK :: (KMAX - 1).(i32)
+
+LD_B1B_DIG :: 4.(i32)
+LD_B1B_MAX0 :: 10384593.(u32)
+LD_B1B_MAX1 :: 717069655.(u32)
+LD_B1B_MAX2 :: 257060992.(u32)
+LD_B1B_MAX3 :: 658440191.(u32)
+
+scanexp :: proc(f: *alltypes.FILE, pok: i32) i64 {
+    c := sh.shgetc(f)
+    neg: i32 = 0
+    if c == 43 or c == 45 {
+        neg = (c == 45).(i32)
+        c = sh.shgetc(f)
+        if (c - 48) >= 10 and pok != 0 { sh.shunget(f) }
+    }
+    if (c - 48) >= 10 {
+        sh.shunget(f)
+        return I64_MIN_SENTINEL
+    }
+    x: i32 = 0
+    while (c - 48) >= 0 and (c - 48) < 10 and x < (INT_MAX / 10).(i32) {
+        x = 10 * x + (c - 48).(i32)
+        c = sh.shgetc(f)
+    }
+    y: i64 = x
+    while (c - 48) >= 0 and (c - 48) < 10 and y < (0x7fff_ffff_ffff_ffff / 100).(i64) {
+        y = 10 * y + (c - 48).(i64)
+        c = sh.shgetc(f)
+    }
+    while (c - 48) >= 0 and (c - 48) < 10 { c = sh.shgetc(f) }
+    sh.shunget(f)
+    return if neg != 0 { -y } else { y }
+}
+
+decfloat :: proc(f: *alltypes.FILE, c_in: i32, bits_in: i32, emin: i32, sign: i32, pok: i32) f128 {
+    x: [KMAX]u32
+    th: [4]u32 = [LD_B1B_MAX0, LD_B1B_MAX1, LD_B1B_MAX2, LD_B1B_MAX3]
+    i: i32 = 0
+    j: i32 = 0
+    k: i32 = 0
+    a: i32 = 0
+    z: i32 = 0
+    lrp: i64 = 0
+    dc: i64 = 0
+    e10: i64 = 0
+    lnz: i32 = 0
+    gotdig: i32 = 0
+    gotrad: i32 = 0
+    rp: i32 = 0
+    e2: i32 = 0
+    emax := -emin - bits_in + 3
+    denormal: i32 = 0
+    y: f128
+    frac: f128 = 0.0
+    bias: f128 = 0.0
+    p10s: [8]i32 = [10,100,1000,10000,100000,1000000,10000000,100000000]
+
+    c := c_in
+
+    j = 0
+    k = 0
+
+    while c == 48 { gotdig = 1; c = sh.shgetc(f) }
+    if c == 46 {
+        gotrad = 1
+        c = sh.shgetc(f)
+        while c == 48 { gotdig = 1; lrp -= 1; c = sh.shgetc(f) }
+    }
+
+    x[0] = 0
+    while ((c - 48) >= 0 and (c - 48) < 10) or c == 46 {
+        if c == 46 {
+            if gotrad != 0 { break }
+            gotrad = 1
+            lrp = dc
+        } else if k < KMAX - 3 {
+            dc += 1
+            if c != 48 { lnz = dc.(i32) }
+            if j != 0 {
+                x[k] = x[k] * 10 + (c - 48).(u32)
+            } else {
+                x[k] = (c - 48).(u32)
+            }
+            j += 1
+            if j == 9 { k += 1; j = 0 }
+            gotdig = 1
+        } else {
+            dc += 1
+            if c != 48 {
+                lnz = (KMAX - 4) * 9
+                x[KMAX - 4] = x[KMAX - 4] | 1
+            }
+        }
+        c = sh.shgetc(f)
+    }
+    if gotrad == 0 { lrp = dc }
+
+    if gotdig != 0 and (c | 32) == 101 {
+        e10 = scanexp(f, pok)
+        if e10 == I64_MIN_SENTINEL {
+            if pok != 0 {
+                sh.shunget(f)
+            } else {
+                sh.shlim(f, 0)
+                return 0.0
+            }
+            e10 = 0
+        }
+        lrp += e10
+    } else if c >= 0 {
+        sh.shunget(f)
+    }
+    if gotdig == 0 {
+        errno_mod.__errno_location().* = errno_mod.EINVAL
+        sh.shlim(f, 0)
+        return 0.0
+    }
+
+    if x[0] == 0 { return sign.(f128) * 0.0 }
+
+    if lrp == dc and dc < 10 and (bits_in > 30 or (x[0] >> bits_in.(u32)) == 0) {
+        return sign.(f128) * x[0].(f128)
+    }
+    if lrp > (-emin / 2) {
+        errno_mod.__errno_location().* = errno_mod.ERANGE
+        return sign.(f128) * LDBL_MAX * LDBL_MAX
+    }
+    if lrp < emin - 2 * LDBL_MANT_DIG {
+        errno_mod.__errno_location().* = errno_mod.ERANGE
+        return sign.(f128) * LDBL_MIN * LDBL_MIN
+    }
+
+    if j != 0 {
+        while j < 9 { x[k] = x[k] * 10; j += 1 }
+        k += 1
+        j = 0
+    }
+
+    a = 0
+    z = k
+    e2 = 0
+    rp = lrp.(i32)
+
+    if lnz < 9 and lnz <= rp and rp < 18 {
+        if rp == 9 { return sign.(f128) * x[0].(f128) }
+        if rp < 9 { return sign.(f128) * x[0].(f128) / p10s[8 - rp].(f128) }
+        bitlim := bits_in - 3 * (rp - 9)
+        if bitlim > 30 or (x[0] >> bitlim.(u32)) == 0 {
+            return sign.(f128) * x[0].(f128) * p10s[rp - 10].(f128)
+        }
+    }
+
+    while z > 0 and x[z - 1] == 0 { z -= 1 }
+
+    if rp % 9 != 0 {
+        rpm9 := if rp >= 0 { rp % 9 } else { rp % 9 + 9 }
+        p10 := p10s[8 - rpm9]
+        carry: u32 = 0
+        k = a
+        while k != z {
+            tmp := x[k] % p10.(u32)
+            x[k] = x[k] / p10.(u32) + carry
+            carry = (1000000000 / p10).(u32) * tmp
+            if k == a and x[k] == 0 {
+                a = (a + 1) & MASK
+                rp -= 9
+            }
+            k += 1
+        }
+        if carry != 0 { x[z] = carry; z += 1 }
+        rp += 9 - rpm9
+    }
+
+    while rp < 9 * LD_B1B_DIG or (rp == 9 * LD_B1B_DIG and x[a] < th[0]) {
+        carry: u32 = 0
+        e2 -= 29
+        k = (z - 1) & MASK
+        while true {
+            tmp := ((x[k].(u64) << 29) + carry.(u64))
+            if tmp > 1000000000 {
+                carry = (tmp / 1000000000).(u32)
+                x[k] = (tmp % 1000000000).(u32)
+            } else {
+                carry = 0
+                x[k] = tmp.(u32)
+            }
+            if k == ((z - 1) & MASK) and k != a and x[k] == 0 { z = k }
+            if k == a { break }
+            k = (k - 1) & MASK
+        }
+        if carry != 0 {
+            rp += 9
+            a = (a - 1) & MASK
+            if a == z {
+                z = (z - 1) & MASK
+                x[(z - 1) & MASK] = x[(z - 1) & MASK] | x[z]
+            }
+            x[a] = carry
+        }
+    }
+
+    while true {
+        carry: u32 = 0
+        shamt: i32 = 1
+        i = 0
+        while i < LD_B1B_DIG {
+            k = (a + i) & MASK
+            if k == z or x[k] < th[i] { i = LD_B1B_DIG; break }
+            if x[(a + i) & MASK] > th[i] { break }
+            i += 1
+        }
+        if i == LD_B1B_DIG and rp == 9 * LD_B1B_DIG { break }
+        if rp > 9 + 9 * LD_B1B_DIG { shamt = 9 }
+        e2 += shamt
+        k = a
+        while k != z {
+            tmp := x[k] & ((1.(u32) << shamt.(u32)) - 1)
+            x[k] = (x[k] >> shamt.(u32)) + carry
+            carry = (1000000000.(u32) >> shamt.(u32)) * tmp
+            if k == a and x[k] == 0 {
+                a = (a + 1) & MASK
+                i -= 1
+                rp -= 9
+            }
+            k = (k + 1) & MASK
+        }
+        if carry != 0 {
+            if ((z + 1) & MASK) != a {
+                x[z] = carry
+                z = (z + 1) & MASK
+            } else {
+                x[(z - 1) & MASK] = x[(z - 1) & MASK] | 1
+            }
+        }
+    }
+
+    y = 0.0
+    i = 0
+    while i < LD_B1B_DIG {
+        if ((a + i) & MASK) == z {
+            old_z := z
+            z = (z + 1) & MASK
+            x[old_z] = 0
+        }
+        y = 1000000000.0 * y + x[(a + i) & MASK].(f128)
+        i += 1
+    }
+
+    y *= sign.(f128)
+
+    bits := bits_in
+    if bits > LDBL_MANT_DIG + e2 - emin {
+        bits = LDBL_MANT_DIG + e2 - emin
+        if bits < 0 { bits = 0 }
+        denormal = 1
+    }
+
+    if bits < LDBL_MANT_DIG {
+        bias = math_mod.copysignl(math_mod.scalbnl(1.0, 2 * LDBL_MANT_DIG - bits - 1), y)
+        frac = math_mod.fmodl(y, math_mod.scalbnl(1.0, LDBL_MANT_DIG - bits))
+        y -= frac
+        y += bias
+    }
+
+    if ((a + i) & MASK) != z {
+        t := x[(a + i) & MASK]
+        if t < 500000000 and (t != 0 or ((a + i + 1) & MASK) != z) {
+            frac += 0.25 * sign.(f128)
+        } else if t > 500000000 {
+            frac += 0.75 * sign.(f128)
+        } else if t == 500000000 {
+            if ((a + i + 1) & MASK) == z {
+                frac += 0.5 * sign.(f128)
+            } else {
+                frac += 0.75 * sign.(f128)
+            }
+        }
+        if LDBL_MANT_DIG - bits >= 2 and math_mod.fmodl(frac, 1.0) == 0.0 { frac += 1.0 }
+    }
+
+    y += frac
+    y -= bias
+
+    if ((e2 + LDBL_MANT_DIG) & INT_MAX) > emax - 5 {
+        if math_mod.fabsl(y) >= 2.0 / LDBL_EPSILON {
+            if denormal != 0 and bits == LDBL_MANT_DIG + e2 - emin { denormal = 0 }
+            y *= 0.5
+            e2 += 1
+        }
+        if e2 + LDBL_MANT_DIG > emax or (denormal != 0 and frac != 0.0) {
+            errno_mod.__errno_location().* = errno_mod.ERANGE
+        }
+    }
+
+    return math_mod.scalbnl(y, e2)
+}
+
+hexfloat :: proc(f: *alltypes.FILE, bits_in: i32, emin: i32, sign: i32, pok: i32) f128 {
+    x: u32 = 0
+    y: f128 = 0.0
+    scale: f128 = 1.0
+    bias: f128 = 0.0
+    gottail: i32 = 0
+    gotrad: i32 = 0
+    gotdig: i32 = 0
+    rp: i64 = 0
+    dc: i64 = 0
+    e2: i64 = 0
+    d: i32
+    c := sh.shgetc(f)
+
+    while c == 48 { gotdig = 1; c = sh.shgetc(f) }
+
+    if c == 46 {
+        gotrad = 1
+        c = sh.shgetc(f)
+        rp = 0
+        while c == 48 { gotdig = 1; rp -= 1; c = sh.shgetc(f) }
+    }
+
+    while ((c - 48) >= 0 and (c - 48) < 10) or (((c | 32) - 97) >= 0 and ((c | 32) - 97) < 6) or c == 46 {
+        if c == 46 {
+            if gotrad != 0 { break }
+            rp = dc
+            gotrad = 1
+        } else {
+            gotdig = 1
+            if c > 57 { d = (c | 32) + 10 - 97 } else { d = c - 48 }
+            if dc < 8 {
+                x = x * 16 + d.(u32)
+            } else if dc < (LDBL_MANT_DIG / 4 + 1) {
+                scale /= 16.0
+                y += d.(f128) * scale
+            } else if d != 0 and gottail == 0 {
+                y += 0.5 * scale
+                gottail = 1
+            }
+            dc += 1
+        }
+        c = sh.shgetc(f)
+    }
+
+    if gotdig == 0 {
+        sh.shunget(f)
+        if pok != 0 {
+            sh.shunget(f)
+            if gotrad != 0 { sh.shunget(f) }
+        } else {
+            sh.shlim(f, 0)
+        }
+        return sign.(f128) * 0.0
+    }
+    if gotrad == 0 { rp = dc }
+    while dc < 8 { x *= 16; dc += 1 }
+
+    if (c | 32) == 112 {
+        e2 = scanexp(f, pok)
+        if e2 == I64_MIN_SENTINEL {
+            if pok != 0 {
+                sh.shunget(f)
+            } else {
+                sh.shlim(f, 0)
+                return 0.0
+            }
+            e2 = 0
+        }
+    } else {
+        sh.shunget(f)
+    }
+    e2 += 4 * rp - 32
+
+    if x == 0 { return sign.(f128) * 0.0 }
+    if e2 > -emin {
+        errno_mod.__errno_location().* = errno_mod.ERANGE
+        return sign.(f128) * LDBL_MAX * LDBL_MAX
+    }
+    if e2 < emin - 2 * LDBL_MANT_DIG {
+        errno_mod.__errno_location().* = errno_mod.ERANGE
+        return sign.(f128) * LDBL_MIN * LDBL_MIN
+    }
+
+    while x < 0x80000000 {
+        if y >= 0.5 {
+            x = x + x + 1
+            y = y + y - 1
+        } else {
+            x = x + x
+            y = y + y
+        }
+        e2 -= 1
+    }
+
+    bits := bits_in
+    if bits > 32 + e2.(i32) - emin {
+        bits = 32 + e2.(i32) - emin
+        if bits < 0 { bits = 0 }
+    }
+
+    if bits < LDBL_MANT_DIG {
+        bias = math_mod.copysignl(math_mod.scalbnl(1.0, 32 + LDBL_MANT_DIG - bits - 1), sign.(f128))
+    }
+
+    if bits < 32 and y != 0.0 and (x & 1) == 0 { x += 1; y = 0.0 }
+
+    y = bias + sign.(f128) * x.(f128) + sign.(f128) * y
+    y -= bias
+
+    if y == 0.0 { errno_mod.__errno_location().* = errno_mod.ERANGE }
+
+    return math_mod.scalbnl(y, e2.(i32))
+}
+
+__floatscan :: proc(f: *alltypes.FILE, prec: i32, pok: i32) f128 {
+    sign: i32 = 1
+    bits: i32
+    emin: i32
+
+    if prec == 0 {
+        bits = FLT_MANT_DIG
+        emin = FLT_MIN_EXP - bits
+    } else if prec == 1 {
+        bits = DBL_MANT_DIG
+        emin = DBL_MIN_EXP - bits
+    } else if prec == 2 {
+        bits = LDBL_MANT_DIG
+        emin = LDBL_MIN_EXP - bits
+    } else {
+        return 0.0
+    }
+
+    c := sh.shgetc(f)
+    while c >= 0 and ctype_mod.isspace(c) != 0 { c = sh.shgetc(f) }
+
+    if c == 43 or c == 45 {
+        if c == 45 { sign = -1 }
+        c = sh.shgetc(f)
+    }
+
+    i: usize = 0
+    while i < 8 and (c | 32) == "infinity"[i] {
+        if i < 7 { c = sh.shgetc(f) }
+        i += 1
+    }
+    if i == 3 or i == 8 or (i > 3 and pok != 0) {
+        if i != 8 {
+            sh.shunget(f)
+            if pok != 0 { while i > 3 { sh.shunget(f); i -= 1 } }
+        }
+        z: f128 = 0.0
+        return sign.(f128) * (1.0.(f128) / z)
+    }
+
+    if i == 0 {
+        i = 0
+        while i < 3 and (c | 32) == "nan"[i] {
+            if i < 2 { c = sh.shgetc(f) }
+            i += 1
+        }
+    }
+    if i == 3 {
+        if sh.shgetc(f) != 40 {
+            sh.shunget(f)
+            z: f128 = 0.0
+            return z / z
+        }
+        i = 1
+        while true {
+            c = sh.shgetc(f)
+            if (c - 48) >= 0 and (c - 48) < 10 or (c - 65) >= 0 and (c - 65) < 26 or (c - 97) >= 0 and (c - 97) < 26 or c == 95 {
+                continue
+            }
+            if c == 41 {
+                z: f128 = 0.0
+                return z / z
+            }
+            sh.shunget(f)
+            if pok == 0 {
+                errno_mod.__errno_location().* = errno_mod.EINVAL
+                sh.shlim(f, 0)
+                return 0.0
+            }
+            while i > 0 { sh.shunget(f); i -= 1 }
+            z: f128 = 0.0
+            return z / z
+        }
+    }
+
+    if i != 0 {
+        sh.shunget(f)
+        errno_mod.__errno_location().* = errno_mod.EINVAL
+        sh.shlim(f, 0)
+        return 0.0
+    }
+
+    if c == 48 {
+        c = sh.shgetc(f)
+        if (c | 32) == 120 { return hexfloat(f, bits, emin, sign, pok) }
+        sh.shunget(f)
+        c = 48
+    }
+
+    return decfloat(f, c, bits, emin, sign, pok)
+}

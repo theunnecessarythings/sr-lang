@@ -1,0 +1,32 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/sem_post.c
+
+errno_mod :: import "libc/include/errno"
+atomic :: import "libc/src/internal/atomic"
+lock_mod :: import "libc/src/internal/lock"
+
+SEM_VALUE_MAX :: 0x7fffffff
+
+sem_post :: proc(sem: *sem_t) i32 {
+    val: i32
+    newv: i32
+    waiters: i32
+    priv := sem.__val[2]
+
+    while true {
+        val = sem.__val[0]
+        waiters = sem.__val[1]
+        if (val & SEM_VALUE_MAX) == SEM_VALUE_MAX {
+            errno_mod.errno().* = errno_mod.EOVERFLOW
+            return -1
+        }
+        newv = val + 1
+        if waiters <= 1 { newv &= ~0x80000000 }
+        if atomic.a_cas(&sem.__val[0], val, newv) == val { break }
+    }
+    if val < 0 {
+        lock_mod.__wake(&sem.__val[0].^*void, if waiters > 1 { 1 } else { -1 }, priv)
+    }
+    return 0
+}

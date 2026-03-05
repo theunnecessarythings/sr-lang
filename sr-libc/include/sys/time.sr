@@ -1,0 +1,25 @@
+package libc
+
+// Derived from musl-1.2.5/include/sys/time.h (partial).
+
+alltypes :: import "libc/include/alltypes"
+
+itimerval :: struct {
+    it_interval: alltypes.timeval,
+    it_value: alltypes.timeval,
+}
+
+ITIMER_REAL :: 0
+ITIMER_VIRTUAL :: 1
+ITIMER_PROF :: 2
+
+timezone :: struct {
+    tz_minuteswest: i32,
+    tz_dsttime: i32,
+}
+
+getitimer :: proc(which: i32, value: *itimerval) i32
+setitimer :: proc(which: i32, value: *itimerval, ovalue: ?*itimerval) i32
+
+settimeofday :: proc(tv: ?*const alltypes.timeval, tz: ?*const timezone) i32
+adjtime :: proc(in: ?*const alltypes.timeval, out: ?*alltypes.timeval) i32

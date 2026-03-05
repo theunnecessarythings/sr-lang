@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/stat/fchmod.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+fchmod :: proc(fd: i32, mode: mode_t) i32 {
+    r := sc.syscall2_ret(nums.SYS_fchmod.(i64), fd.(i64), mode.(i64))
+    return r.(i32)
+}

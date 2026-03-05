@@ -1,0 +1,32 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/if_indextoname.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <net/if.h>
+// #include <sys/socket.h>
+// #include <sys/ioctl.h>
+// #include <string.h>
+// #include <errno.h>
+// #include <syscall.h>
+
+socket_mod :: import "libc/src/network/socket"
+ioctl_mod :: import "libc/src/misc/ioctl"
+close_mod :: import "libc/src/unistd/close"
+strncpy_mod :: import "libc/src/string/strncpy"
+ioctl_consts :: import "libc/include/sys/ioctl"
+errno_mod :: import "libc/include/errno"
+
+if_indextoname :: proc(index: u32, name: *u8) *u8 {
+    ifr: ifreq = {}
+    fd := socket_mod.socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0)
+    if fd < 0 { return null }
+    ifr.ifr_ifru.ifru_ivalue = index.(i32)
+    r := ioctl_mod.ioctl(fd, ioctl_consts.SIOCGIFNAME, (&ifr).^*void)
+    _ = close_mod.close(fd)
+    if r < 0 {
+        if errno_mod.errno().* == errno_mod.ENODEV { errno_mod.errno().* = errno_mod.ENXIO }
+        return null
+    }
+    return strncpy_mod.strncpy(name, &ifr.ifr_ifrn.ifrn_name[0], IF_NAMESIZE)
+}

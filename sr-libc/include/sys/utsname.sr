@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/include/sys/utsname.h
+
+utsname :: struct {
+    sysname: [65]u8,
+    nodename: [65]u8,
+    release: [65]u8,
+    version: [65]u8,
+    machine: [65]u8,
+    domainname: [65]u8,
+}
+
+uname :: proc(name: *utsname) i32

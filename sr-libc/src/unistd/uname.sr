@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/uname.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+uts :: import "libc/include/sys/utsname"
+
+uname :: proc(name: *uts.utsname) i32 {
+    r := sc.syscall1_ret(nums.SYS_uname.(i64), name.^usize.(i64))
+    return r.(i32)
+}

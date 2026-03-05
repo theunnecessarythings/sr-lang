@@ -1,0 +1,27 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/memchr.c (portable loop).
+
+memchr :: proc(buf: *const u8, c: i32, n: usize) ?*const u8 {
+    ch := c.(u8)
+    i: usize = 0
+    while i < n {
+        if buf[i] == ch {
+            return &buf[i]
+        }
+        i += 1
+    }
+    return null
+}
+
+memchr_mut :: proc(buf: *u8, c: i32, n: usize) ?*u8 {
+    ch := c.(u8)
+    i: usize = 0
+    while i < n {
+        if buf[i] == ch {
+            return &buf[i]
+        }
+        i += 1
+    }
+    return null
+}

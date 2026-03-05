@@ -1,0 +1,36 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/inet_legacy.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <netinet/in.h>
+// #include <arpa/inet.h>
+
+inet_addr_mod :: import "libc/src/network/inet_addr"
+ntohl_mod :: import "libc/src/network/ntohl"
+
+inet_network :: proc(p: *const char) in_addr_t {
+    return ntohl_mod.ntohl(inet_addr_mod.inet_addr(p))
+}
+
+inet_makeaddr :: proc(n: in_addr_t, h: in_addr_t) in_addr {
+    if n < 256 { h |= n << 24 }
+    else if n < 65536 { h |= n << 16 }
+    else { h |= n << 8 }
+    return in_addr{ s_addr: h }
+}
+
+inet_lnaof :: proc(in: in_addr) in_addr_t {
+    h := in.s_addr
+    if (h >> 24) < 128 { return h & 0xffffff }
+    if (h >> 24) < 192 { return h & 0xffff }
+    return h & 0xff
+}
+
+inet_netof :: proc(in: in_addr) in_addr_t {
+    h := in.s_addr
+    if (h >> 24) < 128 { return h >> 24 }
+    if (h >> 24) < 192 { return h >> 16 }
+    return h >> 8
+}

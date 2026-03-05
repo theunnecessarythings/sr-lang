@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/casin.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+casin :: proc(z: complex(f64)) complex(f64) {
+    x := z.real
+    y := z.imag
+    w := impl.cmplx(1.0 - (x - y) * (x + y), -2.0 * x * y)
+    r := clog(impl.cmplx(-y, x) + csqrt(w))
+    return impl.cmplx(r.imag, -r.real)
+}

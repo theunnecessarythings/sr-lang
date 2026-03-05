@@ -1,0 +1,28 @@
+package libc
+
+// Derived from musl-1.2.5/src/dirent/readdir.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+readdir :: proc(dir: *DIR) *dirent {
+    if dir == null { return null }
+
+    if dir.buf_pos >= dir.buf_end {
+        len := sc.syscall3_ret(
+            nums.SYS_getdents.(i64),
+            dir.fd.(i64),
+            (&dir.buf[0]).^usize.(i64),
+            2048.(i64),
+        )
+        if len <= 0 { return null }
+        dir.buf_end = len.(i32)
+        dir.buf_pos = 0
+    }
+
+    base := (&dir.buf[0]).^*u8
+    de := (base.^usize + dir.buf_pos.(usize)).(usize).^*dirent
+    dir.buf_pos += de.d_reclen.(i32)
+    dir.tell = de.d_off
+    return de
+}

@@ -1,0 +1,93 @@
+package libc
+
+// Derived from musl-1.2.5/arch/x86_64/atomic_arch.h and src/internal/atomic.h
+
+// x86_64 implementation using inline assembly.
+
+a_cas :: proc(p: *i32, t: i32, s: i32) i32 asm {
+    movl $2, %eax
+    lock
+    cmpxchgl $3, ($1)
+    movl %eax, $0
+}
+
+a_cas_p :: proc(p: **void, t: *void, s: *void) *void asm {
+    movq $2, %rax
+    lock
+    cmpxchgq $3, ($1)
+    movq %rax, $0
+}
+
+a_swap :: proc(p: *i32, v: i32) i32 asm {
+    movl $2, %eax
+    xchgl %eax, ($1)
+    movl %eax, $0
+}
+
+a_fetch_add :: proc(p: *i32, v: i32) i32 asm {
+    movl $2, %eax
+    lock
+    xaddl %eax, ($1)
+    movl %eax, $0
+}
+
+a_and :: proc(p: *i32, v: i32) void asm {
+    lock
+    andl $2, ($1)
+}
+
+a_or :: proc(p: *i32, v: i32) void asm {
+    lock
+    orl $2, ($1)
+}
+
+a_inc :: proc(p: *i32) void asm {
+    lock
+    incl ($1)
+}
+
+a_dec :: proc(p: *i32) void asm {
+    lock
+    decl ($1)
+}
+
+a_store :: proc(p: *i32, x: i32) void asm {
+    movl $2, ($1)
+    lock
+    orl $0, (%rsp)
+}
+
+a_barrier :: proc() void asm {
+    // compiler barrier
+}
+
+a_spin :: proc() void asm {
+    pause
+}
+
+a_crash :: proc() void {
+    p: ?*u8 = null
+    (p?).* = 0
+}
+
+a_ctz_64 :: proc(x: u64) i32 asm {
+    bsfq $1, %rax
+    movl %eax, $0
+}
+
+a_clz_64 :: proc(x: u64) i32 asm {
+    bsrq $1, %rax
+    xorl $63, %eax
+    movl %eax, $0
+}
+
+a_ctz_32 :: proc(x: u32) i32 asm {
+    bsfl $1, %eax
+    movl %eax, $0
+}
+
+a_clz_32 :: proc(x: u32) i32 asm {
+    bsrl $1, %eax
+    xorl $31, %eax
+    movl %eax, $0
+}

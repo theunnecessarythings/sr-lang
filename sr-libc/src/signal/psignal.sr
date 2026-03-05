@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/psignal.c
+
+fprintf_mod :: import "libc/src/stdio/fprintf"
+stderr_mod :: import "libc/src/stdio/stderr"
+
+psignal :: proc(sig: i32, msg: *const u8) void {
+    if msg != null {
+        _ = fprintf_mod.fprintf(stderr_mod.stderr, "%s: signal %d\n", msg, sig)
+    } else {
+        _ = fprintf_mod.fprintf(stderr_mod.stderr, "signal %d\n", sig)
+    }
+}

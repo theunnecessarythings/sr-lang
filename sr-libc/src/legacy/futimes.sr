@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/legacy/futimes.c
+
+stat_mod :: import "libc/src/stat/futimens"
+
+futimes :: proc(fd: i32, tv: *timeval) i32 {
+    if tv == null {
+        return stat_mod.futimens(fd, null)
+    }
+    ts: [2]timespec
+    ts[0].tv_sec = tv[0].tv_sec
+    ts[0].tv_nsec = tv[0].tv_usec * 1000
+    ts[1].tv_sec = tv[1].tv_sec
+    ts[1].tv_nsec = tv[1].tv_usec * 1000
+    return stat_mod.futimens(fd, &ts[0])
+}

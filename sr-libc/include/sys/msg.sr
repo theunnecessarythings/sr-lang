@@ -1,0 +1,47 @@
+package libc
+
+// Derived from musl-1.2.5/include/sys/msg.h and arch/generic/bits/msg.h
+
+msgqnum_t :: u64
+msglen_t :: u64
+
+MSG_NOERROR :: 0o10000
+MSG_EXCEPT :: 0o20000
+
+MSG_STAT :: (11 | (IPC_STAT & 0x100))
+MSG_INFO :: 12
+MSG_STAT_ANY :: (13 | (IPC_STAT & 0x100))
+
+msqid_ds :: struct {
+    msg_perm: ipc_perm,
+    msg_stime: time_t,
+    msg_rtime: time_t,
+    msg_ctime: time_t,
+    msg_cbytes: u64,
+    msg_qnum: msgqnum_t,
+    msg_qbytes: msglen_t,
+    msg_lspid: alltypes.pid_t,
+    msg_lrpid: alltypes.pid_t,
+    __unused: [2]u64,
+}
+
+msginfo :: struct {
+    msgpool: i32,
+    msgmap: i32,
+    msgmax: i32,
+    msgmnb: i32,
+    msgmni: i32,
+    msgssz: i32,
+    msgtql: i32,
+    msgseg: u16,
+}
+
+msgbuf :: struct {
+    mtype: i64,
+    mtext: [1]u8,
+}
+
+msgctl :: proc(q: i32, cmd: i32, buf: *msqid_ds) i32
+msgget :: proc(k: key_t, flag: i32) i32
+msgrcv :: proc(q: i32, m: *void, len: usize, type: i64, flag: i32) isize
+msgsnd :: proc(q: i32, m: *const void, len: usize, flag: i32) i32

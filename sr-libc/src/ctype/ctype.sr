@@ -1,0 +1,173 @@
+package libc
+
+// Derived from musl-1.2.5/src/ctype/*.c (ASCII + 8-bit tables).
+
+alltypes :: import "libc/include/alltypes"
+
+// __ctype_b_loc table (little-endian swapped from musl)
+__ctype_b_table: [384]u16 = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    512, 512, 512, 512, 512, 512, 512, 512, 512, 8192, 8704, 8704, 8704, 8704, 512, 512,
+    512, 512, 512, 512, 512, 512, 512, 512, 512, 512, 512, 512, 512, 512, 512, 512,
+    5728, 12416, 12416, 12416, 12416, 12416, 12416, 12416, 12416, 12416, 12416, 12416, 12416, 12416, 12416, 12416,
+    2264, 2264, 2264, 2264, 2264, 2264, 2264, 2264, 2264, 2264, 12416, 12416, 12416, 12416, 12416, 12416,
+    12416, 2261, 2261, 2261, 2261, 2261, 2261, 2245, 2245, 2245, 2245, 2245, 2245, 2245, 2245, 2245,
+    2245, 2245, 2245, 2245, 2245, 2245, 2245, 2245, 2245, 2245, 2245, 12416, 12416, 12416, 12416, 12416,
+    12416, 2270, 2270, 2270, 2270, 2270, 2270, 2246, 2246, 2246, 2246, 2246, 2246, 2246, 2246, 2246,
+    2246, 2246, 2246, 2246, 2246, 2246, 2246, 2246, 2246, 2246, 2246, 12416, 12416, 12416, 12416, 512,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+]
+
+__ctype_tolower_table: [384]i32 = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+    32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+    48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
+    64, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+    110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122,
+    91, 92, 93, 94, 95, 96,
+    97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+    110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122,
+    123, 124, 125, 126, 127,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+]
+
+__ctype_toupper_table: [384]i32 = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+    32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+    48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
+    64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77,
+    78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90,
+    91, 92, 93, 94, 95, 96,
+    65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77,
+    78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90,
+    123, 124, 125, 126, 127,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+]
+
+__ctype_b_ptr: *u16 = &__ctype_b_table[128]
+__ctype_tolower_ptr: *i32 = &__ctype_tolower_table[128]
+__ctype_toupper_ptr: *i32 = &__ctype_toupper_table[128]
+
+__ctype_b_loc :: proc() **u16 { return &__ctype_b_ptr }
+__ctype_tolower_loc :: proc() **i32 { return &__ctype_tolower_ptr }
+__ctype_toupper_loc :: proc() **i32 { return &__ctype_toupper_ptr }
+
+__ctype_get_mb_cur_max :: proc() usize { return 1 }
+
+isalpha :: proc(c: i32) i32 {
+    return ((c | 32) >= 97 and (c | 32) <= 122).(i32)
+}
+
+isdigit :: proc(c: i32) i32 {
+    return (c >= 48 and c <= 57).(i32)
+}
+
+isalnum :: proc(c: i32) i32 { return (isalpha(c) != 0 or isdigit(c) != 0).(i32) }
+
+isascii :: proc(c: i32) i32 { return ((c & (-128).(i32)) == 0).(i32) }
+
+isblank :: proc(c: i32) i32 { return (c == 9 or c == 32).(i32) }
+
+iscntrl :: proc(c: i32) i32 { return (c < 32 or c == 127).(i32) }
+
+isgraph :: proc(c: i32) i32 { return (c > 32 and c < 127).(i32) }
+
+islower :: proc(c: i32) i32 { return (c >= 97 and c <= 122).(i32) }
+
+isprint :: proc(c: i32) i32 { return (c >= 32 and c < 127).(i32) }
+
+ispunct :: proc(c: i32) i32 { return (isgraph(c) != 0 and isalnum(c) == 0).(i32) }
+
+isspace :: proc(c: i32) i32 {
+    return (c == 32 or c == 9 or c == 10 or c == 11 or c == 12 or c == 13).(i32)
+}
+
+isupper :: proc(c: i32) i32 { return (c >= 65 and c <= 90).(i32) }
+
+isxdigit :: proc(c: i32) i32 {
+    return (isdigit(c) != 0 or (c >= 65 and c <= 70) or (c >= 97 and c <= 102)).(i32)
+}
+
+toascii :: proc(c: i32) i32 { return c & 0x7f }
+
+tolower :: proc(c: i32) i32 {
+    if isupper(c) != 0 { return c | 32 }
+    return c
+}
+
+toupper :: proc(c: i32) i32 {
+    if islower(c) != 0 { return c & (-33).(i32) }
+    return c
+}
+
+__isalnum_l :: proc(c: i32, l: alltypes.locale_t) i32 { _ = l; return isalnum(c) }
+__isalpha_l :: proc(c: i32, l: alltypes.locale_t) i32 { _ = l; return isalpha(c) }
+__isascii_l :: proc(c: i32, l: alltypes.locale_t) i32 { _ = l; return isascii(c) }
+__isblank_l :: proc(c: i32, l: alltypes.locale_t) i32 { _ = l; return isblank(c) }
+__iscntrl_l :: proc(c: i32, l: alltypes.locale_t) i32 { _ = l; return iscntrl(c) }
+__isdigit_l :: proc(c: i32, l: alltypes.locale_t) i32 { _ = l; return isdigit(c) }
+__isgraph_l :: proc(c: i32, l: alltypes.locale_t) i32 { _ = l; return isgraph(c) }
+__islower_l :: proc(c: i32, l: alltypes.locale_t) i32 { _ = l; return islower(c) }
+__isprint_l :: proc(c: i32, l: alltypes.locale_t) i32 { _ = l; return isprint(c) }
+__ispunct_l :: proc(c: i32, l: alltypes.locale_t) i32 { _ = l; return ispunct(c) }
+__isspace_l :: proc(c: i32, l: alltypes.locale_t) i32 { _ = l; return isspace(c) }
+__isupper_l :: proc(c: i32, l: alltypes.locale_t) i32 { _ = l; return isupper(c) }
+__isxdigit_l :: proc(c: i32, l: alltypes.locale_t) i32 { _ = l; return isxdigit(c) }
+
+isalnum_l :: proc(c: i32, l: alltypes.locale_t) i32 { return __isalnum_l(c, l) }
+isalpha_l :: proc(c: i32, l: alltypes.locale_t) i32 { return __isalpha_l(c, l) }
+isascii_l :: proc(c: i32, l: alltypes.locale_t) i32 { return __isascii_l(c, l) }
+isblank_l :: proc(c: i32, l: alltypes.locale_t) i32 { return __isblank_l(c, l) }
+iscntrl_l :: proc(c: i32, l: alltypes.locale_t) i32 { return __iscntrl_l(c, l) }
+isdigit_l :: proc(c: i32, l: alltypes.locale_t) i32 { return __isdigit_l(c, l) }
+isgraph_l :: proc(c: i32, l: alltypes.locale_t) i32 { return __isgraph_l(c, l) }
+islower_l :: proc(c: i32, l: alltypes.locale_t) i32 { return __islower_l(c, l) }
+isprint_l :: proc(c: i32, l: alltypes.locale_t) i32 { return __isprint_l(c, l) }
+ispunct_l :: proc(c: i32, l: alltypes.locale_t) i32 { return __ispunct_l(c, l) }
+isspace_l :: proc(c: i32, l: alltypes.locale_t) i32 { return __isspace_l(c, l) }
+isupper_l :: proc(c: i32, l: alltypes.locale_t) i32 { return __isupper_l(c, l) }
+isxdigit_l :: proc(c: i32, l: alltypes.locale_t) i32 { return __isxdigit_l(c, l) }
+
+__tolower_l :: proc(c: i32, l: alltypes.locale_t) i32 { _ = l; return tolower(c) }
+__toupper_l :: proc(c: i32, l: alltypes.locale_t) i32 { _ = l; return toupper(c) }
+
+tolower_l :: proc(c: i32, l: alltypes.locale_t) i32 { return __tolower_l(c, l) }
+toupper_l :: proc(c: i32, l: alltypes.locale_t) i32 { return __toupper_l(c, l) }

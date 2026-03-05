@@ -1,6 +1,7 @@
 package behavior_structs
 
 testing :: import "std/testing"
+libc_stddef :: import "libc/include/stddef"
 
 Point :: struct {x: i32, y: i32}
 PointDef :: struct {x: i32 = 4, y: i32 = 2}

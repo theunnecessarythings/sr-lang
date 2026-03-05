@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/gettid.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+gettid :: proc() alltypes.pid_t {
+    r := sc.syscall0_ret(nums.SYS_gettid.(i64))
+    return r.(alltypes.pid_t)
+}

@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/fenv/fesetround.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <fenv.h>
+// #include <features.h>
+
+fesetround :: proc(r: i32) i32 {
+    if r != FE_TONEAREST and r != FE_DOWNWARD and r != FE_UPWARD and r != FE_TOWARDZERO {
+        return -1
+    }
+    return __fesetround(r)
+}

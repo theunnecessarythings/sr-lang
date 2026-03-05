@@ -1,0 +1,28 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/readlink.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+readlink :: proc(path: *const u8, buf: *u8, bufsize: usize) isize {
+    if bufsize == 0 {
+        dummy: [1]u8 = [0]
+        r0 := sc.syscall3_ret(nums.SYS_readlink.(i64), path.^usize.(i64), (&dummy[0]).^usize.(i64), 1)
+        if r0 > 0 { return 0 }
+        return r0.(isize)
+    }
+    r := sc.syscall3_ret(nums.SYS_readlink.(i64), path.^usize.(i64), buf.^usize.(i64), bufsize.(i64))
+    return r.(isize)
+}
+
+readlinkat :: proc(dirfd: i32, path: *const u8, buf: *u8, bufsize: usize) isize {
+    if bufsize == 0 {
+        dummy: [1]u8 = [0]
+        r0 := sc.syscall4_ret(nums.SYS_readlinkat.(i64), dirfd.(i64), path.^usize.(i64), (&dummy[0]).^usize.(i64), 1)
+        if r0 > 0 { return 0 }
+        return r0.(isize)
+    }
+    r := sc.syscall4_ret(nums.SYS_readlinkat.(i64), dirfd.(i64), path.^usize.(i64), buf.^usize.(i64), bufsize.(i64))
+    return r.(isize)
+}

@@ -1,0 +1,99 @@
+package libc
+
+// Derived from musl-1.2.5/src/errno/strerror.c
+// Simplified implementation without locale support
+
+errno_h :: import "libc/include/errno"
+
+strerror :: proc(e: i32) *u8 {
+    if e == 0 { return "No error information" }
+    if e == errno_h.EILSEQ { return "Illegal byte sequence" }
+    if e == errno_h.EDOM { return "Domain error" }
+    if e == errno_h.ERANGE { return "Result not representable" }
+    if e == errno_h.ENOTTY { return "Not a tty" }
+    if e == errno_h.EACCES { return "Permission denied" }
+    if e == errno_h.EPERM { return "Operation not permitted" }
+    if e == errno_h.ENOENT { return "No such file or directory" }
+    if e == errno_h.ESRCH { return "No such process" }
+    if e == errno_h.EEXIST { return "File exists" }
+    if e == errno_h.EOVERFLOW { return "Value too large for data type" }
+    if e == errno_h.ENOSPC { return "No space left on device" }
+    if e == errno_h.ENOMEM { return "Out of memory" }
+    if e == errno_h.EBUSY { return "Resource busy" }
+    if e == errno_h.EINTR { return "Interrupted system call" }
+    if e == errno_h.EAGAIN { return "Resource temporarily unavailable" }
+    if e == errno_h.ESPIPE { return "Invalid seek" }
+    if e == errno_h.EXDEV { return "Cross-device link" }
+    if e == errno_h.EROFS { return "Read-only file system" }
+    if e == errno_h.ENOTEMPTY { return "Directory not empty" }
+    if e == errno_h.ECONNRESET { return "Connection reset by peer" }
+    if e == errno_h.ETIMEDOUT { return "Operation timed out" }
+    if e == errno_h.ECONNREFUSED { return "Connection refused" }
+    if e == errno_h.EHOSTDOWN { return "Host is down" }
+    if e == errno_h.EHOSTUNREACH { return "Host is unreachable" }
+    if e == errno_h.EADDRINUSE { return "Address in use" }
+    if e == errno_h.EPIPE { return "Broken pipe" }
+    if e == errno_h.EIO { return "I/O error" }
+    if e == errno_h.ENXIO { return "No such device or address" }
+    if e == errno_h.ENOTBLK { return "Block device required" }
+    if e == errno_h.ENODEV { return "No such device" }
+    if e == errno_h.ENOTDIR { return "Not a directory" }
+    if e == errno_h.EISDIR { return "Is a directory" }
+    if e == errno_h.ETXTBSY { return "Text file busy" }
+    if e == errno_h.ENOEXEC { return "Exec format error" }
+    if e == errno_h.EINVAL { return "Invalid argument" }
+    if e == errno_h.E2BIG { return "Argument list too long" }
+    if e == errno_h.ELOOP { return "Symbolic link loop" }
+    if e == errno_h.ENAMETOOLONG { return "Filename too long" }
+    if e == errno_h.ENFILE { return "Too many open files in system" }
+    if e == errno_h.EMFILE { return "No file descriptors available" }
+    if e == errno_h.EBADF { return "Bad file descriptor" }
+    if e == errno_h.ECHILD { return "No child process" }
+    if e == errno_h.EFAULT { return "Bad address" }
+    if e == errno_h.EFBIG { return "File too large" }
+    if e == errno_h.EMLINK { return "Too many links" }
+    if e == errno_h.ENOLCK { return "No locks available" }
+    if e == errno_h.EDEADLK { return "Resource deadlock would occur" }
+    if e == errno_h.ENOTRECOVERABLE { return "State not recoverable" }
+    if e == errno_h.EOWNERDEAD { return "Previous owner died" }
+    if e == errno_h.ECANCELED { return "Operation canceled" }
+    if e == errno_h.ENOSYS { return "Function not implemented" }
+    if e == errno_h.ENOMSG { return "No message of desired type" }
+    if e == errno_h.EIDRM { return "Identifier removed" }
+    if e == errno_h.EN OSTR { return "Device not a stream" }
+    if e == errno_h.ENODATA { return "No data available" }
+    if e == errno_h.ETIME { return "Device timeout" }
+    if e == errno_h.ENOSR { return "Out of streams resources" }
+    if e == errno_h.ENOLINK { return "Link has been severed" }
+    if e == errno_h.EPROTO { return "Protocol error" }
+    if e == errno_h.EBADMSG { return "Bad message" }
+    if e == errno_h.EBADFD { return "File descriptor in bad state" }
+    if e == errno_h.ENOTSOCK { return "Not a socket" }
+    if e == errno_h.EDESTADDRREQ { return "Destination address required" }
+    if e == errno_h.EMSGSIZE { return "Message too large" }
+    if e == errno_h.EPROTOTYPE { return "Protocol wrong type for socket" }
+    if e == errno_h.ENOPROTOOPT { return "Protocol not available" }
+    if e == errno_h.EPROTONOSUPPORT { return "Protocol not supported" }
+    if e == errno_h.ESOCKTNOSUPPORT { return "Socket type not supported" }
+    if e == errno_h.ENOTSUP { return "Not supported" }
+    if e == errno_h.EPFNOSUPPORT { return "Protocol family not supported" }
+    if e == errno_h.EAFNOSUPPORT { return "Address family not supported by protocol" }
+    if e == errno_h.EADDRNOTAVAIL { return "Address not available" }
+    if e == errno_h.ENETDOWN { return "Network is down" }
+    if e == errno_h.ENETUNREACH { return "Network unreachable" }
+    if e == errno_h.ENETRESET { return "Connection reset by network" }
+    if e == errno_h.ECONNABORTED { return "Connection aborted" }
+    if e == errno_h.ENOBUFS { return "No buffer space available" }
+    if e == errno_h.EISCONN { return "Socket is connected" }
+    if e == errno_h.ENOTCONN { return "Socket not connected" }
+    if e == errno_h.ESHUTDOWN { return "Cannot send after socket shutdown" }
+    if e == errno_h.EALREADY { return "Operation already in progress" }
+    if e == errno_h.EINPROGRESS { return "Operation in progress" }
+    if e == errno_h.ESTALE { return "Stale file handle" }
+    if e == errno_h.EREMOTEIO { return "Remote I/O error" }
+    if e == errno_h.EDQUOT { return "Quota exceeded" }
+    if e == errno_h.ENOMEDIUM { return "No medium found" }
+    if e == errno_h.EMEDIUMTYPE { return "Wrong medium type" }
+    if e == errno_h.EMULTIHOP { return "Multihop attempted" }
+    return "Unknown error"
+}

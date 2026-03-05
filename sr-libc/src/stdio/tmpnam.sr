@@ -1,0 +1,30 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/tmpnam.c
+
+randname :: import "libc/src/temp/__randname"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+string :: import "libc/src/string/string"
+errno_mod :: import "libc/include/errno"
+
+L_tmpnam :: 20
+
+tmpnam :: proc(buf: *u8) *u8 {
+    internal: [L_tmpnam]u8 // static buffer
+    s: [19]u8 = [47,116,109,112,47,116,109,112,110,97,109,95,88,88,88,88,88,88,0] // "/tmp/tmpnam_XXXXXX"
+    try: i32
+    r: i32
+    dummy: [1]u8
+
+    for try = 0; try < 100; try += 1 {
+        _ = randname.__randname((&s[0]) + 12)
+        // Check if file exists using readlink (which fails with ENOENT or EINVAL if check passes? No, readlink on non-link file fails with EINVAL. check if file exists.)
+        // Musl uses SYS_readlink to check existence.
+        r = sc.syscall3_ret(nums.SYS_readlink.(i64), (&s[0]).^usize.(i64), (&dummy[0]).^usize.(i64), 1).(i32)
+        if r == -errno_mod.ENOENT {
+             return string.strcpy(if buf != null { buf } else { &internal[0] }, &s[0])
+        }
+    }
+    return null
+}

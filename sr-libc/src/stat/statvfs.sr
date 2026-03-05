@@ -1,0 +1,37 @@
+package libc
+
+// Derived from musl-1.2.5/src/stat/statvfs.c
+
+statfs_mod :: import "libc/include/sys/statfs"
+statvfs_mod :: import "libc/include/sys/statvfs"
+statfs_impl :: import "libc/src/stat/statfs"
+
+fixup :: fn(out: *statvfs_mod.statvfs, in: *statfs_mod.statfs) void {
+    out.* = statvfs_mod.statvfs{}
+    out.f_bsize = in.f_bsize
+    out.f_frsize = if in.f_frsize != 0 { in.f_frsize } else { in.f_bsize }
+    out.f_blocks = in.f_blocks
+    out.f_bfree = in.f_bfree
+    out.f_bavail = in.f_bavail
+    out.f_files = in.f_files
+    out.f_ffree = in.f_ffree
+    out.f_favail = in.f_ffree
+    out.f_fsid = in.f_fsid.__val[0].(usize)
+    out.f_flag = in.f_flags
+    out.f_namemax = in.f_namelen
+    out.f_type = in.f_type.(u32)
+}
+
+statvfs :: proc(path: *const u8, buf: *statvfs_mod.statvfs) i32 {
+    kbuf: statfs_mod.statfs
+    if statfs_impl.statfs(path, &kbuf) < 0 { return -1 }
+    fixup(buf, &kbuf)
+    return 0
+}
+
+fstatvfs :: proc(fd: i32, buf: *statvfs_mod.statvfs) i32 {
+    kbuf: statfs_mod.statfs
+    if statfs_impl.fstatfs(fd, &kbuf) < 0 { return -1 }
+    fixup(buf, &kbuf)
+    return 0
+}

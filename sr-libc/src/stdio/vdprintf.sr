@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/vdprintf.c
+
+__stdio_write :: import "libc/src/stdio/__stdio_write"
+
+vdprintf :: proc(fd: i32, fmt: *const u8, ap: stdarg_mod.va_list) i32 {
+    f: alltypes.FILE = alltypes.FILE{
+        fd: fd,
+        lbf: EOF,
+        write: __stdio_write.__stdio_write,
+        buf: fmt.^*u8,
+        buf_size: 0,
+        lock: -1,
+    }
+    return vfprintf(&f, fmt, ap)
+}

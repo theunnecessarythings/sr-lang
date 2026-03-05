@@ -1,0 +1,20 @@
+package main
+
+io :: import "std/io"
+
+main :: proc() {
+    // Question: How do we create a map?
+    // Answer: Use [key_type: value_type] and map literals.
+    m: [string: i32] = ["one": 1, "two": 2]
+
+    // Question: How do we read or update?
+    // Answer: Use indexing.
+    io.println("one=%d", m["one"])
+    m["two"] = 22
+
+    // Question: What about strings and slices?
+    // Answer: Strings can be sliced like arrays.
+    s := "hello"
+    part := s[1..4]
+    io.println("part=%s", part)
+}

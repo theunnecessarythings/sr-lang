@@ -1,0 +1,27 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/atanh.c.
+
+libm :: import "libc/src/math/libm_internal"
+
+atanh :: proc(x: f64) f64 {
+    u := libm.asuint64(x)
+    e := ((u >> 52) & 0x7ff).(u32)
+    s := (u >> 63).(u32)
+    y: f64
+
+    u &= 0x7fff_ffff_ffff_ffff
+    y = libm.asdouble(u)
+
+    if e < 0x3ff - 1 {
+        if e < 0x3ff - 32 {
+            if e == 0 { libm.fp_force_eval(y.(f32)) }
+        } else {
+            y = 0.5 * log1p(2.0 * y + 2.0 * y * y / (1.0 - y))
+        }
+    } else {
+        y = 0.5 * log1p(2.0 * (y / (1.0 - y)))
+    }
+
+    return if s != 0 { -y } else { y }
+}

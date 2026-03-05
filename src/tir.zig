@@ -123,7 +123,7 @@ pub const ConstInit = union(enum) {
     int: i64,
     bool: bool,
     string: StrId,
-    float: f64,
+    float: f128,
     aggregate: []const ConstInit,
 };
 
@@ -132,7 +132,7 @@ pub const Rows = struct {
     pub const Un1 = struct { result: ValueId, ty: types.TypeId, value: ValueId, loc: OptLocId };
 
     pub const ConstInt = struct { result: ValueId, ty: types.TypeId, value: i128, loc: OptLocId };
-    pub const ConstFloat = struct { result: ValueId, ty: types.TypeId, value: f64, loc: OptLocId };
+    pub const ConstFloat = struct { result: ValueId, ty: types.TypeId, value: f128, loc: OptLocId };
     pub const ConstBool = struct { result: ValueId, ty: types.TypeId, value: bool, loc: OptLocId };
     pub const ConstString = struct { result: ValueId, ty: types.TypeId, text: StrId, loc: OptLocId };
     pub const ConstNull = struct { result: ValueId, ty: types.TypeId, loc: OptLocId };

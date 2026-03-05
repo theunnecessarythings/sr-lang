@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/symlink.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+symlink :: proc(existing: *const u8, new: *const u8) i32 {
+    r := sc.syscall2_ret(nums.SYS_symlink.(i64), existing.^usize.(i64), new.^usize.(i64))
+    return r.(i32)
+}
+
+symlinkat :: proc(existing: *const u8, newdir: i32, new: *const u8) i32 {
+    r := sc.syscall3_ret(nums.SYS_symlinkat.(i64), existing.^usize.(i64), newdir.(i64), new.^usize.(i64))
+    return r.(i32)
+}

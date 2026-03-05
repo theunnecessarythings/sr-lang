@@ -1,0 +1,42 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/catanf.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+DP1 :: 3.140625
+DP2 :: 9.67502593994140625e-4
+DP3 :: 1.509957990978376432e-7
+pi :: 3.14159265358979323846264338327950288
+
+redupif :: proc(xx: f32) f32 {
+    x := xx.(f64)
+    t := x / pi
+    if t >= 0.0 {
+        t += 0.5
+    } else {
+        t -= 0.5
+    }
+    i := t.(i64)
+    t = i.(f64)
+    t = ((x - t * DP1) - t * DP2) - t * DP3
+    return t.(f32)
+}
+
+catanf :: proc(z: complex(f32)) complex(f32) {
+    x := z.real
+    y := z.imag
+
+    x2 := x * x
+    a := 1.0f - x2 - (y * y)
+
+    t := 0.5f * atan2f(2.0f * x, a)
+    w := redupif(t)
+
+    t = y - 1.0f
+    a = x2 + (t * t)
+
+    t = y + 1.0f
+    a = (x2 + (t * t)) / a
+    return impl.cmplxf(w, 0.25f * logf(a))
+}

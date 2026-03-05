@@ -1,0 +1,27 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/freeaddrinfo.c
+
+lookup_h :: import "libc/include/lookup"
+lock_mod :: import "libc/src/internal/lock"
+free_mod :: import "libc/src/stdlib/free"
+
+freeaddrinfo :: proc(p: *addrinfo) void {
+    cnt: usize = 1
+    q := p
+    while q.ai_next != null {
+        cnt += 1
+        q = q.ai_next
+    }
+
+    b := p.^*lookup_h.aibuf
+    b = (b.^usize - (b.slot.(isize) * sizeof(lookup_h.aibuf)).(usize)).(usize).^*lookup_h.aibuf
+
+    lock_mod.__lock(&b.lock[0])
+    b.ref -= cnt.(i16)
+    if b.ref == 0 {
+        free_mod.free(b.^*void)
+    } else {
+        lock_mod.__unlock(&b.lock[0])
+    }
+}

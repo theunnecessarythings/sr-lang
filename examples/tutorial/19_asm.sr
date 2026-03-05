@@ -1,0 +1,14 @@
+package main
+
+io :: import "std/io"
+
+// Question: Can a function be defined in assembly?
+// Answer: Yes, with `asm`.
+add_asm :: fn(a: i64, b: i64) i64 asm {
+    mov a, %rax
+    add b, %rax
+}
+
+main :: proc() {
+    io.println("%d", add_asm(10, 20))
+}

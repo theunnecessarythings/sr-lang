@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/isatty.c
+
+ioctl_mod :: import "libc/src/misc/ioctl"
+errno_mod :: import "libc/include/errno"
+ioctl_consts :: import "libc/include/sys/ioctl"
+alltypes :: import "libc/include/alltypes"
+
+isatty :: proc(fd: i32) i32 {
+    wsz: alltypes.winsize
+    r := ioctl_mod.ioctl(fd, ioctl_consts.TIOCGWINSZ, (&wsz).^*void)
+    if r == 0 { return 1 }
+    if errno_mod.__errno_location().* != errno_mod.EBADF {
+        errno_mod.__errno_location().* = errno_mod.ENOTTY
+    }
+    return 0
+}

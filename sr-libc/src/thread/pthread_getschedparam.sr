@@ -1,0 +1,28 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_getschedparam.c
+
+pthread_impl :: import "libc/src/internal/pthread_impl"
+lock_mod :: import "libc/src/internal/lock"
+sig_block :: import "libc/src/signal/block"
+errno_mod :: import "libc/include/errno"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+pthread_getschedparam :: proc(t: alltypes.pthread_t, policy: *i32, param: *struct sched_param) i32 {
+    set: alltypes.sigset_t
+    sig_block.__block_app_sigs(&set)
+    lock_mod.__lock(&((t.^*pthread_impl.pthread).killlock[0]))
+    r: i32
+    if (t.^*pthread_impl.pthread).tid == 0 {
+        r = errno_mod.ESRCH
+    } else {
+        r = (-sc.syscall2(nums.SYS_sched_getparam.(i64), (t.^*pthread_impl.pthread).tid.(i64), param.^usize.(i64))).(i32)
+        if r == 0 {
+            policy.* = sc.syscall1(nums.SYS_sched_getscheduler.(i64), (t.^*pthread_impl.pthread).tid.(i64)).(i32)
+        }
+    }
+    lock_mod.__unlock(&((t.^*pthread_impl.pthread).killlock[0]))
+    sig_block.__restore_sigs(&set)
+    return r
+}

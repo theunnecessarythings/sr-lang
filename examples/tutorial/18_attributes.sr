@@ -1,0 +1,19 @@
+package main
+
+// Attribute syntax: @[name, key=value]
+
+@[inline]
+add :: fn(a: i32, b: i32) i32 {
+    return a + b
+}
+
+@[repr=C]
+Point :: struct {
+    @[align=4] x: i32,
+    @[align=4] y: i32,
+}
+
+main :: proc() {
+    _ := add(1, 2)
+    _ = Point{ x: 1, y: 2 }
+}

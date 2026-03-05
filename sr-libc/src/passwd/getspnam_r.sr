@@ -1,0 +1,56 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/getspnam_r.c
+
+errno_h :: import "libc/include/errno"
+shadow_h :: import "libc/include/shadow"
+pwf :: import "libc/src/passwd/pwf"
+fopen_mod :: import "libc/src/stdio/fopen"
+fclose_mod :: import "libc/src/stdio/fclose"
+fgets_mod :: import "libc/src/stdio/fgets"
+strcmp_mod :: import "libc/src/string/strcmp"
+
+__parsespent :: proc(s: *u8, sp: *shadow_h.spwd) i32 {
+    p := s
+    sp.sp_namp = p
+    p = pwf.split_field(p)
+    sp.sp_pwdp = p
+    p = pwf.split_field(p)
+    sp.sp_lstchg = pwf.atol64(p)
+    p = pwf.split_field(p)
+    sp.sp_min = pwf.atol64(p)
+    p = pwf.split_field(p)
+    sp.sp_max = pwf.atol64(p)
+    p = pwf.split_field(p)
+    sp.sp_warn = pwf.atol64(p)
+    p = pwf.split_field(p)
+    sp.sp_inact = pwf.atol64(p)
+    p = pwf.split_field(p)
+    sp.sp_expire = pwf.atol64(p)
+    p = pwf.split_field(p)
+    sp.sp_flag = pwf.atou(p).(u64)
+    pwf.strip_newline(p)
+    return 0
+}
+
+getspnam_r :: proc(name: *const u8, sp: *shadow_h.spwd, buf: *u8, size: usize, res: **shadow_h.spwd) i32 {
+    if name == null || sp == null || buf == null || res == null {
+        return errno_h.EINVAL
+    }
+    f := fopen_mod.fopen("/etc/shadow", "r")
+    if f == null { return errno_h.errno().* }
+    line := buf
+    while true {
+        s := fgets_mod.fgets(line, size.(i32), f)
+        if s == null { break }
+        _ = __parsespent(line, sp)
+        if strcmp_mod.strcmp(sp.sp_namp, name) == 0 {
+            res.* = sp
+            _ = fclose_mod.fclose(f)
+            return 0
+        }
+    }
+    _ = fclose_mod.fclose(f)
+    res.* = null
+    return errno_h.ENOENT
+}

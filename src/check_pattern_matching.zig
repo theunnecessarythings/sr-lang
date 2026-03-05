@@ -402,6 +402,12 @@ pub fn checkMatch(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.A
     if (self.typeKind(subj_ty) == .TypeError) return self.context.type_store.tTypeError();
     const subj_kind = self.typeKind(subj_ty);
     const value_required = self.isValueReq(ctx);
+    const labeled = !mr.label.isNone();
+
+    if (labeled) {
+        try self.pushMatch(ctx, mr.label, subj_ty);
+    }
+    defer if (labeled) self.popLoop(ctx);
 
     var result_ty: ?types.TypeId = null;
     var covered_true = false;
@@ -489,7 +495,7 @@ pub fn checkMatch(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.A
 
         const body_ty = try self.checkExpr(ctx, ast_unit, arm.body);
         if (self.typeKind(body_ty) == .TypeError) return self.context.type_store.tTypeError();
-        if (value_required) {
+        if (value_required and !labeled) {
             if (result_ty == null) result_ty = body_ty else if (!result_ty.?.eq(body_ty)) {
                 try self.context.diags.addError(ast_unit.exprs.locs.get(mr.loc), .if_branch_type_mismatch, .{});
                 return self.context.type_store.tTypeError();
@@ -521,6 +527,13 @@ pub fn checkMatch(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.A
         try self.context.diags.attachNoteArgs(self.context.diags.count() - 1, null, .add_wildcard, .{});
         return self.context.type_store.tTypeError();
     }
+    if (value_required and labeled) {
+        if (self.loopCtxForLabel(ctx, mr.label)) |lctx| {
+            if (lctx.result_ty) |ty| return ty;
+            return self.context.type_store.tTypeError();
+        }
+    }
+
     return if (value_required) (result_ty orelse self.context.type_store.tVoid()) else self.context.type_store.tVoid();
 }
 

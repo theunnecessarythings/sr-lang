@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_spin_init.c
+
+pthread_spin_init :: proc(s: *pthread_spinlock_t, shared: i32) i32 {
+    _ = shared
+    s.* = 0
+    return 0
+}

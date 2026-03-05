@@ -1,4 +1,4 @@
-package attributes
+package main
 
 // Attribute syntax showcase
 // Syntax: @[a, b=ident, c=42, d=true]
@@ -55,4 +55,8 @@ Result :: variant {
 
     // No payload with attribute
     @[none_attr] None,
+}
+
+main :: proc() {
+    main_proc()
 }

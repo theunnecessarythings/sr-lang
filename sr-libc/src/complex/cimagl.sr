@@ -1,0 +1,7 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/cimagl.c
+
+cimagl :: proc(z: complex(f128)) f128 {
+    return z.imag
+}

@@ -1,0 +1,28 @@
+package libc
+
+// Derived from musl-1.2.5/src/env/getenv.c
+
+string_h :: import "libc/src/string"
+
+extern __environ: **u8
+
+__strchrnul :: extern proc(*u8, i32) *u8
+
+getenv :: proc(name: *u8) *u8 {
+    l: usize = (__strchrnul(name, '='.(i32)) - name).(usize)
+    if l == 0 || name[l] != 0 {
+        return 0
+    }
+    if __environ == 0 {
+        return 0
+    }
+    
+    e: **u8 = __environ
+    while e.* != 0 {
+        if string_h.strncmp(name, e.*, l) == 0 && e.*[l] == '='.(u8) {
+            return e.* + l + 1
+        }
+        e = e + 1
+    }
+    return 0
+}

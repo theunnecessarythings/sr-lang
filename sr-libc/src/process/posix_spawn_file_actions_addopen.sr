@@ -1,0 +1,32 @@
+package libc
+
+// Derived from musl-1.2.5/src/process/posix_spawn_file_actions_addopen.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <spawn.h>
+// #include <stdlib.h>
+// #include <string.h>
+// #include <errno.h>
+// #include <fdop.h>
+
+errno_mod :: import "libc/include/errno"
+malloc_mod :: import "libc/src/malloc/lite_malloc"
+strlen_mod :: import "libc/src/string/strlen"
+strcpy_mod :: import "libc/src/string/strcpy"
+
+posix_spawn_file_actions_addopen :: proc(fa: *posix_spawn_file_actions_t restrict, fd: i32, path: *const char restrict, flags: i32, mode: mode_t) i32 {
+    if fd < 0 { return errno_mod.EBADF }
+    len := strlen_mod.strlen(path.^*const u8)
+    op := malloc_mod.__libc_malloc(sizeof(fdop) + len + 1).(^*fdop)
+    if op == null { return errno_mod.ENOMEM }
+    op.cmd = FDOP_OPEN
+    op.fd = fd
+    op.oflag = flags
+    op.mode = mode
+    _ = strcpy_mod.strcpy((&op.path[0]).^*u8, path.^*const u8)
+    if fa.__actions != null { fa.__actions.prev = op }
+    op.next = fa.__actions
+    op.prev = null
+    fa.__actions = op
+    return 0
+}

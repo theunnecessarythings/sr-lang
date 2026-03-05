@@ -1,0 +1,48 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_getname_np.c
+
+fcntl_h :: import "libc/include/fcntl"
+unistd_open :: import "libc/src/unistd/open"
+unistd_read :: import "libc/src/unistd/read"
+unistd_close :: import "libc/src/unistd/close"
+prctl_mod :: import "libc/src/linux/prctl"
+errno_mod :: import "libc/include/errno"
+pthread_impl :: import "libc/src/internal/pthread_impl"
+pthread_self_mod :: import "libc/src/thread/pthread_self"
+snprintf_mod :: import "libc/src/stdio/snprintf"
+cancel_mod :: import "libc/src/thread/pthread_setcancelstate"
+
+PR_GET_NAME :: 16
+
+pthread_getname_np :: proc(thread: alltypes.pthread_t, name: *u8, len: usize) i32 {
+    if len < 16 { return errno_mod.ERANGE }
+
+    if thread == pthread_self_mod.pthread_self() {
+        return if prctl_mod.prctl(PR_GET_NAME, name.^usize, 0, 0, 0) != 0 {
+            errno_mod.__errno_location().*
+        } else {
+            0
+        }
+    }
+
+    f: [64]u8
+    _ = snprintf_mod.snprintf(&f[0], f.len, "/proc/self/task/%d/comm", (thread.^*pthread_impl.pthread).tid)
+    cs: i32
+    _ = cancel_mod.__pthread_setcancelstate(cancel_mod.PTHREAD_CANCEL_DISABLE, &cs)
+    fd := unistd_open.open(&f[0], fcntl_h.O_RDONLY | fcntl_h.O_CLOEXEC, 0)
+    status: i32 = 0
+    if fd < 0 {
+        status = errno_mod.__errno_location().*
+    } else {
+        r := unistd_read.read(fd, name.^*void, len)
+        if r < 0 {
+            status = errno_mod.__errno_location().*
+        } else {
+            if r > 0 { name[(r - 1).(usize)] = 0 }
+        }
+    }
+    if fd >= 0 { _ = unistd_close.close(fd) }
+    _ = cancel_mod.__pthread_setcancelstate(cs, null)
+    return status
+}

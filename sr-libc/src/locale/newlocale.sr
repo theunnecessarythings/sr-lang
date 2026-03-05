@@ -1,0 +1,32 @@
+package libc
+
+// Derived from musl-1.2.5/src/locale/newlocale.c
+
+errno_h :: import "libc/include/errno"
+string_h :: import "libc/src/string"
+loc_impl :: import "libc/src/locale/locale_impl"
+
+__loc_is_allocated :: proc(loc: locale_t) i32 {
+    _ = loc
+    return 0
+}
+
+do_newlocale :: proc(mask: i32, name: *const u8, loc: locale_t) locale_t {
+    _ = mask
+    _ = loc
+    if name == null || name[0] == 0 {
+        return (&loc_impl.__c_locale).^*void
+    }
+    if string_h.strcmp(name, "C") == 0 || string_h.strcmp(name, "POSIX") == 0 {
+        return (&loc_impl.__c_locale).^*void
+    }
+    if string_h.strcmp(name, "C.UTF-8") == 0 {
+        return (&loc_impl.__c_dot_utf8_locale).^*void
+    }
+    errno_h.errno().* = errno_h.EINVAL
+    return null
+}
+
+__newlocale :: proc(mask: i32, name: *const u8, loc: locale_t) locale_t {
+    return do_newlocale(mask, name, loc)
+}

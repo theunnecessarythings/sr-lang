@@ -1,0 +1,28 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdlib/ecvt.c.
+
+atoi_mod :: import "libc/src/stdlib/atoi"
+
+__ecvt_buf: [16]u8
+
+ecvt :: proc(x: f64, n: i32, dp: *i32, sign: *i32) *u8 {
+    tmp: [32]u8
+    nd := n
+    if (nd - 1).(u32) > 15 { nd = 15 }
+
+    _ = sprintf(&tmp[0], "%.*e", nd - 1, x)
+    i: i32 = if tmp[0] == 45 { 1 } else { 0 }
+    sign.* = i
+    j: i32 = 0
+    while tmp[i] != 101 { // 'e'
+        if tmp[i] != 46 { // '.'
+            __ecvt_buf[j] = tmp[i]
+            j += 1
+        }
+        i += 1
+    }
+    __ecvt_buf[j] = 0
+    dp.* = atoi_mod.atoi(&tmp[(i + 1).(usize)]) + 1
+    return (&__ecvt_buf[0]).^*u8
+}

@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/killpg.c
+
+kill_mod :: import "libc/src/signal/kill"
+
+killpg :: proc(pgid: alltypes.pid_t, sig: i32) i32 {
+    return kill_mod.kill(-pgid, sig)
+}

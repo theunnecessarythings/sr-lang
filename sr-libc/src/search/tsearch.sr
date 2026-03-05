@@ -1,0 +1,85 @@
+package libc
+
+// Derived from musl-1.2.5/src/search/tsearch.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <stdlib.h>
+// #include <search.h>
+// #include <tsearch.h>
+
+malloc_mod :: import "libc/src/malloc/mallocng/malloc"
+impl :: import "libc/src/search/tsearch_impl"
+
+height :: proc(n: *impl.node) i32 { return if n != null { n.h } else { 0 } }
+
+rot :: proc(p: **impl.node, x: *impl.node, dir: i32) i32 {
+    y := x.a[dir.(usize)]
+    z := y.a[(1 - dir).(usize)]
+    hx := x.h
+    hz := height(z)
+    if hz > height(y.a[dir.(usize)]) {
+        x.a[dir.(usize)] = z.a[(1 - dir).(usize)]
+        y.a[(1 - dir).(usize)] = z.a[dir.(usize)]
+        z.a[(1 - dir).(usize)] = x
+        z.a[dir.(usize)] = y
+        x.h = hz
+        y.h = hz
+        z.h = hz + 1
+    } else {
+        x.a[dir.(usize)] = z
+        y.a[(1 - dir).(usize)] = x
+        x.h = hz + 1
+        y.h = hz + 2
+        z = y
+    }
+    p.* = z
+    return z.h - hx
+}
+
+__tsearch_balance :: proc(p: **impl.node) i32 {
+    n := p.*
+    h0 := height(n.a[0])
+    h1 := height(n.a[1])
+    if (h0 - h1 + 1).(u32) < 3 {
+        old := n.h
+        n.h = if h0 < h1 { h1 + 1 } else { h0 + 1 }
+        return n.h - old
+    }
+    dir := if h0 < h1 { 1 } else { 0 }
+    return rot(p, n, dir)
+}
+
+tsearch :: proc(key: *const void, rootp: **void, cmp: proc(*const void, *const void) i32) *void {
+    if rootp == null { return null }
+    rootpp := rootp.(**impl.node)
+
+    a: [impl.MAXH]**impl.node
+    n := rootpp.*
+    i: usize = 0
+    a[i] = rootpp
+    i += 1
+
+    while true {
+        if n == null { break }
+        c := cmp(key, n.key)
+        if c == 0 { return n.^*void }
+        idx := if c > 0 { 1 } else { 0 }
+        a[i] = &n.a[idx]
+        i += 1
+        n = n.a[idx]
+    }
+
+    r := malloc_mod.malloc(sizeof(impl.node)).(^*impl.node)
+    if r == null { return null }
+    r.key = key
+    r.a[0] = null
+    r.a[1] = null
+    r.h = 1
+    i -= 1
+    a[i].* = r
+    while i > 0 {
+        i -= 1
+        if __tsearch_balance(a[i]) == 0 { break }
+    }
+    return r.^*void
+}

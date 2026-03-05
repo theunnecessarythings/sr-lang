@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/vsprintf.c.
+
+stdarg_mod :: import "libc/include/stdarg"
+
+INT_MAX :: 0x7fff_ffff
+
+vsprintf :: proc(s: *u8, fmt: *const u8, ap: stdarg_mod.va_list) i32 {
+    return vsnprintf(s, INT_MAX.(usize), fmt, ap)
+}

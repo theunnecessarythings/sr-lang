@@ -1,0 +1,22 @@
+package libc
+
+// Derived from musl-1.2.5/src/dirent/readdir_r.c
+
+errno_h :: import "libc/include/errno"
+mem :: import "libc/src/string/memcpy"
+
+readdir_r :: proc(dir: *DIR, buf: *dirent, result: **dirent) i32 {
+    old_errno := errno_h.errno().*
+    errno_h.errno().* = 0
+    de := readdir(dir)
+    if de != null {
+        _ = mem.memcpy(buf.^*void, de.^*const void, de.d_reclen.(usize))
+        result.* = buf
+        errno_h.errno().* = old_errno
+        return 0
+    }
+
+    err := errno_h.errno().*
+    result.* = null
+    return err
+}

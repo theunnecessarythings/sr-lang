@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_getcpuclockid.c
+
+pthread_impl :: import "libc/src/internal/pthread_impl"
+
+pthread_getcpuclockid :: proc(t: alltypes.pthread_t, clockid: *clockid_t) i32 {
+    clockid.* = ((-(t.^*pthread_impl.pthread).tid - 1) * 8 + 6).(clockid_t)
+    return 0
+}

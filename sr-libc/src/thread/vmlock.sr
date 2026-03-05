@@ -1,0 +1,29 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/vmlock.c
+
+atomic :: import "libc/src/internal/atomic"
+wait_mod :: import "libc/src/thread/__wait"
+lock_mod :: import "libc/src/internal/lock"
+
+vmlock: [2]i32
+__vmlock_lockptr: *i32 = &vmlock[0]
+
+__vm_wait :: proc() void {
+    tmp: i32
+    while true {
+        tmp = vmlock[0]
+        if tmp == 0 { break }
+        wait_mod.__wait(&vmlock[0], &vmlock[1], tmp, 1)
+    }
+}
+
+__vm_lock :: proc() void {
+    atomic.a_inc(&vmlock[0])
+}
+
+__vm_unlock :: proc() void {
+    if (atomic.a_fetch_add(&vmlock[0], -1) == 1) and (vmlock[1] != 0) {
+        lock_mod.__wake((&vmlock[0]).^*void, -1, 1)
+    }
+}

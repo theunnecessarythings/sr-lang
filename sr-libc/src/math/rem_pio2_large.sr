@@ -1,0 +1,235 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/__rem_pio2_large.c.
+
+data :: import "libc/src/math/rem_pio2_data"
+
+PIo2: [8]f64 = [
+    1.57079625129699707031e+00,
+    7.54978941586159635335e-08,
+    5.39030252995776476554e-15,
+    3.28200341580791294123e-22,
+    1.27065575308067607349e-29,
+    1.22933308981111328932e-36,
+    2.73370053816464559624e-44,
+    2.16741683877804819444e-51,
+]
+
+__rem_pio2_large :: proc(x: *f64, y: *f64, e0: i32, nx: i32, prec: i32) i32 {
+    jz: i32
+    jx: i32
+    jv: i32
+    jp: i32
+    jk: i32
+    carry: i32
+    n: i32
+    iq: [20]i32
+    i: i32
+    j: i32
+    k: i32
+    m: i32
+    q0: i32
+    ih: i32
+    z: f64
+    fw: f64
+    f: [20]f64
+    fq: [20]f64
+    q: [20]f64
+
+    jk = data.init_jk[prec.(usize)]
+    jp = jk
+
+    jx = nx - 1
+    jv = (e0 - 3) / 24
+    if jv < 0 { jv = 0 }
+    q0 = e0 - 24 * (jv + 1)
+
+    j = jv - jx
+    m = jx + jk
+    i = 0
+    while i <= m {
+        f[i] = if j < 0 { 0.0 } else { data.ipio2[j.(usize)].(f64) }
+        i += 1
+        j += 1
+    }
+
+    i = 0
+    while i <= jk {
+        j = 0
+        fw = 0.0
+        while j <= jx {
+            fw += x[j.(usize)] * f[(jx + i - j).(usize)]
+            j += 1
+        }
+        q[i] = fw
+        i += 1
+    }
+
+    jz = jk
+
+    while true {
+        i = 0
+        j = jz
+        z = q[jz.(usize)]
+        while j > 0 {
+            fw = (0x1p-24 * z).(f64)
+            fw = (fw.(i32)).(f64)
+            iq[i] = (z - 0x1p24 * fw).(i32)
+            z = q[(j - 1).(usize)] + fw
+            i += 1
+            j -= 1
+        }
+
+    z = scalbn(z, q0)
+    z -= 8.0 * floor(z * 0.125)
+    n = z.(i32)
+    z -= n.(f64)
+    ih = 0
+    if q0 > 0 {
+        i = iq[(jz - 1).(usize)] >> (24 - q0)
+        n += i
+        iq[(jz - 1).(usize)] -= i << (24 - q0)
+        ih = iq[(jz - 1).(usize)] >> (23 - q0)
+    } else if q0 == 0 {
+        ih = iq[(jz - 1).(usize)] >> 23
+    } else if z >= 0.5 {
+        ih = 2
+    }
+
+    if ih > 0 {
+        n += 1
+        carry = 0
+        i = 0
+        while i < jz {
+            j = iq[i.(usize)]
+            if carry == 0 {
+                if j != 0 {
+                    carry = 1
+                    iq[i.(usize)] = 0x1000000 - j
+                }
+            } else {
+                iq[i.(usize)] = 0xffffff - j
+            }
+            i += 1
+        }
+        if q0 > 0 {
+            if q0 == 1 { iq[(jz - 1).(usize)] &= 0x7fffff }
+            else if q0 == 2 { iq[(jz - 1).(usize)] &= 0x3fffff }
+        }
+        if ih == 2 {
+            z = 1.0 - z
+            if carry != 0 { z -= scalbn(1.0, q0) }
+        }
+    }
+
+        if z == 0.0 {
+            j = 0
+            i = jz - 1
+            while i >= jk {
+                j |= iq[i.(usize)]
+                i -= 1
+            }
+            if j == 0 {
+                k = 1
+                while iq[(jk - k).(usize)] == 0 { k += 1 }
+                i = jz + 1
+                while i <= jz + k {
+                    f[(jx + i).(usize)] = data.ipio2[(jv + i).(usize)].(f64)
+                    j = 0
+                    fw = 0.0
+                    while j <= jx {
+                        fw += x[j.(usize)] * f[(jx + i - j).(usize)]
+                        j += 1
+                    }
+                    q[i.(usize)] = fw
+                    i += 1
+                }
+                jz += k
+                continue
+            }
+        }
+        break
+    }
+
+    if z == 0.0 {
+        jz -= 1
+        q0 -= 24
+        while iq[jz.(usize)] == 0 {
+            jz -= 1
+            q0 -= 24
+        }
+    } else {
+        z = scalbn(z, -q0)
+        if z >= 0x1p24 {
+            fw = (0x1p-24 * z).(f64)
+            fw = (fw.(i32)).(f64)
+            iq[jz.(usize)] = (z - 0x1p24 * fw).(i32)
+            jz += 1
+            q0 += 24
+            iq[jz.(usize)] = fw.(i32)
+        } else {
+            iq[jz.(usize)] = z.(i32)
+        }
+    }
+
+    fw = scalbn(1.0, q0)
+    i = jz
+    while i >= 0 {
+        q[i.(usize)] = fw * iq[i.(usize)].(f64)
+        fw *= 0x1p-24
+        i -= 1
+    }
+
+    i = jz
+    while i >= 0 {
+        fw = 0.0
+        k = 0
+        while k <= jp and k <= jz - i {
+            fw += PIo2[k.(usize)] * q[(i + k).(usize)]
+            k += 1
+        }
+        fq[(jz - i).(usize)] = fw
+        i -= 1
+    }
+
+    if prec == 0 {
+        fw = 0.0
+        i = jz
+        while i >= 0 { fw += fq[i.(usize)]; i -= 1 }
+        y[0] = if ih == 0 { fw } else { -fw }
+    } else if prec == 1 or prec == 2 {
+        fw = 0.0
+        i = jz
+        while i >= 0 { fw += fq[i.(usize)]; i -= 1 }
+        fw = fw.(f64)
+        y[0] = if ih == 0 { fw } else { -fw }
+        fw = fq[0] - fw
+        i = 1
+        while i <= jz { fw += fq[i.(usize)]; i += 1 }
+        y[1] = if ih == 0 { fw } else { -fw }
+    } else {
+        i = jz
+        while i > 0 {
+            fw = fq[(i - 1).(usize)] + fq[i.(usize)]
+            fq[i.(usize)] += fq[(i - 1).(usize)] - fw
+            fq[(i - 1).(usize)] = fw
+            i -= 1
+        }
+        i = jz
+        while i > 1 {
+            fw = fq[(i - 1).(usize)] + fq[i.(usize)]
+            fq[i.(usize)] += fq[(i - 1).(usize)] - fw
+            fq[(i - 1).(usize)] = fw
+            i -= 1
+        }
+        fw = 0.0
+        i = jz
+        while i >= 2 { fw += fq[i.(usize)]; i -= 1 }
+        if ih == 0 {
+            y[0] = fq[0]; y[1] = fq[1]; y[2] = fw
+        } else {
+            y[0] = -fq[0]; y[1] = -fq[1]; y[2] = -fw
+        }
+    }
+    return n & 7
+}

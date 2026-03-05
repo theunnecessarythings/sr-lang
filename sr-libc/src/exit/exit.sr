@@ -1,0 +1,24 @@
+package libc
+
+// Derived from musl-1.2.5/src/exit/exit.c
+
+atexit_mod :: import "libc/src/exit/atexit"
+stdio_exit :: import "libc/src/stdio/stdio_exit"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+dummy :: proc() void {}
+
+libc_exit_fini :: proc() void {
+    stdio_exit.__stdio_exit()
+}
+
+exit :: proc(status: i32) void {
+    atexit_mod.__cxa_finalize(null)
+    libc_exit_fini()
+    c_i64 := status.(i64)
+    _ = sc.syscall1(nums.SYS_exit_group.(i64), c_i64)
+    while true {
+        _ = sc.syscall1(nums.SYS_exit.(i64), c_i64)
+    }
+}

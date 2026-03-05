@@ -1,0 +1,41 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/catanl.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+PIL :: 3.141592653589793238462643383279502884197169
+DP1 :: 3.14159265358979323829596852490908531763125
+DP2 :: 1.6667485837041756656403424829301998703007e-19
+DP3 :: 1.8830410776607851167459095484560349402753e-39
+
+redupil :: proc(x: f128) f128 {
+    t := x / PIL.(f128)
+    if t >= 0.0.(f128) {
+        t += 0.5.(f128)
+    } else {
+        t -= 0.5.(f128)
+    }
+    i := t.(i64)
+    t = i.(f128)
+    t = ((x - t * DP1.(f128)) - t * DP2.(f128)) - t * DP3.(f128)
+    return t
+}
+
+catanl :: proc(z: complex(f128)) complex(f128) {
+    x := z.real
+    y := z.imag
+
+    x2 := x * x
+    a := 1.0.(f128) - x2 - (y * y)
+
+    t := atan2l(2.0.(f128) * x, a) * 0.5.(f128)
+    w := redupil(t)
+
+    t = y - 1.0.(f128)
+    a = x2 + (t * t)
+
+    t = y + 1.0.(f128)
+    a = (x2 + (t * t)) / a
+    return impl.cmplxl(w, 0.25.(f128) * logl(a))
+}

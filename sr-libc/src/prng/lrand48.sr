@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/prng/lrand48.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <stdlib.h>
+// #include <inttypes.h>
+// #include <rand48.h>
+
+rand48 :: import "libc/src/prng/rand48_impl"
+
+nrand48 :: proc(s: *u16) i64 {
+    return (rand48.__rand48_step(s, &rand48.__seed48[3]) >> 17).(i64)
+}
+
+lrand48 :: proc() i64 {
+    return nrand48(&rand48.__seed48[0])
+}

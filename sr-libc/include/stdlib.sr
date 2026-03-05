@@ -1,0 +1,56 @@
+package libc
+
+// Derived from musl-1.2.5/include/stdlib.h (partial).
+
+div_t :: struct { quot: i32, rem: i32 }
+ldiv_t :: struct { quot: isize, rem: isize }
+lldiv_t :: struct { quot: i64, rem: i64 }
+
+strtod :: proc(s: *const u8, endptr: ?**u8) f64
+strtof :: proc(s: *const u8, endptr: ?**u8) f32
+strtold :: proc(s: *const u8, endptr: ?**u8) f128
+
+strtol :: proc(s: *const u8, endptr: ?**u8, base: i32) isize
+strtoll :: proc(s: *const u8, endptr: ?**u8, base: i32) i64
+strtoul :: proc(s: *const u8, endptr: ?**u8, base: i32) usize
+strtoull :: proc(s: *const u8, endptr: ?**u8, base: i32) u64
+
+bsearch :: proc(key: *const void, base: *const void, nel: usize, width: usize, cmp: fn(*const void, *const void) i32) *void
+qsort :: proc(base: *void, nel: usize, width: usize, cmp: fn(*const void, *const void) i32) void
+qsort_r :: proc(base: *void, nel: usize, width: usize, cmp: fn(*const void, *const void, *void) i32, arg: *void) void
+__qsort_r :: proc(base: *void, nel: usize, width: usize, cmp: fn(*const void, *const void, *void) i32, arg: *void) void
+
+ecvt :: proc(x: f64, n: i32, dp: *i32, sign: *i32) *u8
+fcvt :: proc(x: f64, n: i32, dp: *i32, sign: *i32) *u8
+gcvt :: proc(x: f64, n: i32, b: *u8) *u8
+
+getenv :: proc(name: *const u8) ?*u8
+
+wcstol :: proc(s: *const wchar_t, endptr: ?**wchar_t, base: i32) isize
+wcstoul :: proc(s: *const wchar_t, endptr: ?**wchar_t, base: i32) usize
+wcstoll :: proc(s: *const wchar_t, endptr: ?**wchar_t, base: i32) i64
+wcstoull :: proc(s: *const wchar_t, endptr: ?**wchar_t, base: i32) u64
+wcstoimax :: proc(s: *const wchar_t, endptr: ?**wchar_t, base: i32) intmax_t
+wcstoumax :: proc(s: *const wchar_t, endptr: ?**wchar_t, base: i32) uintmax_t
+wcstof :: proc(s: *const wchar_t, endptr: ?**wchar_t) f32
+wcstod :: proc(s: *const wchar_t, endptr: ?**wchar_t) f64
+wcstold :: proc(s: *const wchar_t, endptr: ?**wchar_t) f128
+
+rand :: proc() i32
+srand :: proc(seed: u32) void
+rand_r :: proc(seed: *u32) i32
+
+random :: proc() i64
+srandom :: proc(seed: u32) void
+initstate :: proc(seed: u32, state: *u8, size: usize) *u8
+setstate :: proc(state: *u8) *u8
+
+drand48 :: proc() f64
+erand48 :: proc(s: *u16) f64
+lrand48 :: proc() i64
+nrand48 :: proc(s: *u16) i64
+mrand48 :: proc() i64
+jrand48 :: proc(s: *u16) i64
+srand48 :: proc(seed: i64) void
+seed48 :: proc(s: *u16) *u16
+lcong48 :: proc(p: *u16) void

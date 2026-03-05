@@ -1,0 +1,23 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/__stdio_exit.c (simplified).
+
+close_file :: proc(f: *alltypes.FILE) void {
+    if f == null { return }
+    if f.lock >= 0 { _ = __lockfile(f) }
+    if f.wpos != f.wbase { _ = f.write(f, null, 0) }
+    if f.rpos != f.rend { _ = f.seek(f, (f.rpos.^isize - f.rend.^isize).(alltypes.off_t), SEEK_CUR) }
+}
+
+__stdio_exit :: proc() void {
+    f := __ofl_lock().*
+    while f != null {
+        close_file(f)
+        f = f.next
+    }
+    close_file(__stdin_used)
+    close_file(__stdout_used)
+    close_file(__stderr_used)
+}
+
+__stdio_exit_needed :: proc() void { __stdio_exit() }

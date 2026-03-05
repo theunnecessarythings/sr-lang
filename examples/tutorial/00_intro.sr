@@ -1,0 +1,19 @@
+package main
+
+io :: import "std/io"
+
+// Question: Where does execution begin?
+// Answer: A procedure named `main`.
+main :: proc() {
+    io.print("Welcome to sr-lang examples v2.\n")
+
+    // Question: How do we call a procedure?
+    // Answer: Just write its name with arguments.
+    greet("reader")
+}
+
+// Question: How do we define a procedure with a parameter?
+// Answer: Use `proc(name: type)`.
+greet :: proc(name: string) {
+    io.println("Hello, %s!", name)
+}

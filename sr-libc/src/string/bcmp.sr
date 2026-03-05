@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/bcmp.c.
+
+memcmp_mod :: import "libc/src/string/memcmp"
+
+bcmp :: proc(s1: *const void, s2: *const void, n: usize) i32 {
+    return memcmp_mod.memcmp(s1, s2, n)
+}

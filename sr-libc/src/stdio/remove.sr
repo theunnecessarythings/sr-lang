@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/remove.c (syscall wrappers).
+
+errno_mod :: import "libc/include/errno"
+unistd_mod :: import "libc/include/unistd"
+
+remove :: proc(path: *const u8) i32 {
+    r := unistd_mod.unlink(path)
+    if r == 0 { return 0 }
+    if errno_mod.__errno_location().* == errno_mod.EISDIR {
+        return unistd_mod.rmdir(path)
+    }
+    return -1
+}

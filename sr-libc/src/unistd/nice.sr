@@ -1,0 +1,24 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/nice.c
+
+res :: import "libc/include/sys/resource"
+getp :: import "libc/src/misc/getpriority"
+setp :: import "libc/src/misc/setpriority"
+errno_mod :: import "libc/include/errno"
+
+nice :: proc(inc: i32) i32 {
+    prio := inc
+    if inc > -2 * res.NZERO and inc < 2 * res.NZERO {
+        prio += getp.getpriority(res.PRIO_PROCESS, 0)
+    }
+    if prio > res.NZERO - 1 { prio = res.NZERO - 1 }
+    if prio < -res.NZERO { prio = -res.NZERO }
+    if setp.setpriority(res.PRIO_PROCESS, 0, prio) != 0 {
+        if errno_mod.__errno_location().* == errno_mod.EACCES {
+            errno_mod.__errno_location().* = errno_mod.EPERM
+        }
+        return -1
+    }
+    return prio
+}

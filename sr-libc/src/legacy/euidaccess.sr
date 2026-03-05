@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/legacy/euidaccess.c
+
+access_mod :: import "libc/src/unistd/access"
+
+euidaccess :: proc(filename: *const u8, amode: i32) i32 {
+    return access_mod.access(filename, amode)
+}

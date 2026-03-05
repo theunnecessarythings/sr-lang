@@ -1,0 +1,63 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/hypotl.c.
+
+basic :: import "libc/src/math/basic"
+
+SPLIT :: (0x1p57 + 1.0)
+
+sq :: fn(hi: *f128, lo: *f128, x: f128) void {
+    xh: f128
+    xl: f128
+    xc: f128
+
+    xc = x * SPLIT
+    xh = x - xc + xc
+    xl = x - xh
+    hi.* = x * x
+    lo.* = xh * xh - hi.* + 2.0 * xh * xl + xl * xl
+}
+
+hypotl :: proc(x: f128, y: f128) f128 {
+    ux := x.^u128
+    uy := y.^u128
+    ex: i32
+    ey: i32
+    hx: f128
+    lx: f128
+    hy: f128
+    ly: f128
+    z: f128
+
+    ux &= (1u128 << 127) - 1
+    uy &= (1u128 << 127) - 1
+    if ((ux >> 112) & 0x7fff) < ((uy >> 112) & 0x7fff) {
+        ex = ((uy >> 112) & 0x7fff).(i32)
+        ey = ((ux >> 112) & 0x7fff).(i32)
+        x = uy.^f128
+        y = ux.^f128
+    } else {
+        ex = ((ux >> 112) & 0x7fff).(i32)
+        ey = ((uy >> 112) & 0x7fff).(i32)
+        x = ux.^f128
+        y = uy.^f128
+    }
+
+    if ex == 0x7fff and basic.isinfl(y) { return y }
+    if ex == 0x7fff or y == 0.0 { return x }
+    if (ex - ey) > 113 { return x + y }
+
+    z = 1.0
+    if ex > 0x3fff + 8000 {
+        z = 0x1p10000
+        x *= 0x1p-10000
+        y *= 0x1p-10000
+    } else if ey < 0x3fff - 8000 {
+        z = 0x1p-10000
+        x *= 0x1p10000
+        y *= 0x1p10000
+    }
+    sq(&hx, &lx, x)
+    sq(&hy, &ly, y)
+    return z * sqrtl(ly + lx + hy + hx)
+}

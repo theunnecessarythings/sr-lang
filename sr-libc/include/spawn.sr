@@ -1,0 +1,67 @@
+package libc
+
+// Derived from musl-1.2.5/include/spawn.h
+
+// Required types
+// mode_t, alltypes.pid_t, alltypes.sigset_t are defined in alltypes.sr
+
+struct sched_param
+
+POSIX_SPAWN_RESETIDS :: 1
+POSIX_SPAWN_SETPGROUP :: 2
+POSIX_SPAWN_SETSIGDEF :: 4
+POSIX_SPAWN_SETSIGMASK :: 8
+POSIX_SPAWN_SETSCHEDPARAM :: 16
+POSIX_SPAWN_SETSCHEDULER :: 32
+POSIX_SPAWN_USEVFORK :: 64
+POSIX_SPAWN_SETSID :: 128
+
+posix_spawnattr_t :: struct {
+    __flags: i32,
+    __pgrp: alltypes.pid_t,
+    __def: alltypes.sigset_t,
+    __mask: alltypes.sigset_t,
+    __prio: i32,
+    __pol: i32,
+    __fn: *void,
+    __pad: [64 - sizeof(*void)]u8,
+}
+
+posix_spawn_file_actions_t :: struct {
+    __pad0: [2]i32,
+    __actions: *fdop,
+    __pad: [16]i32,
+}
+
+posix_spawn :: proc(res: *alltypes.pid_t restrict, path: *const char restrict, fa: *const posix_spawn_file_actions_t, attr: *const posix_spawnattr_t restrict, argv: **u8, envp: **u8) i32
+posix_spawnp :: proc(res: *alltypes.pid_t restrict, file: *const char restrict, fa: *const posix_spawn_file_actions_t, attr: *const posix_spawnattr_t restrict, argv: **u8, envp: **u8) i32
+
+posix_spawnattr_init :: proc(attr: *posix_spawnattr_t) i32
+posix_spawnattr_destroy :: proc(attr: *posix_spawnattr_t) i32
+
+posix_spawnattr_setflags :: proc(attr: *posix_spawnattr_t, flags: i16) i32
+posix_spawnattr_getflags :: proc(attr: *const posix_spawnattr_t restrict, flags: *i16 restrict) i32
+
+posix_spawnattr_setpgroup :: proc(attr: *posix_spawnattr_t, pgrp: alltypes.pid_t) i32
+posix_spawnattr_getpgroup :: proc(attr: *const posix_spawnattr_t restrict, pgrp: *alltypes.pid_t restrict) i32
+
+posix_spawnattr_setsigmask :: proc(attr: *posix_spawnattr_t restrict, mask: *const alltypes.sigset_t restrict) i32
+posix_spawnattr_getsigmask :: proc(attr: *const posix_spawnattr_t restrict, mask: *alltypes.sigset_t restrict) i32
+
+posix_spawnattr_setsigdefault :: proc(attr: *posix_spawnattr_t restrict, def: *const alltypes.sigset_t restrict) i32
+posix_spawnattr_getsigdefault :: proc(attr: *const posix_spawnattr_t restrict, def: *alltypes.sigset_t restrict) i32
+
+posix_spawnattr_setschedparam :: proc(attr: *posix_spawnattr_t restrict, schedparam: *const struct sched_param restrict) i32
+posix_spawnattr_getschedparam :: proc(attr: *const posix_spawnattr_t restrict, schedparam: *struct sched_param restrict) i32
+posix_spawnattr_setschedpolicy :: proc(attr: *posix_spawnattr_t, policy: i32) i32
+posix_spawnattr_getschedpolicy :: proc(attr: *const posix_spawnattr_t restrict, policy: *i32 restrict) i32
+
+posix_spawn_file_actions_init :: proc(fa: *posix_spawn_file_actions_t) i32
+posix_spawn_file_actions_destroy :: proc(fa: *posix_spawn_file_actions_t) i32
+
+posix_spawn_file_actions_addopen :: proc(fa: *posix_spawn_file_actions_t restrict, fd: i32, path: *const char restrict, flags: i32, mode: mode_t) i32
+posix_spawn_file_actions_addclose :: proc(fa: *posix_spawn_file_actions_t, fd: i32) i32
+posix_spawn_file_actions_adddup2 :: proc(fa: *posix_spawn_file_actions_t, srcfd: i32, fd: i32) i32
+
+posix_spawn_file_actions_addchdir_np :: proc(fa: *posix_spawn_file_actions_t restrict, path: *const char restrict) i32
+posix_spawn_file_actions_addfchdir_np :: proc(fa: *posix_spawn_file_actions_t, fd: i32) i32

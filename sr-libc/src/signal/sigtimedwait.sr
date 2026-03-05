@@ -1,0 +1,21 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/sigtimedwait.c
+
+nums :: import "libc/include/syscall"
+sc :: import "libc/src/syscall/syscall"
+
+do_sigtimedwait :: proc(mask: *const alltypes.sigset_t, si: *siginfo_t, ts: *const timespec) i32 {
+    r := sc.syscall4_ret(
+        nums.SYS_rt_sigtimedwait.(i64),
+        mask.^usize.(i64),
+        si.^usize.(i64),
+        ts.^usize.(i64),
+        sizeof(alltypes.sigset_t).(i64),
+    )
+    return r.(i32)
+}
+
+sigtimedwait :: proc(mask: *const alltypes.sigset_t, si: *siginfo_t, timeout: *const timespec) i32 {
+    return do_sigtimedwait(mask, si, timeout)
+}

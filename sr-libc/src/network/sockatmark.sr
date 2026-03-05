@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/sockatmark.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <sys/ioctl.h>
+
+ioctl_mod :: import "libc/src/misc/ioctl"
+ioctl_consts :: import "libc/include/sys/ioctl"
+
+sockatmark :: proc(s: i32) i32 {
+    ret: i32 = 0
+    if ioctl_mod.ioctl(s, ioctl_consts.SIOCATMARK, (&ret).^*void) < 0 { return -1 }
+    return ret
+}

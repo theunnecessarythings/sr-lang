@@ -1,0 +1,129 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_barrier_wait.c
+
+atomic :: import "libc/src/internal/atomic"
+wait_mod :: import "libc/src/thread/__wait"
+lock_mod :: import "libc/src/internal/lock"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+errno_mod :: import "libc/include/errno"
+bar_int :: import "libc/src/thread/pthread_barrier_internal"
+vmlock_mod :: import "libc/src/thread/vmlock"
+
+PTHREAD_BARRIER_SERIAL_THREAD :: 1
+INT_MIN :: -2147483648
+
+FUTEX_WAIT :: 0
+FUTEX_PRIVATE :: 128
+
+pshared_barrier_wait :: proc(b: *pthread_barrier_t) i32 {
+    limit := (bar_int.bar_limit(b).* & 0x7fffffff) + 1
+    ret: i32 = 0
+    v: i32
+    w: i32
+
+    if limit == 1 { return PTHREAD_BARRIER_SERIAL_THREAD }
+
+    while atomic.a_cas(bar_int.bar_lock(b), 0, limit) != 0 {
+        v = bar_int.bar_lock(b).*
+        wait_mod.__wait(bar_int.bar_lock(b), bar_int.bar_waiters(b), v, 0)
+    }
+
+    if (bar_int.bar_count(b).* + 1) == limit {
+        atomic.a_store(bar_int.bar_count(b), 0)
+        ret = PTHREAD_BARRIER_SERIAL_THREAD
+        if bar_int.bar_waiters2(b).* != 0 { lock_mod.__wake(bar_int.bar_count(b).^*void, -1, 0) }
+    } else {
+        bar_int.bar_count(b).* += 1
+        atomic.a_store(bar_int.bar_lock(b), 0)
+        if bar_int.bar_waiters(b).* != 0 { lock_mod.__wake(bar_int.bar_lock(b).^*void, 1, 0) }
+        while (v = bar_int.bar_count(b).*) > 0 {
+            wait_mod.__wait(bar_int.bar_count(b), bar_int.bar_waiters2(b), v, 0)
+        }
+    }
+
+    vmlock_mod.__vm_lock()
+
+    if atomic.a_fetch_add(bar_int.bar_count(b), -1) == 1 - limit {
+        atomic.a_store(bar_int.bar_count(b), 0)
+        if bar_int.bar_waiters2(b).* != 0 { lock_mod.__wake(bar_int.bar_count(b).^*void, -1, 0) }
+    } else {
+        while (v = bar_int.bar_count(b).*) != 0 {
+            wait_mod.__wait(bar_int.bar_count(b), bar_int.bar_waiters2(b), v, 0)
+        }
+    }
+
+    while true {
+        v = bar_int.bar_lock(b).*
+        w = bar_int.bar_waiters(b).*
+        if atomic.a_cas(bar_int.bar_lock(b), v, if v == INT_MIN + 1 { 0 } else { v - 1 }) == v { break }
+    }
+
+    if v == INT_MIN + 1 || (v == 1 && w != 0) {
+        lock_mod.__wake(bar_int.bar_lock(b).^*void, 1, 0)
+    }
+
+    vmlock_mod.__vm_unlock()
+
+    return ret
+}
+
+instance :: struct {
+    count: i32,
+    last: i32,
+    waiters: i32,
+    finished: i32,
+}
+
+pthread_barrier_wait :: proc(b: *pthread_barrier_t) i32 {
+    limit := bar_int.bar_limit(b).*
+    inst: *instance
+
+    if limit == 0 { return PTHREAD_BARRIER_SERIAL_THREAD }
+    if limit < 0 { return pshared_barrier_wait(b) }
+
+    while atomic.a_swap(bar_int.bar_lock(b), 1) != 0 {
+        wait_mod.__wait(bar_int.bar_lock(b), bar_int.bar_waiters(b), 1, 1)
+    }
+    inst = bar_int.bar_inst(b).*.^*instance
+
+    if inst == null {
+        new_inst := instance{ count: 0, last: 0, waiters: 0, finished: 0 }
+        spins: i32 = 200
+        bar_int.bar_inst(b).* = &new_inst.^*void
+        atomic.a_store(bar_int.bar_lock(b), 0)
+        if bar_int.bar_waiters(b).* != 0 { lock_mod.__wake(bar_int.bar_lock(b).^*void, 1, 1) }
+        while spins > 0 && new_inst.finished == 0 {
+            atomic.a_spin()
+            spins -= 1
+        }
+        atomic.a_inc(&new_inst.finished)
+        while true {
+            r := sc.syscall4(nums.SYS_futex.(i64), (&new_inst.finished).^usize.(i64), (FUTEX_WAIT | FUTEX_PRIVATE).(i64), 1, 0)
+            if r != -errno_mod.ENOSYS { break }
+            _ = sc.syscall4(nums.SYS_futex.(i64), (&new_inst.finished).^usize.(i64), FUTEX_WAIT.(i64), 1, 0)
+            break
+        }
+        return PTHREAD_BARRIER_SERIAL_THREAD
+    }
+
+    inst.count += 1
+    if inst.count == limit {
+        bar_int.bar_inst(b).* = null
+        atomic.a_store(bar_int.bar_lock(b), 0)
+        if bar_int.bar_waiters(b).* != 0 { lock_mod.__wake(bar_int.bar_lock(b).^*void, 1, 1) }
+        atomic.a_store(&inst.last, 1)
+        if inst.waiters != 0 { lock_mod.__wake(&inst.last.^*void, -1, 1) }
+    } else {
+        atomic.a_store(bar_int.bar_lock(b), 0)
+        if bar_int.bar_waiters(b).* != 0 { lock_mod.__wake(bar_int.bar_lock(b).^*void, 1, 1) }
+        wait_mod.__wait(&inst.last, &inst.waiters, 0, 1)
+    }
+
+    if atomic.a_fetch_add(&inst.count, -1) == 1 && atomic.a_fetch_add(&inst.finished, 1) != 0 {
+        lock_mod.__wake(&inst.finished.^*void, 1, 1)
+    }
+
+    return 0
+}

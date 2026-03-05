@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/lgammal.c (113-bit path).
+
+__lgammal_r :: proc(x: f128, sg: *i32) f128 {
+    return __lgamma_r(x.(f64), sg).(f128)
+}
+
+lgammal :: proc(x: f128) f128 {
+    return __lgammal_r(x, &__signgam)
+}
+
+lgammal_r :: proc(x: f128, sg: *i32) f128 { return __lgammal_r(x, sg) }

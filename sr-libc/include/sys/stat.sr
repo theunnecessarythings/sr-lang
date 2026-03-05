@@ -1,0 +1,116 @@
+package libc
+
+// Derived from musl-1.2.5/include/sys/stat.h and arch/x86_64/bits/stat.h
+
+alltypes :: import "libc/include/alltypes"
+
+stat :: struct {
+    st_dev: alltypes.dev_t,
+    st_ino: alltypes.ino_t,
+    st_nlink: alltypes.nlink_t,
+
+    st_mode: alltypes.mode_t,
+    st_uid: alltypes.uid_t,
+    st_gid: alltypes.gid_t,
+    __pad0: u32,
+    st_rdev: alltypes.dev_t,
+    st_size: alltypes.off_t,
+    st_blksize: alltypes.blksize_t,
+    st_blocks: alltypes.blkcnt_t,
+
+    st_atim: alltypes.timespec,
+    st_mtim: alltypes.timespec,
+    st_ctim: alltypes.timespec,
+    __unused: [3]i64,
+}
+
+S_IFMT :: 0o170000
+S_IFDIR :: 0o040000
+S_IFCHR :: 0o020000
+S_IFBLK :: 0o060000
+S_IFREG :: 0o100000
+S_IFIFO :: 0o010000
+S_IFLNK :: 0o120000
+S_IFSOCK :: 0o140000
+
+S_ISUID :: 0o4000
+S_ISGID :: 0o2000
+S_ISVTX :: 0o1000
+S_IRUSR :: 0o400
+S_IWUSR :: 0o200
+S_IXUSR :: 0o100
+S_IRWXU :: 0o700
+S_IRGRP :: 0o040
+S_IWGRP :: 0o020
+S_IXGRP :: 0o010
+S_IRWXG :: 0o070
+S_IROTH :: 0o004
+S_IWOTH :: 0o002
+S_IXOTH :: 0o001
+S_IRWXO :: 0o007
+
+S_ISDIR :: proc(mode: alltypes.mode_t) bool { return (mode & S_IFMT) == S_IFDIR }
+S_ISCHR :: proc(mode: alltypes.mode_t) bool { return (mode & S_IFMT) == S_IFCHR }
+S_ISBLK :: proc(mode: alltypes.mode_t) bool { return (mode & S_IFMT) == S_IFBLK }
+S_ISREG :: proc(mode: alltypes.mode_t) bool { return (mode & S_IFMT) == S_IFREG }
+S_ISFIFO :: proc(mode: alltypes.mode_t) bool { return (mode & S_IFMT) == S_IFIFO }
+S_ISLNK :: proc(mode: alltypes.mode_t) bool { return (mode & S_IFMT) == S_IFLNK }
+S_ISSOCK :: proc(mode: alltypes.mode_t) bool { return (mode & S_IFMT) == S_IFSOCK }
+
+// AT_* constants for *at APIs (minimal subset)
+AT_FDCWD :: -100
+AT_SYMLINK_NOFOLLOW :: 0x100
+AT_EMPTY_PATH :: 0x1000
+AT_REMOVEDIR :: 0x200
+
+UTIME_NOW :: 0x3fffffff
+UTIME_OMIT :: 0x3ffffffe
+
+STATX_MODE :: 2u32
+STATX_NLINK :: 4u32
+STATX_UID :: 8u32
+STATX_GID :: 0x10u32
+STATX_ATIME :: 0x20u32
+STATX_MTIME :: 0x40u32
+STATX_CTIME :: 0x80u32
+STATX_INO :: 0x100u32
+STATX_SIZE :: 0x200u32
+STATX_BLOCKS :: 0x400u32
+STATX_BASIC_STATS :: 0x7ffu32
+STATX_BTIME :: 0x800u32
+STATX_ALL :: 0xfffu32
+
+statx_timestamp :: struct {
+    tv_sec: alltypes.int64_t,
+    tv_nsec: u32,
+    __pad: u32,
+}
+
+statx :: struct {
+    stx_mask: u32,
+    stx_blksize: u32,
+    stx_attributes: u64,
+    stx_nlink: u32,
+    stx_uid: u32,
+    stx_gid: u32,
+    stx_mode: u16,
+    __pad0: [1]u16,
+    stx_ino: u64,
+    stx_size: u64,
+    stx_blocks: u64,
+    stx_attributes_mask: u64,
+    stx_atime: statx_timestamp,
+    stx_btime: statx_timestamp,
+    stx_ctime: statx_timestamp,
+    stx_mtime: statx_timestamp,
+    stx_rdev_major: u32,
+    stx_rdev_minor: u32,
+    stx_dev_major: u32,
+    stx_dev_minor: u32,
+    __pad1: [14]u64,
+}
+
+utimensat :: proc(fd: i32, path: ?*const u8, times: ?*alltypes.timespec, flags: i32) i32
+futimens :: proc(fd: i32, times: ?*alltypes.timespec) i32
+futimesat :: proc(fd: i32, path: *const u8, times: ?*alltypes.timeval) i32
+statx :: proc(dirfd: i32, path: *const u8, flags: i32, mask: u32, stx: *statx) i32

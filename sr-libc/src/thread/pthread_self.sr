@@ -1,0 +1,21 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_self.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <pthread_impl.h>
+// #include <threads.h>
+
+pthread_impl :: import "libc/src/internal/pthread_impl"
+
+__pthread_self_internal :: proc() alltypes.pthread_t {
+    return pthread_impl.__pthread_self().(^*void)
+}
+
+pthread_self :: proc() alltypes.pthread_t {
+    return __pthread_self_internal()
+}
+
+thrd_current :: proc() alltypes.pthread_t {
+    return __pthread_self_internal()
+}

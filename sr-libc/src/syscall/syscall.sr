@@ -1,0 +1,105 @@
+package libc
+
+// Minimal syscall wrappers for x86_64 Linux.
+// NOTE: asm syntax assumes AT&T and sr-lang operand placeholders ($0, $1, ...).
+
+errno_store :: import "libc/src/errno/errno"
+
+// Convert raw syscall return into libc convention (set errno on negative).
+__syscall_ret :: proc(r: i64) i64 {
+    if r < 0 and r >= -4095 {
+        errp := errno_store.__errno_location_impl()
+        errp.* = (-r).(i32)
+        return -1
+    }
+    return r
+}
+
+syscall0 :: fn(n: i64) i64 asm {
+    movq $1, %rax
+    syscall
+    movq %rax, $0
+}
+
+syscall1 :: fn(n: i64, a1: i64) i64 asm {
+    movq $1, %rax
+    movq $2, %rdi
+    syscall
+    movq %rax, $0
+}
+
+syscall2 :: fn(n: i64, a1: i64, a2: i64) i64 asm {
+    movq $1, %rax
+    movq $2, %rdi
+    movq $3, %rsi
+    syscall
+    movq %rax, $0
+}
+
+syscall3 :: fn(n: i64, a1: i64, a2: i64, a3: i64) i64 asm {
+    movq $1, %rax
+    movq $2, %rdi
+    movq $3, %rsi
+    movq $4, %rdx
+    syscall
+    movq %rax, $0
+}
+
+syscall4 :: fn(n: i64, a1: i64, a2: i64, a3: i64, a4: i64) i64 asm {
+    movq $1, %rax
+    movq $2, %rdi
+    movq $3, %rsi
+    movq $4, %rdx
+    movq $5, %r10
+    syscall
+    movq %rax, $0
+}
+
+syscall5 :: fn(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64) i64 asm {
+    movq $1, %rax
+    movq $2, %rdi
+    movq $3, %rsi
+    movq $4, %rdx
+    movq $5, %r10
+    movq $6, %r8
+    syscall
+    movq %rax, $0
+}
+
+syscall6 :: fn(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64) i64 asm {
+    movq $1, %rax
+    movq $2, %rdi
+    movq $3, %rsi
+    movq $4, %rdx
+    movq $5, %r10
+    movq $6, %r8
+    movq $7, %r9
+    syscall
+    movq %rax, $0
+}
+
+// Convenience wrapper when the second argument is a pointer.
+syscall3_ptr :: fn(n: i64, a1: i64, a2: *const u8, a3: usize) i64 asm {
+    movq $1, %rax
+    movq $2, %rdi
+    movq $3, %rsi
+    movq $4, %rdx
+    syscall
+    movq %rax, $0
+}
+
+// errno-setting wrappers
+syscall0_ret :: proc(n: i64) i64 { return __syscall_ret(syscall0(n)) }
+syscall1_ret :: proc(n: i64, a1: i64) i64 { return __syscall_ret(syscall1(n, a1)) }
+syscall2_ret :: proc(n: i64, a1: i64, a2: i64) i64 { return __syscall_ret(syscall2(n, a1, a2)) }
+syscall3_ret :: proc(n: i64, a1: i64, a2: i64, a3: i64) i64 { return __syscall_ret(syscall3(n, a1, a2, a3)) }
+syscall4_ret :: proc(n: i64, a1: i64, a2: i64, a3: i64, a4: i64) i64 { return __syscall_ret(syscall4(n, a1, a2, a3, a4)) }
+syscall5_ret :: proc(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64) i64 { return __syscall_ret(syscall5(n, a1, a2, a3, a4, a5)) }
+syscall6_ret :: proc(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64) i64 {
+    return __syscall_ret(syscall6(n, a1, a2, a3, a4, a5, a6))
+}
+
+// Fixed-arg syscall helper (non-variadic).
+syscall :: proc(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64) i64 {
+    return syscall6_ret(n, a1, a2, a3, a4, a5, a6)
+}

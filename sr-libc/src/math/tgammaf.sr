@@ -1,0 +1,7 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/tgammaf.c.
+
+tgammaf :: proc(x: f32) f32 {
+    return tgamma(x.(f64)).(f32)
+}

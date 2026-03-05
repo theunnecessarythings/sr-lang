@@ -1,89 +1,66 @@
-package miscellaneous
+package main
 
-// Miscellaneous Language Features
+// Miscellaneous Language Features (runnable subset)
+
+io :: import "std/io"
 
 // --- Optional Types (?T) ---
-// The `?` prefix on a type makes it optional. It can hold either a value
-// of that type or `null`. This is useful for fields that may not have a value.
 MaybeString :: ?string
 
 config :: struct {
-    // A name for the configuration, which is optional.
     name: ?string,
 }
 
-c1 := config{ name: "my-config" }
-c2 := config{ name: null }
-
-
 // --- Loops with `continue` and `break` values ---
-
-// `continue` example
-// Print only the odd numbers from 0 to 9.
-
 loop_examples :: proc() {
-
+    // Print only the odd numbers from 0 to 9.
     for i in 0..10 {
         if i % 2 == 0 {
-            continue // Skip the rest of the loop body for even numbers
+            continue
         }
-        print(i)
+        io.println("%d", i)
     }
 
-// `break` with a label from a nested loop TODO: labeled for
-  outer_loop: for i in 0..10 {
-      for j in 0..10 {
-          if i * j > 50 {
-              // This breaks out of the outer loop, not just the inner one.
-              break :outer_loop
-          }
-      }
-  }
-
-    // Labeled while example
-    i := 0
-    j := 0
-    outer_while: while i < 10 {
-        while j < 10 {
+    // `break` with a label from a nested loop
+    outer_loop: for i in 0..10 {
+        for j in 0..10 {
             if i * j > 50 {
-                break :outer_while
+                break :outer_loop
             }
-            j := j + 1
         }
-        i := i + 1
     }
 
     // `break` with a value example
-    // A loop can be an expression that evaluates to a value.
-    // The `break` statement can provide the result of the loop expression.
-    found_value := for i in 0..100 {
+    items: [3]string = ["hay", "needle", "stack"]
+    found_value := for i in 0..items.len {
         if items[i] == "needle" {
-             break i // Exit the loop and return the index `i`
+            break i
         }
-        // If the loop finishes without finding the value, it evaluates to `null`
-        // (assuming the loop expression has an optional return type).
     }
+    io.println("found index=%d", found_value)
 }
 
 // --- Error Type Definition ---
-// The `error` keyword defines a set of possible error values.
-// This is a shorthand for creating a simple enum-like error set.
 MyError :: error {
     ThingNotFound,
     PermissionDenied,
     NetworkFailed,
 }
 
-// This is roughly equivalent to:
-MyError_equivalent :: enum {
-    ThingNotFound,
-    PermissionDenied,
-    NetworkFailed,
-}
-
 // It can then be used in an error union type.
-operation_that_can_fail :: proc() void!MyError {
+operation_that_can_fail :: proc() MyError ! void {
+    something_bad_happens := false
     if something_bad_happens {
         return MyError.NetworkFailed
     }
+}
+
+main :: proc() {
+    c1 := config{ name: "my-config" }
+    c2 := config{ name: null }
+    _ = c1
+    _ = c2
+
+    loop_examples()
+    _ = operation_that_can_fail() catch {}
 }

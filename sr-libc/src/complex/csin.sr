@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/csin.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+csin :: proc(z: complex(f64)) complex(f64) {
+    z = csinh(impl.cmplx(-z.imag, z.real))
+    return impl.cmplx(z.imag, -z.real)
+}

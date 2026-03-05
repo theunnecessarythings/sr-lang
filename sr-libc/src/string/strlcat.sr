@@ -1,0 +1,25 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/strlcat.c.
+
+strlcat :: proc(dst: *u8, src: *const u8, size: usize) usize {
+    dlen: usize = 0
+    while dlen < size and dst[dlen] != 0 {
+        dlen += 1
+    }
+
+    slen: usize = 0
+    while src[slen] != 0 { slen += 1 }
+
+    if dlen == size {
+        return dlen + slen
+    }
+
+    i: usize = 0
+    while dlen + i + 1 < size and src[i] != 0 {
+        dst[dlen + i] = src[i]
+        i += 1
+    }
+    dst[dlen + i] = 0
+    return dlen + slen
+}

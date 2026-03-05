@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/getpeername.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <syscall.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+getpeername :: proc(fd: i32, addr: *sockaddr restrict, len: *socklen_t restrict) i32 {
+    r := sc.syscall3_ret(nums.SYS_getpeername.(i64), fd.(i64), addr.^usize.(i64), len.^usize.(i64))
+    return r.(i32)
+}

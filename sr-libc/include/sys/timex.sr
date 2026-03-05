@@ -1,0 +1,92 @@
+package libc
+
+// Derived from musl-1.2.5/include/sys/timex.h
+
+alltypes :: import "libc/include/alltypes"
+
+ntptimeval :: struct {
+    time: alltypes.timeval,
+    maxerror: isize,
+    esterror: isize,
+}
+
+timex :: struct {
+    modes: u32,
+    offset: isize,
+    freq: isize,
+    maxerror: isize,
+    esterror: isize,
+    status: i32,
+    constant: isize,
+    precision: isize,
+    tolerance: isize,
+    time: alltypes.timeval,
+    tick: isize,
+    ppsfreq: isize,
+    jitter: isize,
+    shift: i32,
+    stabil: isize,
+    jitcnt: isize,
+    calcnt: isize,
+    errcnt: isize,
+    stbcnt: isize,
+    tai: i32,
+    __padding: [11]i32,
+}
+
+ADJ_OFFSET :: 0x0001
+ADJ_FREQUENCY :: 0x0002
+ADJ_MAXERROR :: 0x0004
+ADJ_ESTERROR :: 0x0008
+ADJ_STATUS :: 0x0010
+ADJ_TIMECONST :: 0x0020
+ADJ_TAI :: 0x0080
+ADJ_SETOFFSET :: 0x0100
+ADJ_MICRO :: 0x1000
+ADJ_NANO :: 0x2000
+ADJ_TICK :: 0x4000
+ADJ_OFFSET_SINGLESHOT :: 0x8001
+ADJ_OFFSET_SS_READ :: 0xa001
+
+MOD_OFFSET :: ADJ_OFFSET
+MOD_FREQUENCY :: ADJ_FREQUENCY
+MOD_MAXERROR :: ADJ_MAXERROR
+MOD_ESTERROR :: ADJ_ESTERROR
+MOD_STATUS :: ADJ_STATUS
+MOD_TIMECONST :: ADJ_TIMECONST
+MOD_CLKB :: ADJ_TICK
+MOD_CLKA :: ADJ_OFFSET_SINGLESHOT
+MOD_TAI :: ADJ_TAI
+MOD_MICRO :: ADJ_MICRO
+MOD_NANO :: ADJ_NANO
+
+STA_PLL :: 0x0001
+STA_PPSFREQ :: 0x0002
+STA_PPSTIME :: 0x0004
+STA_FLL :: 0x0008
+STA_INS :: 0x0010
+STA_DEL :: 0x0020
+STA_UNSYNC :: 0x0040
+STA_FREQHOLD :: 0x0080
+STA_PPSSIGNAL :: 0x0100
+STA_PPSJITTER :: 0x0200
+STA_PPSWANDER :: 0x0400
+STA_PPSERROR :: 0x0800
+STA_CLOCKERR :: 0x1000
+STA_NANO :: 0x2000
+STA_MODE :: 0x4000
+STA_CLK :: 0x8000
+STA_RONLY :: (STA_PPSSIGNAL | STA_PPSJITTER | STA_PPSWANDER | STA_PPSERROR | STA_CLOCKERR | STA_NANO | STA_MODE | STA_CLK)
+
+TIME_OK :: 0
+TIME_INS :: 1
+TIME_DEL :: 2
+TIME_OOP :: 3
+TIME_WAIT :: 4
+TIME_ERROR :: 5
+TIME_BAD :: TIME_ERROR
+
+MAXTC :: 6
+
+adjtimex :: proc(tx: *timex) i32
+clock_adjtime :: proc(clock_id: clockid_t, tx: *timex) i32

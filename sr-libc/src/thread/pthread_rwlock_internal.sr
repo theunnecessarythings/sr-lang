@@ -1,0 +1,20 @@
+package libc
+
+// Internal layout helpers for pthread rwlock (musl-compatible).
+
+alltypes :: import "libc/include/alltypes"
+
+pthread_rwlock_u :: union {
+    __i: [14]i32,
+    __vi: [14]i32,
+    __p: [7]?*void,
+    __opaque: [56]u8,
+}
+
+pthread_rwlock_internal :: struct { __u: pthread_rwlock_u }
+
+rw_internal :: fn(rw: ?*alltypes.pthread_rwlock_t) *pthread_rwlock_internal { return (rw?).^*pthread_rwlock_internal }
+
+rw_lock :: fn(rw: ?*alltypes.pthread_rwlock_t) *i32 { return &rw_internal(rw).*.__u.__vi[0] }
+rw_waiters :: fn(rw: ?*alltypes.pthread_rwlock_t) *i32 { return &rw_internal(rw).*.__u.__vi[1] }
+rw_shared :: fn(rw: ?*alltypes.pthread_rwlock_t) *i32 { return &rw_internal(rw).*.__u.__i[2] }

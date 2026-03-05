@@ -1,0 +1,48 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/lookup.h
+
+aibuf :: struct {
+    ai: addrinfo,
+    sa: union {
+        sin: sockaddr_in,
+        sin6: sockaddr_in6,
+    },
+    lock: [1]i32,
+    slot: i16,
+    ref: i16,
+}
+
+address :: struct {
+    family: i32,
+    scopeid: u32,
+    addr: [16]u8,
+    sortkey: i32,
+}
+
+service :: struct {
+    port: u16,
+    proto: u8,
+    socktype: u8,
+}
+
+MAXNS :: 3
+
+resolvconf :: struct {
+    ns: [MAXNS]address,
+    nns: u32,
+    attempts: u32,
+    ndots: u32,
+    timeout: u32,
+}
+
+MAXADDRS :: 48
+MAXSERVS :: 2
+
+__lookup_serv :: proc(buf: *service, name: *const u8, proto: i32, socktype: i32, flags: i32) i32
+__lookup_name :: proc(buf: *address, canon: *u8, name: *const u8, family: i32, flags: i32) i32
+__lookup_ipliteral :: proc(buf: *address, name: *const u8, family: i32) i32
+
+__get_resolv_conf :: proc(conf: *resolvconf, search: *u8, search_sz: usize) i32
+__res_msend_rc :: proc(nqueries: i32, queries: *const *const u8, qlens: *const i32, answers: **u8, alens: *i32, asize: i32, conf: *const resolvconf) i32
+__dns_parse :: proc(packet: *const u8, plen: i32, cb: proc(*void, i32, *const void, i32, *const void, i32) i32, ctx: *void) i32

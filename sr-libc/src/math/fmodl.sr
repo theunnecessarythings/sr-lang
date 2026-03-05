@@ -1,0 +1,79 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/fmodl.c (113-bit path).
+
+basic :: import "libc/src/math/basic"
+
+fmodl :: proc(x: f128, y: f128) f128 {
+    ux := x.^u128
+    uy := y.^u128
+    ex := ((ux >> 112) & 0x7fff).(i32)
+    ey := ((uy >> 112) & 0x7fff).(i32)
+    sx := ux & (1u128 << 127)
+
+    if y == 0.0 or basic.isnanl(y) or ex == 0x7fff { return (x * y) / (x * y) }
+
+    ax := ux & ((1u128 << 127) - 1)
+    ay := uy & ((1u128 << 127) - 1)
+    if ax <= ay {
+        if ax == ay { return 0.0 * x }
+        return x
+    }
+
+    frac_mask := (1u128 << 112) - 1
+    mx: u128
+    my: u128
+    Ex: i32
+    Ey: i32
+
+    if ex == 0 {
+        mx = ux & frac_mask
+        Ex = 1 - 0x3fff
+        while (mx & (1u128 << 112)) == 0 {
+            mx <<= 1
+            Ex -= 1
+        }
+    } else {
+        mx = (1u128 << 112) | (ux & frac_mask)
+        Ex = ex - 0x3fff
+    }
+    if ey == 0 {
+        my = uy & frac_mask
+        Ey = 1 - 0x3fff
+        while (my & (1u128 << 112)) == 0 {
+            my <<= 1
+            Ey -= 1
+        }
+    } else {
+        my = (1u128 << 112) | (uy & frac_mask)
+        Ey = ey - 0x3fff
+    }
+
+    while Ex > Ey {
+        if mx >= my {
+            if (mx - my) == 0 { return 0.0 * x }
+            mx = mx - my
+        }
+        mx <<= 1
+        Ex -= 1
+    }
+    if mx >= my {
+        if (mx - my) == 0 { return 0.0 * x }
+        mx = mx - my
+    }
+    while (mx & (1u128 << 112)) == 0 {
+        mx <<= 1
+        Ex -= 1
+    }
+
+    if Ex <= -16382 {
+        shift := (-Ex - 16382).(u32)
+        frac := if shift >= 113 { 0 } else { (mx >> shift) }
+        bits := sx | (frac & frac_mask)
+        return bits.^f128
+    }
+
+    exp := (Ex + 0x3fff).(u128)
+    bits := sx | (exp << 112) | (mx & frac_mask)
+    return bits.^f128
+}

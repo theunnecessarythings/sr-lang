@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/include/stdarg.h (builtin-backed).
+
+alltypes :: import "libc/include/alltypes"
+
+va_list :: alltypes.va_list
+__isoc_va_list :: alltypes.__isoc_va_list
+
+va_start :: proc(ap: *va_list) void
+va_end :: proc(ap: *va_list) void
+va_copy :: proc(dst: *va_list, src: *va_list) void
+va_arg :: proc(comptime T: type, ap: *va_list) T

@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/pivot_root.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+pivot_root :: proc(new_root: *const u8, put_old: *const u8) i32 {
+    r := sc.syscall2_ret(nums.SYS_pivot_root.(i64), new_root.^usize.(i64), put_old.^usize.(i64))
+    return r.(i32)
+}

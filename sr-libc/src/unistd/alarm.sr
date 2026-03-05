@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/alarm.c
+
+time_mod :: import "libc/include/sys/time"
+setitimer_mod :: import "libc/src/time/setitimer"
+
+alarm :: proc(seconds: u32) u32 {
+    it: time_mod.itimerval
+    it.it_interval.tv_sec = 0
+    it.it_interval.tv_usec = 0
+    it.it_value.tv_sec = seconds.(i64)
+    it.it_value.tv_usec = 0
+    old: time_mod.itimerval
+    _ = setitimer_mod.setitimer(time_mod.ITIMER_REAL, &it, &old)
+    return old.it_value.tv_sec.(u32) + if old.it_value.tv_usec != 0 { 1 } else { 0 }
+}

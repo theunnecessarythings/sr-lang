@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_mutex_destroy.c
+
+mutex_int :: import "libc/src/thread/pthread_mutex_internal"
+vmlock_mod :: import "libc/src/thread/vmlock"
+
+pthread_mutex_destroy :: proc(mutex: *alltypes.pthread_mutex_t) i32 {
+    if mutex_int.m_type(mutex).* > 128 { vmlock_mod.__vm_wait() }
+    return 0
+}

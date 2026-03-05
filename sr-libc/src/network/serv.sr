@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/serv.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <netdb.h>
+
+endservent :: proc() void {
+}
+
+setservent :: proc(stayopen: i32) void {
+    _ = stayopen
+}
+
+getservent :: proc() *servent { return null }

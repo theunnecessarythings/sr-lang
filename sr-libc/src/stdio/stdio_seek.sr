@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/__stdio_seek.c.
+
+unistd :: import "libc/include/unistd"
+alltypes :: import "libc/include/alltypes"
+
+__stdio_seek :: proc(f: *alltypes.FILE, off: alltypes.off_t, whence: i32) alltypes.off_t {
+    return unistd.lseek(f.fd, off, whence)
+}

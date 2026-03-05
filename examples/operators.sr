@@ -1,6 +1,13 @@
-package operators
+package main
 
-operators::proc() {
+io :: import "std/io"
+
+b2i :: proc(b: bool) i32 {
+  if b { return 1 }
+  return 0
+}
+
+main :: proc() {
 
   // Operators
 
@@ -43,7 +50,7 @@ operators::proc() {
   f %= 2
 
   // Complex number expression
-  z: complex(f32) = 1.5 + 2.5i
+  z: complex(f32) = (1.5 + 2.5i).(complex(f32))
 
   // --- Wrapping and Saturating Operators ---
 
@@ -58,4 +65,31 @@ operators::proc() {
   // These also have compound assignment versions.
   c +|= 10
   d *%= 2
+
+  // Use values so the compiler doesn't optimize them away.
+  io.print("a=%d\n", a)
+  io.print("b=%d\n", b)
+  io.print("c=%d\n", c)
+  io.print("d=%d\n", d)
+  io.print("e=%d\n", e)
+  io.print("eq=%d\n", b2i(eq))
+  io.print("neq=%d\n", b2i(neq))
+  io.print("gt=%d\n", b2i(gt))
+  io.print("lt=%d\n", b2i(lt))
+  io.print("ge=%d\n", b2i(ge))
+  io.print("le=%d\n", b2i(le))
+  io.print("and=%d\n", b2i(and_op))
+  io.print("or=%d\n", b2i(or_op))
+  io.print("bit_and=%d\n", bit_and)
+  io.print("bit_or=%d\n", bit_or)
+  io.print("bit_xor=%d\n", bit_xor)
+  io.print("shl=%d\n", shl)
+  io.print("shr=%d\n", shr)
+  io.print("neg=%d\n", neg)
+  io.print("not=%d\n", b2i(not_op))
+  io.print("f=%d\n", f)
+  io.print("wrapped=%d\n", wrapped_add)
+  io.print("saturated=%d\n", saturated_add)
+  io.print("z.real=%f\n", z.real)
+  io.print("z.imag=%f\n", z.imag)
 }

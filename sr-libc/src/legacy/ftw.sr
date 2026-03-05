@@ -1,0 +1,22 @@
+package libc
+
+// Derived from musl-1.2.5/src/legacy/ftw.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <ftw.h>
+
+// TODO: Manual translation needed - no functions detected
+// Original C code:
+/*
+#include <ftw.h>
+
+int ftw(const char *path, int (*fn)(const char *, const struct stat *, int), int fd_limit)
+{
+	/* The following cast assumes that calling a function with one
+	 * argument more than it needs behaves as expected. This is
+	 * actually undefined, but works on all real-world machines. */
+	return nftw(path, (int (*)())fn, fd_limit, FTW_PHYS);
+}
+
+...
+*/

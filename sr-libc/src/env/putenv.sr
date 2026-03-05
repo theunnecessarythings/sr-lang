@@ -1,0 +1,67 @@
+package libc
+
+// Derived from musl-1.2.5/src/env/putenv.c
+
+string_h :: import "libc/src/string"
+errno_h :: import "libc/include/errno"
+
+extern __environ: **u8
+__strchrnul :: extern proc(*u8, i32) *u8
+unsetenv :: extern proc(*u8) i32
+
+__env_rm_add :: extern proc(*u8, *u8)
+
+__putenv :: proc(s: *u8, l: usize, r: *u8) i32 {
+    i: usize = 0
+    if __environ != 0 {
+        e: **u8 = __environ
+        while e.* != 0 {
+            if string_h.strncmp(s, e.*, l + 1) == 0 {
+                tmp := e.*
+                e.* = s
+                __env_rm_add(tmp, r)
+                return 0
+            }
+            e = e + 1
+            i += 1
+        }
+    }
+    
+    // Need to expand environ
+    oldenv: **u8 = __environ
+    newenv: **u8
+    
+    if __environ == oldenv {
+        newenv = string_h.realloc(oldenv.(* void), (i + 2) * sizeof(**u8)).(**u8)
+        if newenv == 0 {
+            string_h.free(r.(*void))
+            return -1
+        }
+    } else {
+        newenv = string_h.malloc((i + 2) * sizeof(**u8)).(**u8)
+        if newenv == 0 {
+            string_h.free(r.(*void))
+            return -1
+        }
+        if i > 0 {
+            string_h.memcpy(newenv.(*void), __environ.(*void), i * sizeof(**u8))
+        }
+        string_h.free(oldenv.(*void))
+    }
+    
+    newenv[i] = s
+    newenv[i + 1] = 0
+    __environ = newenv
+    if r != 0 {
+        __env_rm_add(0, r)
+    }
+    return 0
+}
+
+putenv :: proc(s: *u8) i32 {
+    l: usize = (__strchrnul(s, '='.(i32)) - s).(usize)
+    if l == 0 || s[l] == 0 {
+        return unsetenv(s)
+    }
+    return __putenv(s, l, 0)
+}

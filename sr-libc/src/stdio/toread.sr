@@ -1,0 +1,23 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/__toread.c.
+
+alltypes :: import "libc/include/alltypes"
+stdio_h :: import "libc/include/stdio"
+impl :: import "libc/src/stdio/stdio_impl"
+
+__toread :: proc(f: *alltypes.FILE) i32 {
+    f.mode = f.mode | (f.mode - 1)
+    if f.wpos.^usize != f.wbase.^usize { _ = f.write(f, (0.(usize)).^*const u8, 0) }
+    f.wpos = (0.(usize)).^*u8
+    f.wbase = (0.(usize)).^*u8
+    f.wend = (0.(usize)).^*u8
+    if (f.flags & impl.F_NORD.(u32)) != 0 {
+        f.flags = f.flags | impl.F_ERR.(u32)
+        return stdio_h.EOF
+    }
+    f.rpos = (f.buf.^usize + f.buf_size).(usize).^*u8
+    f.rend = f.rpos
+    if (f.flags & impl.F_EOF.(u32)) != 0 { return stdio_h.EOF }
+    return 0
+}

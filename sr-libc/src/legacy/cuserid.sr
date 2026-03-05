@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/legacy/cuserid.c
+
+pwd_h :: import "libc/include/pwd"
+unistd_h :: import "libc/include/unistd"
+getpw_mod :: import "libc/src/passwd/getpwent"
+string_h :: import "libc/src/string"
+
+__cuserid_buf: [64]u8
+
+cuserid :: proc(buf: *u8) *u8 {
+    dst := if buf != null { buf } else { &__cuserid_buf[0] }
+    pw := getpw_mod.getpwuid(unistd_h.geteuid())
+    if pw == null { return null }
+    _ = string_h.strlcpy(dst, pw.pw_name, 64)
+    return dst
+}

@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/process/posix_spawn_file_actions_init.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <spawn.h>
+
+posix_spawn_file_actions_init :: proc(fa: *posix_spawn_file_actions_t) i32 {
+    fa.__actions = null
+    return 0
+}

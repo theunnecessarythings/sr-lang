@@ -1,0 +1,36 @@
+package libc
+
+// Derived from musl-1.2.5/src/exit/atexit.c
+
+atexit_func :: ?*fn() void
+
+__atexit_funcs: [32]atexit_func
+__atexit_count: usize = 0
+
+atexit :: proc(func: atexit_func) i32 {
+    if __atexit_count >= 32 { return -1 }
+    __atexit_funcs[__atexit_count] = func
+    __atexit_count += 1
+    return 0
+}
+
+__funcs_on_exit :: proc() void {}
+
+__cxa_finalize :: proc(dso: ?*void) void {
+    _ = dso
+    i := __atexit_count
+    while i > 0 {
+        i -= 1
+        f := __atexit_funcs[i]
+        if f != null {
+            func_ptr := f?
+            func_ptr()
+        }
+    }
+    __atexit_count = 0
+}
+
+call :: proc(p: ?*void) void {
+    f_ptr := (p?).^*fn() void
+    f_ptr()
+}

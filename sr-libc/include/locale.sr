@@ -1,0 +1,56 @@
+package libc
+
+// Derived from musl-1.2.5/include/locale.h
+
+alltypes :: import "libc/include/alltypes"
+
+LC_CTYPE :: 0
+LC_NUMERIC :: 1
+LC_TIME :: 2
+LC_COLLATE :: 3
+LC_MONETARY :: 4
+LC_MESSAGES :: 5
+LC_ALL :: 6
+
+LC_CTYPE_MASK :: 1 << LC_CTYPE
+LC_NUMERIC_MASK :: 1 << LC_NUMERIC
+LC_TIME_MASK :: 1 << LC_TIME
+LC_COLLATE_MASK :: 1 << LC_COLLATE
+LC_MONETARY_MASK :: 1 << LC_MONETARY
+LC_MESSAGES_MASK :: 1 << LC_MESSAGES
+LC_ALL_MASK :: (LC_CTYPE_MASK | LC_NUMERIC_MASK | LC_TIME_MASK | LC_COLLATE_MASK | LC_MONETARY_MASK | LC_MESSAGES_MASK)
+
+lconv :: struct {
+    decimal_point: *u8,
+    thousands_sep: *u8,
+    grouping: *u8,
+    int_curr_symbol: *u8,
+    currency_symbol: *u8,
+    mon_decimal_point: *u8,
+    mon_thousands_sep: *u8,
+    mon_grouping: *u8,
+    positive_sign: *u8,
+    negative_sign: *u8,
+    int_frac_digits: i8,
+    frac_digits: i8,
+    p_cs_precedes: i8,
+    p_sep_by_space: i8,
+    n_cs_precedes: i8,
+    n_sep_by_space: i8,
+    p_sign_posn: i8,
+    n_sign_posn: i8,
+    int_p_cs_precedes: i8,
+    int_p_sep_by_space: i8,
+    int_n_cs_precedes: i8,
+    int_n_sep_by_space: i8,
+    int_p_sign_posn: i8,
+    int_n_sign_posn: i8,
+}
+
+setlocale :: proc(cat: i32, name: *const u8) *u8
+localeconv :: proc() *lconv
+
+newlocale :: proc(mask: i32, name: *const u8, loc: alltypes.locale_t) alltypes.locale_t
+duplocale :: proc(loc: alltypes.locale_t) alltypes.locale_t
+freelocale :: proc(loc: alltypes.locale_t) void
+uselocale :: proc(loc: alltypes.locale_t) alltypes.locale_t

@@ -1,0 +1,35 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/modfl.c (113-bit path).
+
+basic :: import "libc/src/math/basic"
+
+TOINT :: 0x1p112
+
+modfl :: proc(x: f128, iptr: *f128) f128 {
+    bits := x.^u128
+    exp := ((bits >> 112) & 0x7fff).(i32) - 0x3fff
+    sign := ((bits >> 127) & 1) != 0
+
+    if exp >= 112 {
+        iptr.* = x
+        if basic.isnanl(x) { return x }
+        return if sign { -0.0 } else { 0.0 }
+    }
+
+    if exp < 0 {
+        iptr.* = if sign { -0.0 } else { 0.0 }
+        return x
+    }
+
+    absx := if sign { -x } else { x }
+    y := absx + TOINT - TOINT - absx
+    if y == 0.0 {
+        iptr.* = x
+        return if sign { -0.0 } else { 0.0 }
+    }
+    if y > 0.0 { y -= 1.0 }
+    if sign { y = -y }
+    iptr.* = x + y
+    return -y
+}

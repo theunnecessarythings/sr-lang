@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/wait4.c (simplified syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+wait4 :: proc(pid: alltypes.pid_t, status: ?*i32, options: i32, ru: ?*rusage) alltypes.pid_t {
+    stp := if status == null { 0 } else { status.^usize }
+    rup := if ru == null { 0 } else { ru.^usize }
+    r := sc.syscall4_ret(nums.SYS_wait4.(i64), pid.(i64), stp.(i64), options.(i64), rup.(i64))
+    return r.(alltypes.pid_t)
+}

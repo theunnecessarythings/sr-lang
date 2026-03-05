@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/sem_init.c
+
+errno_mod :: import "libc/include/errno"
+
+SEM_VALUE_MAX :: 0x7fffffff
+
+sem_init :: proc(sem: *sem_t, pshared: i32, value: u32) i32 {
+    if value > SEM_VALUE_MAX.(u32) {
+        errno_mod.errno().* = errno_mod.EINVAL
+        return -1
+    }
+    sem.__val[0] = value.(i32)
+    sem.__val[1] = 0
+    sem.__val[2] = if pshared != 0 { 0 } else { 128 }
+    return 0
+}

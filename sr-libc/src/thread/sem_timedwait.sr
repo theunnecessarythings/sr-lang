@@ -1,0 +1,38 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/sem_timedwait.c
+
+atomic :: import "libc/src/internal/atomic"
+errno_mod :: import "libc/include/errno"
+alltypes :: import "libc/include/alltypes"
+time_mod :: import "libc/src/time/time"
+
+cleanup :: proc(p: *void) void {
+    atomic.a_dec(p.^*i32)
+}
+
+sem_timedwait :: proc(sem: *sem_t, at: *const timespec) i32 {
+    pthread_testcancel()
+
+    if sem_trywait(sem) == 0 { return 0 }
+
+    spins: i32 = 100
+    while spins > 0 && (sem.__val[0] & 0x7fffffff) == 0 && sem.__val[1] == 0 {
+        atomic.a_spin()
+        spins -= 1
+    }
+
+    while sem_trywait(sem) != 0 {
+        priv := sem.__val[2]
+        atomic.a_inc(&sem.__val[1])
+        _ = atomic.a_cas(&sem.__val[0], 0, 0x80000000)
+        ts := if at == null { null } else { at.^*const alltypes.timespec }
+        r := __timedwait_cp(&sem.__val[0], 0x80000000, time_mod.CLOCK_REALTIME, ts, priv)
+        atomic.a_dec(&sem.__val[1])
+        if r != 0 {
+            errno_mod.errno().* = r
+            return -1
+        }
+    }
+    return 0
+}

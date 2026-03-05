@@ -1,0 +1,53 @@
+package libc
+
+// Derived from musl-1.2.5/src/crypt/crypt_md5.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <string.h>
+// #include <stdint.h>
+
+rol :: proc(n: uint32_t, k: i32) uint32_t {
+    // TODO: Translate function body
+    unreachable
+}
+
+processblock :: proc(s: struct md5, buf: uint8_t) void {
+    // TODO: Translate function body
+    unreachable
+}
+
+pad :: proc(s: struct md5) void {
+    // TODO: Translate function body
+    unreachable
+}
+
+md5_init :: proc(s: struct md5) void {
+    // TODO: Translate function body
+    unreachable
+}
+
+md5_sum :: proc(s: struct md5, md: uint8_t) void {
+    // TODO: Translate function body
+    unreachable
+}
+
+md5_update :: proc(s: struct md5, m: void, len: u64) void {
+    // TODO: Translate function body
+    unreachable
+}
+
+to64 :: proc(s: u8, u: u32, n: i32) u8 {
+    // TODO: Translate function body
+    unreachable
+}
+
+md5crypt :: proc(key: u8, setting: u8, output: u8) u8 {
+    // TODO: Translate function body
+    unreachable
+}
+
+__crypt_md5 :: proc(key: u8, setting: u8, output: u8) u8 {
+    // TODO: Translate function body
+    unreachable
+}
+

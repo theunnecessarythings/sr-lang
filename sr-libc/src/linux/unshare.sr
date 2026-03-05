@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/unshare.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+unshare :: proc(flags: i32) i32 {
+    r := sc.syscall1_ret(nums.SYS_unshare.(i64), flags.(i64))
+    return r.(i32)
+}

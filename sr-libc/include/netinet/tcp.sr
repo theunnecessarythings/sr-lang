@@ -1,0 +1,5 @@
+package libc
+
+// Derived from musl-1.2.5/include/netinet/tcp.h (minimal subset).
+
+TCP_FASTOPEN_CONNECT :: 30

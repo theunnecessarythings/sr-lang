@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/mlock2.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+mlock2 :: proc(addr: *void, len: usize, flags: u32) i32 {
+    r := sc.syscall3_ret(nums.SYS_mlock2.(i64), addr.^usize.(i64), len.(i64), flags.(i64))
+    return r.(i32)
+}

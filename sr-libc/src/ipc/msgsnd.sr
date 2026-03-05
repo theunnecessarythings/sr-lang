@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/ipc/msgsnd.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/msg.h>
+// #include <syscall.h>
+// #include <ipc.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+msgsnd :: proc(q: i32, m: *const void, len: usize, flag: i32) i32 {
+    return sc.syscall4_ret(nums.SYS_msgsnd.(i64), q.(i64), m.^usize.(i64), len.(i64), flag.(i64)).(i32)
+}

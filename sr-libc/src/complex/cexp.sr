@@ -1,0 +1,47 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/cexp.c
+
+impl :: import "libc/src/complex/complex_impl"
+ldexp_mod :: import "libc/src/complex/__cexp"
+
+exp_ovfl :: u32 = 0x40862e42
+cexp_ovfl :: u32 = 0x4096b8e4
+
+cexp :: proc(z: complex(f64)) complex(f64) {
+    x := z.real
+    y := z.imag
+    hx: u32 = 0
+    hy: u32 = 0
+    lx: u32 = 0
+    ly: u32 = 0
+
+    impl.get_f64_words(y, &hy, &ly)
+    hy &= 0x7fffffff
+
+    if (hy | ly) == 0 {
+        return impl.cmplx(exp(x), y)
+    }
+
+    impl.get_f64_words(x, &hx, &lx)
+    if (((hx & 0x7fffffff) | lx) == 0 {
+        return impl.cmplx(cos(y), sin(y))
+    }
+
+    if hy >= 0x7ff00000 {
+        if lx != 0 or (hx & 0x7fffffff) != 0x7ff00000 {
+            return impl.cmplx(y - y, y - y)
+        } else if (hx & 0x80000000) != 0 {
+            return impl.cmplx(0.0, 0.0)
+        } else {
+            return impl.cmplx(x, y - y)
+        }
+    }
+
+    if hx >= exp_ovfl and hx <= cexp_ovfl {
+        return ldexp_mod.__ldexp_cexp(z, 0)
+    }
+
+    exp_x := exp(x)
+    return impl.cmplx(exp_x * cos(y), exp_x * sin(y))
+}

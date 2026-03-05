@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/termios/cfgetospeed.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <termios.h>
+// #include <sys/ioctl.h>
+
+cfgetospeed :: proc(tio: *const struct termios) speed_t {
+    return (tio.c_cflag & CBAUD).(speed_t)
+}
+
+cfgetispeed :: proc(tio: *const struct termios) speed_t {
+    return cfgetospeed(tio)
+}

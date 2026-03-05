@@ -1,0 +1,8 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdlib/abs.c.
+
+abs :: proc(a: i32) i32 {
+    if a > 0 { return a }
+    return -a
+}

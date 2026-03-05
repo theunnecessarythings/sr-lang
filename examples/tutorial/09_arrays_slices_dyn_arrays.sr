@@ -1,0 +1,27 @@
+package main
+
+io :: import "std/io"
+
+main :: proc() {
+    // Question: How do we create a fixed-size array?
+    // Answer: Use [N]T and array literals.
+    arr: [5]i32 = [10, 20, 30, 40, 50]
+    io.println("len=%d first=%d", arr.len, arr[0])
+
+    // Question: How do slices work?
+    // Answer: They are views into arrays.
+    slice := arr[1 .. 4]
+    io.println("slice_len=%d slice0=%d", slice.len, slice[0])
+
+    // Question: Do slice writes affect the array?
+    // Answer: Yes.
+    slice[0] = 999
+    io.println("arr1=%d", arr[1])
+
+    // Question: What about dynamic arrays?
+    // Answer: Use [dyn]T.
+    dyn_arr: [dyn]i32 = []
+    dyn_arr.append(1)
+    dyn_arr.append(2)
+    io.println("dyn_len=%d", dyn_arr.len)
+}

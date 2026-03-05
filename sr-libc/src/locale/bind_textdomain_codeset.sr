@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/locale/bind_textdomain_codeset.c
+
+bind_textdomain_codeset :: proc(domainname: *const u8, codeset: *const u8) *u8 {
+    _ = domainname
+    if codeset == null {
+        return "UTF-8"
+    }
+    return codeset.^*u8
+}

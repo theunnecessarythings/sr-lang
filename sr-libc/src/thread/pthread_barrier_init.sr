@@ -1,0 +1,19 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_barrier_init.c
+
+errno_mod :: import "libc/include/errno"
+bar_int :: import "libc/src/thread/pthread_barrier_internal"
+
+INT_MAX :: 2147483647
+
+pthread_barrier_init :: proc(b: *pthread_barrier_t, a: *const pthread_barrierattr_t, count: u32) i32 {
+    if count - 1 > (INT_MAX - 1).(u32) { return errno_mod.EINVAL }
+    bar_int.bar_limit(b).* = ((count - 1).(i32) | if a != null { a.__attr.(i32) } else { 0 })
+    bar_int.bar_lock(b).* = 0
+    bar_int.bar_waiters(b).* = 0
+    bar_int.bar_count(b).* = 0
+    bar_int.bar_waiters2(b).* = 0
+    bar_int.bar_inst(b).* = null
+    return 0
+}

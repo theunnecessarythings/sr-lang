@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_setspecific.c
+
+pthread_impl :: import "libc/src/internal/pthread_impl"
+
+pthread_setspecific :: proc(k: alltypes.pthread_key_t, x: *void) i32 {
+    self := pthread_impl.__pthread_self()
+    if self.tsd == null { return 0 }
+    if self.tsd[k.(usize)] != x {
+        self.tsd[k.(usize)] = x
+        self.tsd_used = 1
+    }
+    return 0
+}

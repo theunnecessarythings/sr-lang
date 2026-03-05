@@ -1,0 +1,316 @@
+package libc
+
+// Derived from musl-1.2.5/src/malloc/mallocng/meta.h
+
+glue :: import "libc/src/malloc/mallocng/glue"
+atomic :: import "libc/src/internal/atomic"
+
+// Constants
+MMAP_THRESHOLD :: 131052
+UNIT : usize = 16
+IB : usize = 4
+USIZE_ALL_ONES : usize = (0.(usize) - 1)
+
+// Structs
+// Circular deps: group needs meta, meta needs group.
+// Sr-lang supports fwd reference? Pointers are checks.
+
+group :: struct {
+    meta: *meta,
+    active_idx: u8, // :5
+    pad: [7]u8,
+    storage: [0]u8, // flexible array
+}
+
+meta :: struct {
+    prev: *meta,
+    next: *meta,
+    mem: *group,
+    avail_mask: i32,
+    freed_mask: i32,
+    last_idx: usize, // :5 ... bitfields not directly supported, using usize for now? 
+                     // No, `last_idx:5`. We must pack this if we want exact layout.
+                     // On 64-bit, this struct size matters.
+                     // uintptr_t last_idx:5, freeable:1, sizeclass:6, maplen:8*sizeof-12
+                     // Total 64 bits (uintptr_t).
+                     // We need to emulate bitfields manually or use a u64 standard.
+    // manual bitfield:
+    _packed_info: usize, 
+}
+
+// Helper to access bitfields
+// 0..4: last_idx
+// 5: freeable
+// 6..11: sizeclass
+// 12..63: maplen
+meta_get_last_idx :: proc(m: *meta) usize { return m._packed_info & 31 }
+meta_set_last_idx :: proc(m: *meta, v: usize) void { 
+    m._packed_info = (m._packed_info & (USIZE_ALL_ONES ^ 31)) | (v & 31)
+}
+
+meta_get_freeable :: proc(m: *meta) usize { return (m._packed_info >> 5) & 1 }
+meta_set_freeable :: proc(m: *meta, v: usize) void {
+    m._packed_info = (m._packed_info & (USIZE_ALL_ONES ^ (1.(usize) << 5))) | ((v & 1) << 5)
+}
+
+meta_get_sizeclass :: proc(m: *meta) usize { return (m._packed_info >> 6) & 63 }
+meta_set_sizeclass :: proc(m: *meta, v: usize) void {
+    m._packed_info = (m._packed_info & (USIZE_ALL_ONES ^ (63.(usize) << 6))) | ((v & 63) << 6)
+}
+
+meta_get_maplen :: proc(m: *meta) usize { return m._packed_info >> 12 }
+meta_set_maplen :: proc(m: *meta, v: usize) void {
+    m._packed_info = (m._packed_info & ((1.(usize) << 12) - 1)) | (v << 12)
+}
+
+
+meta_area :: struct {
+    check: u64,
+    next: *meta_area,
+    nslots: i32,
+    slots: [0]meta,
+}
+
+malloc_context :: struct {
+    secret: u64,
+    pagesize: usize,
+    init_done: i32,
+    mmap_counter: u32,
+    free_meta_head: *meta,
+    avail_meta: *meta,
+    avail_meta_count: usize,
+    avail_meta_area_count: usize,
+    meta_alloc_shift: usize,
+    meta_area_head: *meta_area,
+    meta_area_tail: *meta_area,
+    avail_meta_areas: *u8,
+    active: [48]*meta,
+    usage_by_class: [48]usize,
+    unmap_seq: [32]u8,
+    bounces: [32]u8,
+    seq: u8,
+    brk: usize,
+}
+
+// Global context
+ctx: malloc_context
+
+queue :: proc(phead: **meta, m: *meta) void {
+    // assert(!m.next)
+    // assert(!m.prev)
+    if phead.*.^usize != 0 {
+        head := phead.*
+        m.next = head
+        m.prev = head.prev
+        m.next.*.prev = m
+        m.prev.*.next = m
+    } else {
+        m.prev = m
+        m.next = m
+        phead.* = m
+    }
+}
+
+dequeue :: proc(phead: **meta, m: *meta) void {
+    if m.next.^usize != m.^usize {
+        m.prev.*.next = m.next
+        m.next.*.prev = m.prev
+        if phead.*.^usize == m.^usize { phead.* = m.next }
+    } else {
+        phead.* = (0.(usize)).^*meta
+    }
+    m.prev = (0.(usize)).^*meta
+    m.next = (0.(usize)).^*meta
+}
+
+dequeue_head :: proc(phead: **meta) *meta {
+    m := phead.*
+    if m.^usize != 0 { dequeue(phead, m) }
+    return m
+}
+
+// free_meta needs ctx
+free_meta :: proc(m: *meta) void {
+    m.prev = (0.(usize)).^*meta
+    m.next = (0.(usize)).^*meta
+    m.mem = (0.(usize)).^*group
+    m.avail_mask = 0
+    m.freed_mask = 0
+    m.last_idx = 0
+    m._packed_info = 0
+    queue(&ctx.free_meta_head, m)
+}
+
+activate_group :: proc(m: *meta) u32 {
+    mask: u32
+    act: u32 = (2 << m.mem.active_idx) - 1
+    
+    // CAS loop
+    // do mask = m->freed_mask; while (a_cas(&m->freed_mask, mask, mask&~act)!=mask);
+    while true {
+        mask = m.freed_mask.(u32)
+        if atomic.a_cas(&m.freed_mask, mask.(i32), (mask & (0xffff_ffff ^ act)).(i32)).(u32) == mask {
+            break
+        }
+    }
+    m.avail_mask = (mask & act).(i32)
+    return m.avail_mask.(u32)
+}
+
+// Additional helpers from meta.h
+
+get_slot_index :: proc(p: *const u8) i32 {
+    return (((p.^usize - 3).(usize).^*u8).* & 31).(i32)
+}
+
+// get_meta()
+get_meta :: proc(p: *const u8) *meta {
+    // assert(!((uintptr_t)p & 15));
+    offset: u16 = ((p.^usize - 2).(usize).^*u16).*
+    slot_idx := get_slot_index(p)
+    _ = slot_idx
+    if ((p.^usize - 4).(usize).^*u8).* != 0 {
+        // assert(!offset);
+        off32 := ((p.^usize - 8).(usize).^*u32).*
+        offset = off32.(u16)
+        // assert(offset > 0xffff);
+    }
+    
+    // const struct group *base = (const void *)(p - UNIT*offset - UNIT);
+    base := (p.^usize - (UNIT * offset.(usize)) - UNIT).(usize).^*group
+    m := base.meta
+    
+    // asserts...
+    return m
+}
+
+get_stride :: proc(g: *meta) usize {
+    if meta_get_last_idx(g) == 0 and meta_get_maplen(g) != 0 {
+        return meta_get_maplen(g) * 4096 - UNIT
+    } else {
+        return UNIT * glue.size_classes[meta_get_sizeclass(g)].(usize)
+    }
+}
+
+set_size :: proc(p: *u8, end: *u8, n: usize) void {
+    reserved: isize = (end.^isize - p.^isize - n.(isize))
+    if reserved != 0 { ((end.^usize - reserved.(usize)).(usize).^*u8).* = 0 }
+    
+    if reserved >= 5 {
+        ((end.^usize - 4).(usize).^*u32).* = reserved.(u32)
+        ((end.^usize - 5).(usize).^*u8).* = 0
+        reserved = 5.(isize)
+    }
+    
+    ((p.^usize - 3).(usize).^*u8).* = ((((p.^usize - 3).(usize).^*u8).* & 31) + (reserved.(u8) << 5))
+}
+
+enframe :: proc(g: *meta, idx: i32, n: usize, ctr: i32) *u8 {
+    stride := get_stride(g)
+    slack := (stride - IB - n) / UNIT
+    p := ((&g.mem.storage[0]).^usize + stride * idx.(usize)).(usize).^*u8
+    end := (p.^usize + stride - IB).(usize).^*u8
+    
+    off_val: u16 = 0
+    if ((p.^usize - 3).(usize).^*u8).* != 0 {
+        off_val = ((p.^usize - 2).(usize).^*u16).* + 1
+    } else {
+        off_val = ctr.(u16)
+    }
+    off: i32 = off_val.(i32) & 255
+    
+    if off > slack.(i32) {
+        m: usize = slack
+        m |= m >> 1; m |= m >> 2; m |= m >> 4
+        off &= m.(i32)
+        if off > slack.(i32) { off -= slack.(i32) + 1 }
+    }
+    
+    if off != 0 {
+        ((p.^usize - 2).(usize).^*u16).* = off.(u16)
+        ((p.^usize - 3).(usize).^*u8).* = 7 << 5 // reserved code?
+        p = (p.^usize + UNIT * off.(usize)).(usize).^*u8
+        ((p.^usize - 4).(usize).^*u8).* = 0
+    }
+    
+    ((p.^usize - 2).(usize).^*u16).* = ((p.^usize - (&g.mem.storage[0]).^usize) / UNIT).(u16)
+    ((p.^usize - 3).(usize).^*u8).* = idx.(u8)
+    set_size(p, end, n)
+    return p
+}
+
+size_to_class :: proc(n: usize) i32 {
+    sz := (n + IB - 1) >> 4
+    if sz < 10 { return sz.(i32) }
+    
+    sz = sz + 1
+    i: i32 = (28 - atomic.a_clz_32(sz.(u32))) * 4 + 8
+    
+    if sz > glue.size_classes[i + 1].(usize) { i += 2 }
+    if sz > glue.size_classes[i].(usize) { i += 1 }
+    return i
+}
+
+// Sequence management helpers
+
+step_seq :: proc() void {
+    if ctx.seq == 255 {
+        i: i32 = 0
+        while i < 32 {
+            ctx.unmap_seq[i] = 0
+            i += 1
+        }
+        ctx.seq = 1
+    } else {
+        ctx.seq += 1
+    }
+}
+
+record_seq :: proc(sc: i32) void {
+    if (sc - 7) < 32 {
+        ctx.unmap_seq[(sc - 7).(usize)] = ctx.seq
+    }
+}
+
+account_bounce :: proc(sc: i32) void {
+    if (sc - 7) < 32 {
+        seq := ctx.unmap_seq[(sc - 7).(usize)]
+        if seq != 0 and (ctx.seq - seq) < 10 {
+            if ctx.bounces[(sc - 7).(usize)] + 1 < 100 {
+                ctx.bounces[(sc - 7).(usize)] += 1
+            } else {
+                ctx.bounces[(sc - 7).(usize)] = 150
+            }
+        }
+    }
+}
+
+decay_bounces :: proc(sc: usize) void {
+    if (sc - 7) < 32 and ctx.bounces[(sc - 7).(usize)] != 0 {
+        ctx.bounces[(sc - 7).(usize)] -= 1
+    }
+}
+
+is_bouncing :: proc(sc: i32) i32 {
+    if (sc - 7) < 32 and ctx.bounces[(sc - 7).(usize)] >= 100 { return 1 }
+    return 0
+}
+
+is_allzero :: proc(p: *void) i32 {
+    g := get_meta(p.^*u8)
+    if meta_get_sizeclass(g) >= 48 or get_stride(g) < UNIT * glue.size_classes[meta_get_sizeclass(g)].(usize) { return 1 }
+    return 0
+}
+
+size_overflows :: proc(n: usize) i32 {
+    if n > (USIZE_ALL_ONES - IB - UNIT) { return 1 }
+    return 0
+}
+
+get_nominal_size :: proc(p: *u8, end: *u8) usize {
+    reserved := ((((p.^usize - 3).(usize).^*u8).* >> 5) & 7).(usize)
+    if reserved == 5 {
+        reserved = ((end.^usize - 4).(usize).^*u32).*.(usize)
+    }
+    return (end.^usize - p.^usize - reserved).(usize)
+}

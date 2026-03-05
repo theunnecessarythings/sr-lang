@@ -1,0 +1,25 @@
+package libc
+
+// Derived from musl-1.2.5/include/utmpx.h (minimal).
+
+utmpx :: struct {
+    ut_type: i16,
+    ut_pid: i32,
+    ut_line: [32]u8,
+    ut_id: [4]u8,
+    ut_user: [32]u8,
+    ut_host: [256]u8,
+    ut_exit: [2]i16,
+    ut_session: i32,
+    ut_tv: timespec,
+    ut_addr_v6: [4]i32,
+    __unused: [20]u8,
+}
+
+getutxent :: proc() *utmpx
+getutxid :: proc(ut: *const utmpx) *utmpx
+getutxline :: proc(ut: *const utmpx) *utmpx
+pututxline :: proc(ut: *const utmpx) *utmpx
+setutxent :: proc() void
+endutxent :: proc() void
+updwtmpx :: proc(f: *const u8, u: *const utmpx) void

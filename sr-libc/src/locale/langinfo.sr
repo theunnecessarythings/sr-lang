@@ -1,0 +1,20 @@
+package libc
+
+// Derived from musl-1.2.5/src/locale/langinfo.c
+
+langinfo_h :: import "libc/include/langinfo"
+loc_impl :: import "libc/src/locale/locale_impl"
+
+__nl_langinfo_l :: proc(item: langinfo_h.nl_item, loc: locale_t) *u8 {
+    if item == langinfo_h.CODESET {
+        if loc == (&loc_impl.__c_dot_utf8_locale).^*void {
+            return "UTF-8"
+        }
+        return "ASCII"
+    }
+    return ""
+}
+
+__nl_langinfo :: proc(item: langinfo_h.nl_item) *u8 {
+    return __nl_langinfo_l(item, loc_impl.__current_locale)
+}

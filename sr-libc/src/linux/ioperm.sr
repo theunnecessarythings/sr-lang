@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/ioperm.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+ioperm :: proc(from: u64, num: u64, turn_on: i32) i32 {
+    r := sc.syscall3_ret(nums.SYS_ioperm.(i64), from.(i64), num.(i64), turn_on.(i64))
+    return r.(i32)
+}

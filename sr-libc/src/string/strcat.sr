@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/strcat.c (portable loop).
+
+strcat :: proc(dest: *u8, src: *const u8) *u8 {
+    i: usize = 0
+    while dest[i] != 0 { i += 1 }
+    j: usize = 0
+    while true {
+        dest[i + j] = src[j]
+        if src[j] == 0 { break }
+        j += 1
+    }
+    return dest
+}

@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/explicit_bzero.c.
+
+explicit_bzero :: proc(s: *void, n: usize) void {
+    p := s.^*u8
+    i: usize = 0
+    while i < n {
+        p[i] = 0
+        i += 1
+    }
+}

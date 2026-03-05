@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/symlinkat.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+symlinkat :: proc(target: *const u8, newdirfd: i32, linkpath: *const u8) i32 {
+    r := sc.syscall3_ret(nums.SYS_symlinkat.(i64), target.^usize.(i64), newdirfd.(i64), linkpath.^usize.(i64))
+    return r.(i32)
+}

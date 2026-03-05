@@ -1,0 +1,24 @@
+package libc
+
+// Derived from musl-1.2.5/src/legacy/ulimit.c
+
+errno_h :: import "libc/include/errno"
+ul_h :: import "libc/include/ulimit"
+res_h :: import "libc/include/sys/resource"
+prlimit_mod :: import "libc/src/linux/prlimit"
+
+ulimit :: proc(cmd: i32, arg: i64) i64 {
+    rl: res_h.rlimit
+    if cmd == ul_h.UL_GETFSIZE {
+        if prlimit_mod.prlimit(0, res_h.RLIMIT_FSIZE, null, &rl) < 0 { return -1 }
+        return (rl.rlim_cur / 512).(i64)
+    }
+    if cmd == ul_h.UL_SETFSIZE {
+        rl.rlim_cur = (arg * 512).(u64)
+        rl.rlim_max = rl.rlim_cur
+        if prlimit_mod.prlimit(0, res_h.RLIMIT_FSIZE, &rl, null) < 0 { return -1 }
+        return arg
+    }
+    errno_h.errno().* = errno_h.EINVAL
+    return -1
+}

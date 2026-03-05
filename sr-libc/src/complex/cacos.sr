@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/cacos.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+pi_2 :: 1.57079632679489661923
+
+cacos :: proc(z: complex(f64)) complex(f64) {
+    z = casin(z)
+    return impl.cmplx(pi_2 - z.real, -z.imag)
+}

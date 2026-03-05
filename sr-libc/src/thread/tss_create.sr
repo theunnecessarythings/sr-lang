@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/tss_create.c
+
+key_mod :: import "libc/src/thread/pthread_key_create"
+
+thrd_success :: 0
+thrd_error :: 2
+
+tss_create :: proc(tss: *tss_t, dtor: tss_dtor_t) i32 {
+    return if key_mod.__pthread_key_create(tss.^*alltypes.pthread_key_t, dtor) != 0 {
+        thrd_error
+    } else {
+        thrd_success
+    }
+}

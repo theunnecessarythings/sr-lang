@@ -1,0 +1,41 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/catan.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+DP1 :: 3.14159265160560607910
+DP2 :: 1.98418714791870343106e-9
+DP3 :: 1.14423774522196636802e-17
+pi :: 3.14159265358979323846264338327950288
+
+redup :: proc(x: f64) f64 {
+    t := x / pi
+    if t >= 0.0 {
+        t += 0.5
+    } else {
+        t -= 0.5
+    }
+    i := t.(i64)
+    t = i.(f64)
+    t = ((x - t * DP1) - t * DP2) - t * DP3
+    return t
+}
+
+catan :: proc(z: complex(f64)) complex(f64) {
+    x := z.real
+    y := z.imag
+
+    x2 := x * x
+    a := 1.0 - x2 - (y * y)
+
+    t := 0.5 * atan2(2.0 * x, a)
+    w := redup(t)
+
+    t = y - 1.0
+    a = x2 + (t * t)
+
+    t = y + 1.0
+    a = (x2 + t * t) / a
+    return impl.cmplx(w, 0.25 * log(a))
+}

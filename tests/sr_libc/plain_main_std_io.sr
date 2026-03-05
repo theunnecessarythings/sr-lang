@@ -1,0 +1,7 @@
+package main
+
+io :: import "std/io"
+
+main :: proc() {
+    io.println("std io plain main", 0)
+}

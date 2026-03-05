@@ -1,0 +1,86 @@
+package libc
+
+// Derived from musl-1.2.5/src/process/execvp.c
+
+errno_mod :: import "libc/include/errno"
+getenv_mod :: import "libc/src/env/getenv"
+strchr_mod :: import "libc/src/string/strchr"
+strchrnul_mod :: import "libc/src/string/strchrnul"
+strnlen_mod :: import "libc/src/string/strnlen"
+memcpy_mod :: import "libc/src/string/memcpy"
+
+extern __environ: **u8
+
+NAME_MAX :: 255
+PATH_MAX :: 4096
+
+__execvpe :: proc(file: *const u8, argv: **u8, envp: **u8) i32 {
+    if file == null or file[0] == 0 {
+        errno_mod.errno().* = errno_mod.ENOENT
+        return -1
+    }
+
+    if strchr_mod.strchr(file, '/'.(i32)) != null {
+        return execve(file, argv, envp)
+    }
+
+    path := getenv_mod.getenv("PATH")
+    if path == null { path = "/usr/local/bin:/bin:/usr/bin" }
+
+    k := strnlen_mod.strnlen(file, (NAME_MAX + 1).(usize))
+    if k > NAME_MAX {
+        errno_mod.errno().* = errno_mod.ENAMETOOLONG
+        return -1
+    }
+
+    l := strnlen_mod.strnlen(path, (PATH_MAX - 1).(usize)) + 1
+    seen_eacces := 0
+    errno_mod.errno().* = errno_mod.ENOENT
+
+    buf: [PATH_MAX + NAME_MAX + 2]u8
+    p := path
+
+    while true {
+        z := strchrnul_mod.strchrnul(p, ':'.(i32))
+        if (z.^usize - p.^usize) >= l {
+            if z[0] == 0 { break }
+            p = (&z[1]).^*u8
+            continue
+        }
+
+        n := (z.^usize - p.^usize).(usize)
+        if n != 0 {
+            _ = memcpy_mod.memcpy((&buf[0]).^*void, p.^*const void, n)
+        }
+        buf[n] = '/'
+        off := n
+        if z > p { off = n + 1 }
+        _ = memcpy_mod.memcpy((&buf[off]).^*void, file.^*const void, k + 1)
+
+        _ = execve((&buf[0]).^*const u8, argv, envp)
+        switch errno_mod.errno().* {
+            errno_mod.EACCES => {
+                seen_eacces = 1
+            },
+            errno_mod.ENOENT => {},
+            errno_mod.ENOTDIR => {},
+            else => {
+                return -1
+            },
+        }
+
+        if z[0] == 0 { break }
+        p = (&z[1]).^*u8
+    }
+
+    if seen_eacces != 0 { errno_mod.errno().* = errno_mod.EACCES }
+    return -1
+}
+
+execvp :: proc(file: *const u8, argv: **u8) i32 {
+    return __execvpe(file, argv, __environ)
+}
+
+execvpe :: proc(file: *const u8, argv: **u8, envp: **u8) i32 {
+    return __execvpe(file, argv, envp)
+}

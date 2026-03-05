@@ -83,6 +83,7 @@ pub const DiagnosticCode = enum {
     expected_identifier,
     expected_expression_after_operator,
     expected_type_in_declaration,
+    expected_type_expression,
     expected_field_name_or_index,
     expected_closure_param_separator,
     closure_capture_not_supported,
@@ -213,6 +214,9 @@ pub const DiagnosticCode = enum {
     return_type_mismatch,
     break_outside_loop,
     continue_outside_loop,
+    continue_requires_value,
+    continue_value_not_allowed,
+    continue_value_type_mismatch,
     defer_outside_function,
     errdefer_outside_function,
     errdefer_in_non_error_function,
@@ -307,6 +311,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .expected_identifier => "expected identifier, found {s}",
         .expected_expression_after_operator => "expected expression after operator {s}",
         .expected_type_in_declaration => "expected '=' or '::' after type in declaration, found {s}",
+        .expected_type_expression => "expected type expression, found {s}",
         .expected_field_name_or_index => "expected identifier or integer after '.', found {s}",
         .expected_closure_param_separator => "expected ',' or '|' after closure parameter, found {s}",
         .closure_capture_not_supported => "closure captures are not supported yet",
@@ -436,6 +441,9 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .return_type_mismatch => "return type mismatch: expected {s}, found {s}",
         .break_outside_loop => "'break' used outside of a loop",
         .continue_outside_loop => "'continue' used outside of a loop",
+        .continue_requires_value => "'continue' in labeled match requires a value",
+        .continue_value_not_allowed => "'continue' value is only allowed in labeled match",
+        .continue_value_type_mismatch => "'continue' value type mismatch: expected {s}, found {s}",
         .defer_outside_function => "'defer' only valid inside a function",
         .errdefer_outside_function => "'errdefer' only valid inside a function",
         .errdefer_in_non_error_function => "'errdefer' only valid in functions returning an error union",
@@ -893,8 +901,13 @@ pub const Diagnostics = struct {
             var num_pad: [16]u8 = .{' '} ** 16;
             const p = if (width > digits(line_no)) width - digits(line_no) else 0;
 
-            try writer.print("{s}{d} \x1b[36m▌\x1b[0m {s}\n", .{ num_pad[0..p], line_no, line_slice });
-            try writer.print(" {s}\x1b[36m▌\x1b[0m ", .{num_pad[0..pad]});
+            if (color) {
+                try writer.print("{s}{d} \x1b[36m▌\x1b[0m {s}\n", .{ num_pad[0..p], line_no, line_slice });
+                try writer.print(" {s}\x1b[36m▌\x1b[0m ", .{num_pad[0..pad]});
+            } else {
+                try writer.print("{s}{d} | {s}\n", .{ num_pad[0..p], line_no, line_slice });
+                try writer.print(" {s}| ", .{num_pad[0..pad]});
+            }
 
             var i: usize = 0;
             while (i < lc.col) : (i += 1) try writer.writeByte(' ');
@@ -910,11 +923,19 @@ pub const Diagnostics = struct {
             while (nid != NO_NOTE) {
                 if (nid >= self.notes.items.len) break;
                 const n = self.notes.items[nid];
-                try writer.print(" {s}= \x1b[34mnote[{s}]\x1b[0m: ", .{ num_pad[0..pad], @tagName(n.code) });
+                if (color) {
+                    try writer.print(" {s}= \x1b[34mnote[{s}]\x1b[0m: ", .{ num_pad[0..pad], @tagName(n.code) });
+                } else {
+                    try writer.print(" {s}= note[{s}]: ", .{ num_pad[0..pad], @tagName(n.code) });
+                }
                 try writeInterpolated(writer, diagnosticNoteFmt(n.code), n.payload, ctx);
                 if (n.loc) |nl| {
                     const nlc = lineCol(src, nl.start);
-                    try writer.print(" (at \x1b[36m{d}:{d}\x1b[0m)", .{ nlc.line + 1, nlc.col + 1 });
+                    if (color) {
+                        try writer.print(" (at \x1b[36m{d}:{d}\x1b[0m)", .{ nlc.line + 1, nlc.col + 1 });
+                    } else {
+                        try writer.print(" (at {d}:{d})", .{ nlc.line + 1, nlc.col + 1 });
+                    }
                 }
                 try writer.writeByte('\n');
                 nid = n.next_note;

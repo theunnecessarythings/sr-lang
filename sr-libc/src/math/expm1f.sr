@@ -1,0 +1,100 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/expm1f.c.
+
+libm :: import "libc/src/math/libm_internal"
+
+ln2_hi :: 6.9313812256e-01
+ln2_lo :: 9.0580006145e-06
+invln2 :: 1.4426950216e+00
+Q1 :: -3.3333212137e-2
+Q2 ::  1.5807170421e-3
+
+expm1f :: proc(x: f32) f32 {
+    y: f32
+    hi: f32
+    lo: f32
+    c: f32
+    t: f32
+    e: f32
+    hxs: f32
+    hfx: f32
+    r1: f32
+    twopk: f32
+
+    u := libm.asuint(x)
+    hx := u & 0x7fffffff
+    k: i32
+    sign := u >> 31
+
+    if hx >= 0x4195b844 {
+        if hx > 0x7f800000 { return x }
+        if sign != 0 { return -1.0f }
+        if hx > 0x42b17217 {
+            x = x * 0x1p127f
+            return x
+        }
+    }
+
+    if hx > 0x3eb17218 {
+        if hx < 0x3f851592 {
+            if sign == 0 {
+                hi = x - ln2_hi
+                lo = ln2_lo
+                k = 1
+            } else {
+                hi = x + ln2_hi
+                lo = -ln2_lo
+                k = -1
+            }
+        } else {
+            k = (invln2 * x + if sign != 0 { -0.5f } else { 0.5f }).(i32)
+            t = k.(f32)
+            hi = x - t * ln2_hi
+            lo = t * ln2_lo
+        }
+        x = hi - lo
+        c = (hi - x) - lo
+    } else if hx < 0x33000000 {
+        if hx < 0x00800000 { libm.fp_force_evalf(x * x) }
+        return x
+    } else {
+        k = 0
+        c = 0.0f
+    }
+
+    hfx = 0.5f * x
+    hxs = x * hfx
+    r1 = 1.0f + hxs * (Q1 + hxs * Q2)
+    t = 3.0f - r1 * hfx
+    e = hxs * ((r1 - t) / (6.0f - x * t))
+    if k == 0 { return x - (x * e - hxs) }
+    e = x * (e - c) - c
+    e -= hxs
+
+    if k == -1 { return 0.5f * (x - e) - 0.5f }
+    if k == 1 {
+        if x < -0.25f { return -2.0f * (e - (x + 0.5f)) }
+        return 1.0f + 2.0f * (x - e)
+    }
+
+    u = (0x7f + k).(u32) << 23
+    twopk = libm.asfloat(u)
+    if k < 0 or k > 56 {
+        y = x - e + 1.0f
+        if k == 128 {
+            y = y * 2.0f * 0x1p127f
+        } else {
+            y = y * twopk
+        }
+        return y - 1.0f
+    }
+
+    u = (0x7f - k).(u32) << 23
+    if k < 23 {
+        y = (x - e + (1.0f - libm.asfloat(u))) * twopk
+    } else {
+        y = (x - (e + libm.asfloat(u)) + 1.0f) * twopk
+    }
+    return y
+}

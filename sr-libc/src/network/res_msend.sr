@@ -1,0 +1,382 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/res_msend.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <netinet/in.h>
+// #include <netinet/tcp.h>
+// #include <netdb.h>
+// #include <arpa/inet.h>
+// #include <stdint.h>
+// #include <string.h>
+// #include <poll.h>
+// #include <time.h>
+// #include <ctype.h>
+// #include <unistd.h>
+// #include <errno.h>
+// #include <pthread.h>
+// #include <stdio_impl.h>
+// #include <syscall.h>
+// #include <lookup.h>
+
+poll_h :: import "libc/include/poll"
+alltypes :: import "libc/include/alltypes"
+errno_mod :: import "libc/include/errno"
+string_h :: import "libc/src/string"
+socket_mod :: import "libc/src/network/socket"
+sendmsg_mod :: import "libc/src/network/sendmsg"
+recvmsg_mod :: import "libc/src/network/recvmsg"
+sendto_mod :: import "libc/src/network/sendto"
+connect_mod :: import "libc/src/network/connect"
+bind_mod :: import "libc/src/network/bind"
+setsockopt_mod :: import "libc/src/network/setsockopt"
+close_mod :: import "libc/src/unistd/close"
+poll_mod :: import "libc/src/select/poll"
+clock_gettime_mod :: import "libc/src/time/time"
+pthread_cancel_mod :: import "libc/src/thread/pthread_setcancelstate"
+malloc_mod :: import "libc/src/malloc/malloc"
+free_mod :: import "libc/src/malloc/free"
+lookup_h :: import "libc/include/lookup"
+in_h :: import "libc/include/netinet/in"
+tcp_h :: import "libc/include/netinet/tcp"
+
+CLOCK_MONOTONIC :: 1
+CLOCK_REALTIME :: 0
+
+cleanup :: proc(p: *poll_h.pollfd) void {
+    i: usize = 0
+    while p[i].fd >= -1 {
+        if p[i].fd >= 0 { _ = close_mod.close(p[i].fd) }
+        i += 1
+    }
+}
+
+mtime :: proc() u64 {
+    ts: alltypes.timespec
+    if clock_gettime_mod.__clock_gettime(CLOCK_MONOTONIC, &ts) < 0 && errno_mod.errno().* == errno_mod.ENOSYS {
+        _ = clock_gettime_mod.__clock_gettime(CLOCK_REALTIME, &ts)
+    }
+    return ts.tv_sec.(u64) * 1000 + (ts.tv_nsec / 1000000).(u64)
+}
+
+start_tcp :: proc(pfd: *poll_h.pollfd, family: i32, sa: *const void, sl: socklen_t, q: *const u8, ql: i32) i32 {
+    lenbuf: [2]u8 = [2]u8{ (ql >> 8).(u8), ql.(u8) }
+    iov: [2]iovec = [2]iovec{
+        iovec{ iov_base: (&lenbuf[0]).^*void, iov_len: 2 },
+        iovec{ iov_base: q.^*void, iov_len: ql.(usize) },
+    }
+    mh: msghdr = {
+        msg_name: sa.^*void,
+        msg_namelen: sl,
+        msg_iov: &iov[0],
+        msg_iovlen: 2,
+        msg_control: null,
+        msg_controllen: 0,
+        msg_flags: 0,
+    }
+
+    fd := socket_mod.socket(family, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)
+    pfd.fd = fd
+    pfd.events = poll_h.POLLOUT
+    if fd < 0 { return -1 }
+
+    one: i32 = 1
+    if setsockopt_mod.setsockopt(fd, in_h.IPPROTO_TCP, tcp_h.TCP_FASTOPEN_CONNECT, (&one).^*const void, sizeof(i32).(u32)) == 0 {
+        r := sendmsg_mod.sendmsg(fd, &mh, MSG_FASTOPEN | MSG_NOSIGNAL)
+        if r == (ql + 2).(isize) { pfd.events = poll_h.POLLIN }
+        if r >= 0 { return r.(i32) }
+        if errno_mod.errno().* == errno_mod.EINPROGRESS { return 0 }
+    }
+    r2 := connect_mod.connect(fd, sa.^*sockaddr, sl)
+    if r2 == 0 || errno_mod.errno().* == errno_mod.EINPROGRESS { return 0 }
+    _ = close_mod.close(fd)
+    pfd.fd = -1
+    return -1
+}
+
+step_mh :: proc(mh: *msghdr, n: usize) void {
+    while mh.msg_iovlen > 0 && n >= mh.msg_iov.iov_len {
+        n -= mh.msg_iov.iov_len
+        mh.msg_iov = (&mh.msg_iov[1]).^*iovec
+        mh.msg_iovlen -= 1
+    }
+    if mh.msg_iovlen == 0 { return }
+    mh.msg_iov.iov_base = (mh.msg_iov.iov_base.^usize + n).(usize).^*void
+    mh.msg_iov.iov_len -= n
+}
+
+__res_msend_rc :: proc(nqueries: i32, queries: *const *const u8, qlens: *const i32, answers: **u8, alens: *i32, asize: i32, conf: *const lookup_h.resolvconf) i32 {
+    fd: i32
+    timeout: i32 = (1000 * conf.timeout.(i32))
+    attempts: i32 = conf.attempts.(i32)
+    retry_interval: i32
+    servfail_retry: i32
+
+    sa: sockaddr_in = {}
+    sa6: sockaddr_in6 = {}
+    ns: [lookup_h.MAXNS]sockaddr_in6
+    sl: socklen_t = sizeof(sockaddr_in).(u32)
+    nns: i32 = 0
+    family: i32 = AF_INET
+    rlen: i32
+    next: i32
+    i: i32
+    j: i32
+    cs: i32
+
+    pfd := malloc_mod.malloc((nqueries + 2).(usize) * sizeof(poll_h.pollfd)).(^*poll_h.pollfd)
+    qpos := malloc_mod.malloc(nqueries.(usize) * sizeof(i32)).(^*i32)
+    apos := malloc_mod.malloc(nqueries.(usize) * sizeof(i32)).(^*i32)
+    alen_buf := malloc_mod.malloc((nqueries * 2).(usize)).(^*u8)
+    if pfd == null || qpos == null || apos == null || alen_buf == null {
+        if pfd != null { free_mod.free(pfd.^*void) }
+        if qpos != null { free_mod.free(qpos.^*void) }
+        if apos != null { free_mod.free(apos.^*void) }
+        if alen_buf != null { free_mod.free(alen_buf.^*void) }
+        return -1
+    }
+
+    _ = pthread_cancel_mod.pthread_setcancelstate(pthread_cancel_mod.PTHREAD_CANCEL_DISABLE, &cs)
+
+    i = 0
+    while i < conf.nns.(i32) {
+        iplit := (&conf.ns[0] + i).^*lookup_h.address
+        if iplit.family == AF_INET {
+            ns[i].sin6_addr = {}
+            _ = string_h.memcpy((&ns[i].sin6_addr).^*void, (&iplit.addr[0]).^*const void, 4)
+            ns[i].sin6_port = htons(53)
+            ns[i].sin6_family = AF_INET
+        } else {
+            sl = sizeof(sockaddr_in6).(u32)
+            _ = string_h.memcpy((&ns[i].sin6_addr).^*void, (&iplit.addr[0]).^*const void, 16)
+            ns[i].sin6_port = htons(53)
+            ns[i].sin6_scope_id = iplit.scopeid
+            ns[i].sin6_family = family = AF_INET6
+        }
+        i += 1
+    }
+    nns = conf.nns.(i32)
+
+    fd = socket_mod.socket(family, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)
+    if fd < 0 && family == AF_INET6 && errno_mod.errno().* == errno_mod.EAFNOSUPPORT {
+        i = 0
+        while i < nns && conf.ns[i].family == AF_INET6 { i += 1 }
+        if i == nns {
+            _ = pthread_cancel_mod.pthread_setcancelstate(cs, null)
+            free_mod.free(pfd.^*void); free_mod.free(qpos.^*void); free_mod.free(apos.^*void); free_mod.free(alen_buf.^*void)
+            return -1
+        }
+        fd = socket_mod.socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)
+        family = AF_INET
+        sl = sizeof(sockaddr_in).(u32)
+    }
+
+    if fd >= 0 && family == AF_INET6 {
+        zero: i32 = 0
+        _ = setsockopt_mod.setsockopt(fd, in_h.IPPROTO_IPV6, in_h.IPV6_V6ONLY, (&zero).^*const void, sizeof(i32).(u32))
+        i = 0
+        while i < nns {
+            if ns[i].sin6_family != AF_INET { i += 1; continue }
+            _ = string_h.memcpy((&ns[i].sin6_addr.s6_addr[12]).^*void, (&ns[i].sin6_addr).^*const void, 4)
+            _ = string_h.memcpy((&ns[i].sin6_addr.s6_addr[0]).^*void, "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff", 12)
+            ns[i].sin6_family = AF_INET6
+            ns[i].sin6_flowinfo = 0
+            ns[i].sin6_scope_id = 0
+            i += 1
+        }
+    }
+
+    sa.sin_family = family
+    if fd < 0 || bind_mod.bind(fd, (&sa).^*sockaddr, sl) < 0 {
+        if fd >= 0 { _ = close_mod.close(fd) }
+        _ = pthread_cancel_mod.pthread_setcancelstate(cs, null)
+        free_mod.free(pfd.^*void); free_mod.free(qpos.^*void); free_mod.free(apos.^*void); free_mod.free(alen_buf.^*void)
+        return -1
+    }
+
+    i = 0
+    while i < nqueries {
+        pfd[i].fd = -1
+        i += 1
+    }
+    pfd[nqueries].fd = fd
+    pfd[nqueries].events = poll_h.POLLIN
+    pfd[nqueries + 1].fd = -2
+
+    _ = pthread_cancel_mod.pthread_setcancelstate(cs, null)
+    _ = string_h.memset(alens.^*void, 0, (nqueries * sizeof(i32)).(usize))
+
+    retry_interval = timeout / attempts
+    next = 0
+    t0 := mtime()
+    t2 := t0
+    t1 := t2 - retry_interval.(u64)
+
+    error := false
+    while (t2 - t0) < timeout.(u64) {
+        i = 0
+        while i < nqueries && alens[i] > 0 { i += 1 }
+        if i == nqueries { break }
+
+        if (t2 - t1) >= retry_interval.(u64) {
+            i = 0
+            while i < nqueries {
+                if alens[i] == 0 {
+                    j = 0
+                    while j < nns {
+                        _ = sendto_mod.sendto(fd, queries[i], qlens[i].(usize), MSG_NOSIGNAL, (&ns[j]).^*const sockaddr, sl)
+                        j += 1
+                    }
+                }
+                i += 1
+            }
+            t1 = t2
+            servfail_retry = 2 * nqueries
+        }
+
+        if poll_mod.poll(pfd, (nqueries + 1).(poll_h.nfds_t), (t1 + retry_interval.(u64) - t2).(i32)) <= 0 {
+            t2 = mtime()
+            continue
+        }
+
+        while next < nqueries {
+            iov: iovec = { iov_base: answers[next].^*void, iov_len: asize.(usize) }
+            mh: msghdr = {
+                msg_name: (&sa6).^*void,
+                msg_namelen: sl,
+                msg_iov: &iov,
+                msg_iovlen: 1,
+                msg_control: null,
+                msg_controllen: 0,
+                msg_flags: 0,
+            }
+            rlen = recvmsg_mod.recvmsg(fd, &mh, 0)
+            if rlen < 0 { break }
+            if rlen < 4 { continue }
+
+            j = 0
+            while j < nns && string_h.memcmp((&ns[j]).^*const void, (&sa6).^*const void, sl.(usize)) != 0 { j += 1 }
+            if j == nns { continue }
+
+            i = next
+            while i < nqueries && (answers[next][0] != queries[i][0] || answers[next][1] != queries[i][1]) { i += 1 }
+            if i == nqueries { continue }
+            if alens[i] != 0 { continue }
+
+            switch (answers[next][3] & 15) {
+                0, 3 => {},
+                2 => {
+                    if servfail_retry != 0 { servfail_retry -= 1; _ = sendto_mod.sendto(fd, queries[i], qlens[i].(usize), MSG_NOSIGNAL, (&ns[j]).^*const sockaddr, sl) }
+                    continue
+                },
+                else => { continue }
+            }
+
+            alens[i] = rlen
+            if i == next {
+                while next < nqueries && alens[next] != 0 { next += 1 }
+            } else {
+                _ = string_h.memcpy(answers[i].^*void, answers[next].^*const void, rlen.(usize))
+            }
+
+            if next == nqueries { pfd[nqueries].events = 0 }
+
+            if (answers[i][2] & 2) != 0 || (mh.msg_flags & MSG_TRUNC) != 0 {
+                alens[i] = -1
+                _ = pthread_cancel_mod.pthread_setcancelstate(pthread_cancel_mod.PTHREAD_CANCEL_DISABLE, null)
+                r := start_tcp(&pfd[i], family, (&ns[j]).^*const void, sl, queries[i], qlens[i])
+                _ = pthread_cancel_mod.pthread_setcancelstate(cs, null)
+                if r >= 0 {
+                    qpos[i] = r
+                    apos[i] = 0
+                    alen_buf[(i * 2).(usize)] = 0
+                    alen_buf[(i * 2 + 1).(usize)] = 0
+                } else {
+                    alens[i] = 0
+                }
+            }
+        }
+
+        i = 0
+        while i < nqueries {
+            if (pfd[i].revents & poll_h.POLLOUT) != 0 {
+                lenbuf: [2]u8 = [2]u8{ (qlens[i] >> 8).(u8), qlens[i].(u8) }
+                iov2: [2]iovec = [2]iovec{
+                    iovec{ iov_base: (&lenbuf[0]).^*void, iov_len: 2 },
+                    iovec{ iov_base: queries[i].^*void, iov_len: qlens[i].(usize) },
+                }
+                mh2: msghdr = {
+                    msg_name: null,
+                    msg_namelen: 0,
+                    msg_iov: &iov2[0],
+                    msg_iovlen: 2,
+                    msg_control: null,
+                    msg_controllen: 0,
+                    msg_flags: 0,
+                }
+                step_mh(&mh2, qpos[i].(usize))
+                r2 := sendmsg_mod.sendmsg(pfd[i].fd, &mh2, MSG_NOSIGNAL)
+                if r2 < 0 { error = true; break }
+                qpos[i] += r2.(i32)
+                if qpos[i] == qlens[i] + 2 {
+                    pfd[i].events = poll_h.POLLIN
+                }
+            }
+            i += 1
+        }
+        if error { break }
+
+        i = 0
+        while i < nqueries {
+            if (pfd[i].revents & poll_h.POLLIN) != 0 {
+                abuf := (&alen_buf[(i * 2).(usize)]).^*u8
+                iov3: [2]iovec = [2]iovec{
+                    iovec{ iov_base: abuf.^*void, iov_len: 2 },
+                    iovec{ iov_base: answers[i].^*void, iov_len: asize.(usize) },
+                }
+                mh3: msghdr = {
+                    msg_name: null,
+                    msg_namelen: 0,
+                    msg_iov: &iov3[0],
+                    msg_iovlen: 2,
+                    msg_control: null,
+                    msg_controllen: 0,
+                    msg_flags: 0,
+                }
+                step_mh(&mh3, apos[i].(usize))
+                r3 := recvmsg_mod.recvmsg(pfd[i].fd, &mh3, 0)
+                if r3 <= 0 { error = true; break }
+                apos[i] += r3.(i32)
+                if apos[i] < 2 { i += 1; continue }
+                alen := abuf[0].(i32) * 256 + abuf[1].(i32)
+                if alen < 13 { error = true; break }
+                if apos[i] < alen + 2 && apos[i] < asize + 2 { i += 1; continue }
+                rcode := answers[i][3] & 15
+                if rcode != 0 && rcode != 3 { error = true; break }
+                alens[i] = alen
+                _ = close_mod.close(pfd[i].fd)
+                pfd[i].fd = -1
+            }
+            i += 1
+        }
+        if error { break }
+        t2 = mtime()
+    }
+
+    cleanup(pfd)
+    free_mod.free(pfd.^*void); free_mod.free(qpos.^*void); free_mod.free(apos.^*void); free_mod.free(alen_buf.^*void)
+
+    i = 0
+    while i < nqueries {
+        if alens[i] < 0 { alens[i] = 0 }
+        i += 1
+    }
+    return 0
+}
+
+__res_msend :: proc(nqueries: i32, queries: *const *const u8, qlens: *const i32, answers: **u8, alens: *i32, asize: i32) i32 {
+    conf: lookup_h.resolvconf
+    if __get_resolv_conf(&conf, null, 0) < 0 { return -1 }
+    return __res_msend_rc(nqueries, queries, qlens, answers, alens, asize, &conf)
+}

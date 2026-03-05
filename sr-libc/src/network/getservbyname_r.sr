@@ -1,0 +1,61 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/getservbyname_r.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <netinet/in.h>
+// #include <netdb.h>
+// #include <inttypes.h>
+// #include <errno.h>
+// #include <string.h>
+// #include <stdlib.h>
+// #include <lookup.h>
+
+string_h :: import "libc/src/string"
+strtoul_mod :: import "libc/src/stdlib/strtol"
+errno_mod :: import "libc/include/errno"
+lookup_h :: import "libc/include/lookup"
+netdb_h :: import "libc/include/netdb"
+
+ALIGN :: (sizeof(struct { a: u8, b: *u8 }) - sizeof(*u8))
+
+getservbyname_r :: proc(name: *const u8, prots: *const u8, se: *servent, buf: *u8, buflen: usize, res: **servent) i32 {
+    servs: [lookup_h.MAXSERVS]lookup_h.service
+    cnt: i32
+    proto: i32
+
+    res.* = null
+
+    // Don't treat numeric port number strings as service records.
+    end: *u8 = null
+    _ = strtoul_mod.strtoul(name, &end, 10)
+    if end[0] == 0 { return errno_mod.ENOENT }
+
+    align := (0usize - buf.^usize) & (ALIGN - 1)
+    if buflen < 2 * sizeof(*u8) + align { return errno_mod.ERANGE }
+    buf = (buf.^usize + align).(usize).^*u8
+
+    if prots == null { proto = 0 }
+    else if string_h.strcmp(prots, "tcp") == 0 { proto = IPPROTO_TCP }
+    else if string_h.strcmp(prots, "udp") == 0 { proto = IPPROTO_UDP }
+    else { return errno_mod.EINVAL }
+
+    cnt = lookup_h.__lookup_serv(&servs[0], name, proto, 0, 0)
+    if cnt < 0 {
+        switch cnt {
+            netdb_h.EAI_MEMORY, netdb_h.EAI_SYSTEM => { return errno_mod.ENOMEM }
+            else => { return errno_mod.ENOENT }
+        }
+    }
+
+    se.s_name = name.^*u8
+    se.s_aliases = buf.^**u8
+    se.s_aliases[0] = se.s_name
+    se.s_aliases[1] = null
+    se.s_port = htons(servs[0].port).(i32)
+    se.s_proto = if servs[0].proto == IPPROTO_TCP { "tcp" } else { "udp" }
+
+    res.* = se
+    return 0
+}

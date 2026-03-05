@@ -1,0 +1,106 @@
+package libc
+
+// Derived from musl-1.2.5/src/dirent/scandir.c
+
+errno_h :: import "libc/include/errno"
+mem :: import "libc/src/string/memcpy"
+malloc_mod :: import "libc/src/malloc/mallocng/malloc"
+realloc_mod :: import "libc/src/malloc/mallocng/realloc"
+free_mod :: import "libc/src/malloc/mallocng/free"
+
+scandir_sort_range :: fn(names: **dirent, lo: isize, hi: isize, cmp: fn(*const *const dirent, *const *const dirent) i32) void {
+    if lo >= hi { return }
+    i := lo
+    j := hi
+    pivot := lo + (hi - lo) / 2
+
+    while true {
+        while cmp((&names[i]).^*const *const dirent, (&names[pivot]).^*const *const dirent) < 0 {
+            i += 1
+        }
+        while cmp((&names[j]).^*const *const dirent, (&names[pivot]).^*const *const dirent) > 0 {
+            j -= 1
+        }
+        if i > j { break }
+        if i != j {
+            tmp := names[i]
+            names[i] = names[j]
+            names[j] = tmp
+            if pivot == i {
+                pivot = j
+            } else {
+                if pivot == j { pivot = i }
+            }
+        }
+        i += 1
+        j -= 1
+    }
+
+    if lo < j { scandir_sort_range(names, lo, j, cmp) }
+    if i < hi { scandir_sort_range(names, i, hi, cmp) }
+}
+
+scandir_sort :: fn(names: **dirent, count: usize, cmp: fn(*const *const dirent, *const *const dirent) i32) void {
+    if count < 2 { return }
+    scandir_sort_range(names, 0, (count - 1).(isize), cmp)
+}
+
+scandir :: proc(path: *const u8, res: ***dirent, sel: fn(*const dirent) i32, cmp: fn(*const *const dirent, *const *const dirent) i32) i32 {
+    d := opendir(path)
+    if d == null { return -1 }
+
+    names: **dirent = 0
+    cnt: usize = 0
+    len: usize = 0
+    old_errno := errno_h.errno().*
+
+    while true {
+        errno_h.errno().* = 0
+        de := readdir(d)
+        if de == null { break }
+        if sel != 0 and sel(de.^*const dirent) == 0 { continue }
+
+        if cnt >= len {
+            new_len := if len != 0 { len * 2 } else { 4 }
+            tmp := realloc_mod.realloc(names.^*void, new_len * sizeof(*dirent)).(**dirent)
+            if tmp == null {
+                errno_h.errno().* = errno_h.ENOMEM
+                break
+            }
+            names = tmp
+            len = new_len
+        }
+
+        raw_ent := malloc_mod.malloc(de.d_reclen.(usize))
+        ent := if raw_ent != null { (raw_ent?).^*dirent } else { null }
+        if ent == null {
+            errno_h.errno().* = errno_h.ENOMEM
+            break
+        }
+        _ = mem.memcpy(ent.^*void, de.^*const void, de.d_reclen.(usize))
+        names[cnt] = ent
+        cnt += 1
+    }
+
+    err := errno_h.errno().*
+    _ = closedir(d)
+
+    if err != 0 {
+        i := cnt
+        while i > 0 {
+            i -= 1
+            free_mod.free(names[i].^*void)
+        }
+        if names != null { free_mod.free(names.^*void) }
+        errno_h.errno().* = err
+        return -1
+    }
+
+    if cmp != 0 {
+        scandir_sort(names, cnt, cmp)
+    }
+
+    res.* = names
+    errno_h.errno().* = old_errno
+    return cnt.(i32)
+}

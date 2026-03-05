@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/termios/tcgetsid.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <termios.h>
+// #include <sys/ioctl.h>
+
+ioctl_mod :: import "libc/src/misc/ioctl"
+ioctl_consts :: import "libc/include/sys/ioctl"
+
+tcgetsid :: proc(fd: i32) alltypes.pid_t {
+    sid: i32 = 0
+    if ioctl_mod.ioctl(fd, ioctl_consts.TIOCGSID, (&sid).^*void) < 0 { return -1 }
+    return sid
+}

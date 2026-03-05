@@ -1,0 +1,28 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/ceilf.c.
+
+libm :: import "libc/src/math/libm_internal"
+
+ceilf :: proc(x: f32) f32 {
+    u_bits := libm.asuint(x)
+    e := ((u_bits >> 23) & 0xff).(i32) - 0x7f
+    m: u32
+
+    if e >= 23 { return x }
+    if e >= 0 {
+        m = 0x007fffff >> e
+        if (u_bits & m) == 0 { return x }
+        libm.fp_force_eval(x + 0x1p120f)
+        if (u_bits >> 31) == 0 { u_bits += m }
+        u_bits &= ~m
+    } else {
+        libm.fp_force_eval(x + 0x1p120f)
+        if (u_bits >> 31) != 0 {
+            return -0.0f
+        } else if (u_bits << 1) != 0 {
+            return 1.0f
+        }
+    }
+    return libm.asfloat(u_bits)
+}

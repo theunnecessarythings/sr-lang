@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/memcmp.c.
+
+memcmp :: proc(lhs: *const void, rhs: *const void, n: usize) i32 {
+    l := lhs.^*const u8
+    r := rhs.^*const u8
+    i: usize = 0
+    while i < n {
+        if l[i] != r[i] {
+            return l[i].(i32) - r[i].(i32)
+        }
+        i += 1
+    }
+    return 0
+}

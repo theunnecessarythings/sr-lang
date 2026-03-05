@@ -1,0 +1,91 @@
+package libc
+
+// Minimal iconv implementation: ASCII and UTF-8 passthrough.
+
+errno_h :: import "libc/include/errno"
+iconv_h :: import "libc/include/iconv"
+malloc_mod :: import "libc/src/malloc/mallocng/malloc"
+strcasecmp_mod :: import "libc/src/string/strcasecmp"
+
+ENC_ASCII :: 1
+ENC_UTF8 :: 2
+
+iconv_state :: struct {
+    from: i32,
+    to: i32,
+}
+
+encoding_of :: proc(name: *const u8) i32 {
+    if name.^usize == 0 or name[0] == 0 { return 0 }
+    if strcasecmp_mod.strcasecmp(name, "UTF-8".ptr) == 0 or strcasecmp_mod.strcasecmp(name, "UTF8".ptr) == 0 {
+        return ENC_UTF8
+    }
+    if strcasecmp_mod.strcasecmp(name, "C".ptr) == 0 or strcasecmp_mod.strcasecmp(name, "POSIX".ptr) == 0 or strcasecmp_mod.strcasecmp(name, "ASCII".ptr) == 0 or strcasecmp_mod.strcasecmp(name, "US-ASCII".ptr) == 0 {
+        return ENC_ASCII
+    }
+    return 0
+}
+
+iconv_open :: proc(tocode: *const u8, fromcode: *const u8) iconv_h.iconv_t {
+    to_enc := encoding_of(tocode)
+    from_enc := encoding_of(fromcode)
+    if to_enc == 0 or from_enc == 0 {
+        errno_h.errno().* = errno_h.EINVAL
+        return (-1).(isize).^*void
+    }
+    raw := malloc_mod.malloc(sizeof(iconv_state).(usize))
+    if raw == null {
+        errno_h.errno().* = errno_h.ENOMEM
+        return (-1).(isize).^*void
+    }
+    st := (raw?).^*iconv_state
+    st.from = from_enc
+    st.to = to_enc
+    return st.^*void
+}
+
+iconv :: proc(cd: iconv_h.iconv_t, inbuf: **u8, inbytesleft: *usize, outbuf: **u8, outbytesleft: *usize) usize {
+    if cd.^usize == 0 or cd.^usize == (-1).(isize).^usize {
+        errno_h.errno().* = errno_h.EINVAL
+        return (-1).(usize)
+    }
+
+    st := cd.^*iconv_state
+    if inbuf.^usize == 0 or inbytesleft.^usize == 0 {
+        return 0
+    }
+    if outbuf.^usize == 0 or outbytesleft.^usize == 0 {
+        errno_h.errno().* = errno_h.E2BIG
+        return (-1).(usize)
+    }
+
+    inp := inbuf.*
+    outp := outbuf.*
+    in_left := inbytesleft.*
+    out_left := outbytesleft.*
+
+    while in_left > 0 {
+        if out_left == 0 {
+            errno_h.errno().* = errno_h.E2BIG
+            return (-1).(usize)
+        }
+        b := inp[0]
+        if st.from == ENC_ASCII or st.to == ENC_ASCII {
+            if b >= 0x80 {
+                errno_h.errno().* = errno_h.EILSEQ
+                return (-1).(usize)
+            }
+        }
+        outp[0] = b
+        inp = (inp.^usize + 1).(usize).^*u8
+        outp = (outp.^usize + 1).(usize).^*u8
+        in_left -= 1
+        out_left -= 1
+    }
+
+    inbuf.* = inp
+    outbuf.* = outp
+    inbytesleft.* = in_left
+    outbytesleft.* = out_left
+    return 0
+}

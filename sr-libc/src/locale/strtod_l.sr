@@ -1,0 +1,20 @@
+package libc
+
+// Derived from musl-1.2.5/src/locale/strtod_l.c
+
+strtod_mod :: import "libc/src/stdlib/strtod"
+
+strtof_l :: proc(s: *const u8, p: **u8, l: locale_t) f32 {
+    _ = l
+    return strtod_mod.strtof(s, p)
+}
+
+strtod_l :: proc(s: *const u8, p: **u8, l: locale_t) f64 {
+    _ = l
+    return strtod_mod.strtod(s, p)
+}
+
+strtold_l :: proc(s: *const u8, p: **u8, l: locale_t) f128 {
+    _ = l
+    return strtod_mod.strtold(s, p)
+}

@@ -1,0 +1,108 @@
+package libc
+
+// Derived from musl-1.2.5/include/stdint.h
+// Integer typedefs are provided by alltypes.sr.
+
+alltypes :: import "libc/include/alltypes"
+
+int8_t :: alltypes.int8_t
+int16_t :: alltypes.int16_t
+int32_t :: alltypes.int32_t
+int64_t :: alltypes.int64_t
+intmax_t :: alltypes.intmax_t
+intptr_t :: alltypes.intptr_t
+
+uint8_t :: alltypes.uint8_t
+uint16_t :: alltypes.uint16_t
+uint32_t :: alltypes.uint32_t
+uint64_t :: alltypes.uint64_t
+u_int64_t :: alltypes.u_int64_t
+uintmax_t :: alltypes.uintmax_t
+uintptr_t :: alltypes.uintptr_t
+
+// Fast/least-width types (x86_64 musl)
+int_fast8_t :: int8_t
+int_fast16_t :: int32_t
+int_fast32_t :: int32_t
+int_fast64_t :: int64_t
+
+int_least8_t :: int8_t
+int_least16_t :: int16_t
+int_least32_t :: int32_t
+int_least64_t :: int64_t
+
+uint_fast8_t :: uint8_t
+uint_fast16_t :: uint32_t
+uint_fast32_t :: uint32_t
+uint_fast64_t :: uint64_t
+
+uint_least8_t :: uint8_t
+uint_least16_t :: uint16_t
+uint_least32_t :: uint32_t
+uint_least64_t :: uint64_t
+
+// Limits
+INT8_MIN :: -128
+INT16_MIN :: -32768
+INT32_MIN :: -2147483648
+INT64_MIN :: -0x7fffffffffffffff
+
+INT8_MAX :: 127
+INT16_MAX :: 32767
+INT32_MAX :: 2147483647
+INT64_MAX :: 0x7fffffffffffffff
+
+UINT8_MAX :: 0xff
+UINT16_MAX :: 0xffff
+UINT32_MAX :: 0xffffffff
+UINT64_MAX :: 0xffffffffffffffff
+
+INT_FAST8_MIN :: INT8_MIN
+INT_FAST16_MIN :: INT32_MIN
+INT_FAST32_MIN :: INT32_MIN
+INT_FAST64_MIN :: INT64_MIN
+
+INT_LEAST8_MIN :: INT8_MIN
+INT_LEAST16_MIN :: INT16_MIN
+INT_LEAST32_MIN :: INT32_MIN
+INT_LEAST64_MIN :: INT64_MIN
+
+INT_FAST8_MAX :: INT8_MAX
+INT_FAST16_MAX :: INT32_MAX
+INT_FAST32_MAX :: INT32_MAX
+INT_FAST64_MAX :: INT64_MAX
+
+INT_LEAST8_MAX :: INT8_MAX
+INT_LEAST16_MAX :: INT16_MAX
+INT_LEAST32_MAX :: INT32_MAX
+INT_LEAST64_MAX :: INT64_MAX
+
+UINT_FAST8_MAX :: UINT8_MAX
+UINT_FAST16_MAX :: UINT32_MAX
+UINT_FAST32_MAX :: UINT32_MAX
+UINT_FAST64_MAX :: UINT64_MAX
+
+UINT_LEAST8_MAX :: UINT8_MAX
+UINT_LEAST16_MAX :: UINT16_MAX
+UINT_LEAST32_MAX :: UINT32_MAX
+UINT_LEAST64_MAX :: UINT64_MAX
+
+INTMAX_MIN :: INT64_MIN
+INTMAX_MAX :: INT64_MAX
+UINTMAX_MAX :: UINT64_MAX
+
+WINT_MIN :: 0
+WINT_MAX :: UINT32_MAX
+
+WCHAR_MIN :: -2147483648
+WCHAR_MAX :: 2147483647
+
+SIG_ATOMIC_MIN :: INT32_MIN
+SIG_ATOMIC_MAX :: INT32_MAX
+
+INTPTR_MIN :: INT64_MIN
+INTPTR_MAX :: INT64_MAX
+UINTPTR_MAX :: UINT64_MAX
+PTRDIFF_MIN :: INT64_MIN
+PTRDIFF_MAX :: INT64_MAX
+SIZE_MAX :: UINT64_MAX

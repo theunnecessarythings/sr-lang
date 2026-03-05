@@ -1,0 +1,21 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/sync_file_range.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+sync_file_range :: proc(fd: i32, pos: alltypes.off_t, len: alltypes.off_t, flags: u32) i32 {
+    p := pos.(i64)
+    l := len.(i64)
+    r := sc.syscall6_ret(
+        nums.SYS_sync_file_range.(i64),
+        fd.(i64),
+        p,
+        (p >> 32),
+        l,
+        (l >> 32),
+        flags.(i64),
+    )
+    return r.(i32)
+}

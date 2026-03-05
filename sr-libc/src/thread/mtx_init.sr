@@ -1,0 +1,19 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/mtx_init.c
+
+mutex_int :: import "libc/src/thread/pthread_mutex_internal"
+string_h :: import "libc/src/string"
+
+thrd_success :: 0
+mtx_recursive :: 1
+
+mtx_init :: proc(m: *mtx_t, typ: i32) i32 {
+    _ = string_h.memset(m.^*void, 0, sizeof(mtx_t))
+    mutex_int.m_type(m.^*alltypes.pthread_mutex_t).* = if (typ & mtx_recursive) != 0 {
+        mutex_int.PTHREAD_MUTEX_RECURSIVE
+    } else {
+        mutex_int.PTHREAD_MUTEX_NORMAL
+    }
+    return thrd_success
+}

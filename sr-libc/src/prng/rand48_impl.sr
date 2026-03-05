@@ -1,0 +1,23 @@
+package libc
+
+// Derived from musl-1.2.5/src/prng/__rand48_step.c and __seed48.c
+
+__seed48: [7]u16 = [0, 0, 0, 0xe66d, 0xdeec, 0x5, 0xb]
+
+memcpy_mod :: import "libc/src/string/memcpy"
+
+bits_to_f64 :: proc(x: u64) f64 {
+    y: f64 = 0
+    _ = memcpy_mod.memcpy((&y).^*void, (&x).^*const void, 8)
+    return y
+}
+
+__rand48_step :: proc(xi: *u16, lc: *u16) u64 {
+    x := xi[0].(u64) | (xi[1].(u64) << 16) | (xi[2].(u64) << 32)
+    a := lc[0].(u64) | (lc[1].(u64) << 16) | (lc[2].(u64) << 32)
+    x = a * x + lc[3].(u64)
+    xi[0] = x.(u16)
+    xi[1] = (x >> 16).(u16)
+    xi[2] = (x >> 32).(u16)
+    return x & 0xffffffffffff
+}

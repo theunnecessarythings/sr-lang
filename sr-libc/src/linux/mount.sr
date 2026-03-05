@@ -1,0 +1,28 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/mount.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+mount :: proc(special: *const u8, dir: *const u8, fstype: *const u8, flags: u64, data: *const void) i32 {
+    r := sc.syscall5_ret(
+        nums.SYS_mount.(i64),
+        special.^usize.(i64),
+        dir.^usize.(i64),
+        fstype.^usize.(i64),
+        flags.(i64),
+        data.^usize.(i64),
+    )
+    return r.(i32)
+}
+
+umount :: proc(special: *const u8) i32 {
+    r := sc.syscall2_ret(nums.SYS_umount2.(i64), special.^usize.(i64), 0)
+    return r.(i32)
+}
+
+umount2 :: proc(special: *const u8, flags: i32) i32 {
+    r := sc.syscall2_ret(nums.SYS_umount2.(i64), special.^usize.(i64), flags.(i64))
+    return r.(i32)
+}

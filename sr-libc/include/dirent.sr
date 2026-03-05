@@ -1,0 +1,54 @@
+package libc
+
+// Derived from musl-1.2.5/include/dirent.h and arch/generic/bits/dirent.h
+
+alltypes :: import "libc/include/alltypes"
+
+dirent :: struct {
+    d_ino: alltypes.ino_t,
+    d_off: alltypes.off_t,
+    d_reclen: u16,
+    d_type: u8,
+    d_name: [256]u8,
+}
+
+DIR :: struct {
+    tell: alltypes.off_t,
+    fd: i32,
+    buf_pos: i32,
+    buf_end: i32,
+    lock: [1]i32,
+    buf: [2048]u8,
+}
+
+DT_UNKNOWN :: 0
+DT_FIFO :: 1
+DT_CHR :: 2
+DT_DIR :: 4
+DT_BLK :: 6
+DT_REG :: 8
+DT_LNK :: 10
+DT_SOCK :: 12
+DT_WHT :: 14
+
+IFTODT :: proc(mode: alltypes.mode_t) u8 {
+    return ((mode & 0o170000).(u32) >> 12).(u8)
+}
+
+DTTOIF :: proc(dt: i32) alltypes.mode_t {
+    return (dt << 12).(alltypes.mode_t)
+}
+
+opendir :: proc(name: *const u8) *DIR
+fdopendir :: proc(fd: i32) *DIR
+readdir :: proc(dir: *DIR) *dirent
+readdir_r :: proc(dir: *DIR, buf: *dirent, result: **dirent) i32
+closedir :: proc(dir: *DIR) i32
+rewinddir :: proc(dir: *DIR) void
+seekdir :: proc(dir: *DIR, off: alltypes.off_t) void
+telldir :: proc(dir: *DIR) alltypes.off_t
+dirfd :: proc(dir: *DIR) i32
+scandir :: proc(path: *const u8, res: ***dirent, sel: fn(*const dirent) i32, cmp: fn(*const *const dirent, *const *const dirent) i32) i32
+alphasort :: proc(a: *const *const dirent, b: *const *const dirent) i32
+versionsort :: proc(a: *const *const dirent, b: *const *const dirent) i32
+getdents :: proc(fd: i32, buf: *dirent, len: usize) i32

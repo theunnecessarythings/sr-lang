@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/inet_ntoa.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <arpa/inet.h>
+// #include <stdio.h>
+
+__inet_ntoa_buf: [16]u8
+
+inet_ntoa :: proc(in: in_addr) *char {
+    a := (&in).^*u8
+    _ = snprintf(&__inet_ntoa_buf[0], 16, "%d.%d.%d.%d", a[0], a[1], a[2], a[3])
+    return (&__inet_ntoa_buf[0]).^*char
+}

@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/logbf.c.
+
+basic :: import "libc/src/math/basic"
+
+logbf :: proc(x: f32) f32 {
+    if basic.isfinitef(x) == 0 { return x * x }
+    if x == 0.0f { return -1.0f / (x * x) }
+    return ilogbf(x).(f32)
+}

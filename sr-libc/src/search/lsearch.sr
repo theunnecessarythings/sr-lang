@@ -1,0 +1,43 @@
+package libc
+
+// Derived from musl-1.2.5/src/search/lsearch.c
+
+string_h :: import "libc/src/string"
+
+// Linear search in an array
+
+lsearch :: proc(key: *const void, base: *void, nelp: *usize, width: usize, compar: proc(*const void, *const void) i32) *void {
+    p := base.(*u8)
+    n := nelp.*
+    
+    i: usize = 0
+    while i < n {
+        elem := (p + i * width).(*void)
+        if compar(key, elem) == 0 {
+            return elem
+        }
+        i += 1
+    }
+    
+    // Not found, add it
+    nelp.* = n + 1
+    dest := (p + n * width).(*void)
+    string_h.memcpy(dest, key, width)
+    return dest
+}
+
+lfind :: proc(key: *const void, base: *const void, nelp: *usize, width: usize, compar: proc(*const void, *const void) i32) *void {
+    p := base.(*u8)
+    n := nelp.*
+    
+    i: usize = 0
+    while i < n {
+        elem := (p + i * width).(*void)
+        if compar(key, elem) == 0 {
+            return elem
+        }
+        i += 1
+    }
+    
+    return 0
+}

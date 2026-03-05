@@ -1,0 +1,43 @@
+package libc
+
+alltypes :: import "libc/include/alltypes"
+
+__SU :: (sizeof(usize) / sizeof(i32))
+
+pthread_attr_u :: union {
+    __s: [3]usize,
+    __i: [10]i32,
+    __vi: [10]i32,
+    __p: [6]?*void,
+    __opaque: [56]u8,
+}
+
+pthread_attr_internal :: struct {
+    __u: pthread_attr_u,
+}
+
+attr_internal :: fn(a: ?*alltypes.pthread_attr_t) *pthread_attr_internal {
+    return (a?).^*pthread_attr_internal
+}
+
+// Offsets matching musl macros
+attr_stacksize :: fn(a: ?*alltypes.pthread_attr_t) *usize { return &attr_internal(a).*.__u.__s[0] }
+attr_guardsize :: fn(a: ?*alltypes.pthread_attr_t) *usize { return &attr_internal(a).*.__u.__s[1] }
+attr_stackaddr :: fn(a: ?*alltypes.pthread_attr_t) *usize { return &attr_internal(a).*.__u.__s[2] }
+attr_detach :: fn(a: ?*alltypes.pthread_attr_t) *i32 { return &attr_internal(a).*.__u.__i[(3 * __SU + 0).(usize)] }
+attr_sched :: fn(a: ?*alltypes.pthread_attr_t) *i32 { return &attr_internal(a).*.__u.__i[(3 * __SU + 1).(usize)] }
+attr_policy :: fn(a: ?*alltypes.pthread_attr_t) *i32 { return &attr_internal(a).*.__u.__i[(3 * __SU + 2).(usize)] }
+attr_prio :: fn(a: ?*alltypes.pthread_attr_t) *i32 { return &attr_internal(a).*.__u.__i[(3 * __SU + 3).(usize)] }
+
+PTHREAD_STACK_MIN :: 2048
+DEFAULT_STACK_SIZE :: 131072
+DEFAULT_GUARD_SIZE :: 8192
+DEFAULT_STACK_MAX :: (8 << 20)
+DEFAULT_GUARD_MAX :: (1 << 20)
+
+PTHREAD_SCOPE_SYSTEM :: 0
+PTHREAD_SCOPE_PROCESS :: 1
+
+PTHREAD_PRIO_NONE :: 0
+PTHREAD_PRIO_INHERIT :: 1
+PTHREAD_PRIO_PROTECT :: 2

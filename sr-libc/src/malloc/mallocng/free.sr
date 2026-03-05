@@ -1,0 +1,128 @@
+package libc
+
+// Derived from musl-1.2.5/src/malloc/mallocng/free.c
+
+meta_mod :: import "libc/src/malloc/mallocng/meta"
+glue :: import "libc/src/malloc/mallocng/glue"
+atomic :: import "libc/src/internal/atomic"
+errno_mod :: import "libc/include/errno"
+mman :: import "libc/src/mman/munmap"
+mman_map :: import "libc/src/mman/mmap"
+mman_i :: import "libc/include/sys/mman"
+
+mapinfo :: struct {
+    base: ?*void,
+    len: usize,
+}
+
+nontrivial_free :: proc(g: *meta_mod.meta, i: i32) mapinfo
+
+free_group :: proc(g: *meta_mod.meta) mapinfo {
+    mi := mapinfo{ base: null, len: 0 }
+    sc := meta_mod.meta_get_sizeclass(g).(i32)
+    if sc < 48 {
+        meta_mod.ctx.usage_by_class[sc.(usize)] -= meta_mod.meta_get_last_idx(g) + 1
+    }
+    if meta_mod.meta_get_maplen(g) != 0 {
+        meta_mod.step_seq()
+        meta_mod.record_seq(sc)
+        mi.base = g.mem.^*void
+        mi.len = meta_mod.meta_get_maplen(g) * 4096
+    } else {
+        p := g.mem.^*void
+        m := meta_mod.get_meta(p.^*u8)
+        idx := meta_mod.get_slot_index(p.^*u8)
+        g.mem.meta = (0.(usize)).^*meta_mod.meta
+        mi = nontrivial_free(m, idx)
+    }
+    meta_mod.free_meta(g)
+    return mi
+}
+
+okay_to_free :: proc(g: *meta_mod.meta) i32 {
+    sc := meta_mod.meta_get_sizeclass(g).(i32)
+
+    if meta_mod.meta_get_freeable(g) == 0 { return 0 }
+
+    if sc >= 48 or meta_mod.get_stride(g) < meta_mod.UNIT * glue.size_classes[sc.(usize)].(usize) {
+        return 1
+    }
+
+    if meta_mod.meta_get_maplen(g) == 0 { return 1 }
+    if g.next.^usize != g.^usize { return 1 }
+    if meta_mod.is_bouncing(sc) == 0 { return 1 }
+
+    cnt := meta_mod.meta_get_last_idx(g) + 1
+    usage := meta_mod.ctx.usage_by_class[sc.(usize)]
+    if 9 * cnt <= usage and cnt < 20 { return 1 }
+    return 0
+}
+
+nontrivial_free :: proc(g: *meta_mod.meta, i: i32) mapinfo {
+    self: u32 = 1.(u32) << i.(u32)
+    sc := meta_mod.meta_get_sizeclass(g).(i32)
+    mask := g.freed_mask.(u32) | g.avail_mask.(u32)
+
+    if mask + self == ((2.(u32) << meta_mod.meta_get_last_idx(g).(u32)) - 1) and okay_to_free(g) != 0 {
+        if g.next.^usize != 0 {
+            activate_new := (meta_mod.ctx.active[sc.(usize)].^usize == g.^usize).(i32)
+            meta_mod.dequeue(&meta_mod.ctx.active[sc.(usize)], g)
+            if activate_new != 0 and meta_mod.ctx.active[sc.(usize)].^usize != 0 {
+                _ = meta_mod.activate_group(meta_mod.ctx.active[sc.(usize)])
+            }
+        }
+        return free_group(g)
+    } else if mask == 0 {
+        if meta_mod.ctx.active[sc.(usize)].^usize != g.^usize {
+            meta_mod.queue(&meta_mod.ctx.active[sc.(usize)], g)
+        }
+    }
+
+    atomic.a_or(&g.freed_mask, self.(i32))
+    return mapinfo{ base: null, len: 0 }
+}
+
+free :: proc(p: ?*void) void {
+    if p == null { return }
+
+    g := meta_mod.get_meta((p?).^*u8)
+    idx := meta_mod.get_slot_index((p?).^*u8)
+    stride := meta_mod.get_stride(g)
+    start := ((&g.mem.storage[0]).^usize + stride * idx.(usize)).(usize).^*u8
+    end := (start.^usize + stride - meta_mod.IB).(usize).^*u8
+    _ = meta_mod.get_nominal_size((p?).^*u8, end)
+
+    self: u32 = 1.(u32) << idx.(u32)
+    all: u32 = (2.(u32) << meta_mod.meta_get_last_idx(g).(u32)) - 1
+    (((p?).^usize - 3).(usize).^*u8).* = 255
+    (((p?).^usize - 2).(usize).^*u16).* = 0
+
+    pgsz := if meta_mod.ctx.pagesize != 0 { meta_mod.ctx.pagesize } else { 4096 }
+    if (((start.^usize - 1) ^ end.^usize) >= 2 * pgsz and meta_mod.meta_get_last_idx(g) != 0) {
+        base := (start.^usize + (-start.^isize).(usize) & (pgsz - 1)).(usize).^*u8
+        len := (end.^usize - base.^usize) & ((-pgsz.(isize)).(usize))
+        if len != 0 and glue.USE_MADV_FREE != 0 {
+            e := errno_mod.errno().*
+            _ = mman_map.madvise(base.^*void, len, mman_i.MADV_FREE)
+            errno_mod.errno().* = e
+        }
+    }
+
+    while true {
+        freed := g.freed_mask.(u32)
+        avail := g.avail_mask.(u32)
+        mask := freed | avail
+        if freed == 0 or mask + self == all { break }
+        if atomic.a_cas(&g.freed_mask, freed.(i32), (freed + self).(i32)).(u32) != freed { continue }
+        return
+    }
+
+    glue.wrlock()
+    mi := nontrivial_free(g, idx)
+    glue.unlock()
+    if mi.len != 0 {
+        e := errno_mod.errno().*
+        _ = mman.munmap(mi.base, mi.len)
+        errno_mod.errno().* = e
+    }
+}

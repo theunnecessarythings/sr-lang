@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/acosh.c.
+
+libm :: import "libc/src/math/libm_internal"
+
+acosh :: proc(x: f64) f64 {
+    u := libm.asuint64(x)
+    e := ((u >> 52) & 0x7ff).(u32)
+
+    if e < 0x3ff + 1 {
+        return log1p(x - 1.0 + sqrt((x - 1.0) * (x - 1.0) + 2.0 * (x - 1.0)))
+    }
+    if e < 0x3ff + 26 {
+        return log(2.0 * x - 1.0 / (x + sqrt(x * x - 1.0)))
+    }
+    return log(x) + 0.693147180559945309417232121458176568
+}

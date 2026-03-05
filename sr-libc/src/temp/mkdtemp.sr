@@ -1,0 +1,58 @@
+package libc
+
+// Derived from musl-1.2.5/src/temp/mkdtemp.c
+
+errno_h :: import "libc/include/errno"
+string_h :: import "libc/src/string"
+mkdir_mod :: import "libc/src/stat/mkdir"
+
+__randname :: extern proc(*u8) *u8
+
+SYS_mkdir :: 83
+
+mkdtemp :: proc(template: *u8) *u8 {
+    l := string_h.strlen(template)
+    retries: i32 = 100
+    
+    if l < 6 {
+        errno_h.errno().* = errno_h.EINVAL
+        return 0
+    }
+    
+    // Check last 6 chars are XXXXXX
+    i: usize = 0
+    valid := true
+    while i < 6 {
+        if template[l - 6 + i] != 'X'.(u8) {
+            valid = false
+            break
+        }
+        i += 1
+    }
+    
+    if !valid {
+        errno_h.errno().* = errno_h.EINVAL
+        return 0
+    }
+    
+    // Try to create unique directory
+    while retries > 0 {
+        __randname(template + l - 6)
+        ret := mkdir_mod.mkdir(template, 0o700)
+        if ret == 0 {
+            return template
+        }
+        if errno_h.errno().* != errno_h.EEXIST {
+            break
+        }
+        retries -= 1
+    }
+    
+    // Restore template on failure
+    i = 0
+    while i < 6 {
+        template[l - 6 + i] = 'X'.(u8)
+        i += 1
+    }
+    return 0
+}

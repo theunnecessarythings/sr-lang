@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/process/posix_spawnattr_getsigmask.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <spawn.h>
+
+posix_spawnattr_getsigmask :: proc(attr: *const posix_spawnattr_t restrict, mask: *alltypes.sigset_t restrict) i32 {
+    mask.* = attr.__mask
+    return 0
+}

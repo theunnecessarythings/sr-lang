@@ -1,0 +1,24 @@
+package libc
+
+// Derived from musl-1.2.5/src/process/posix_spawnattr_setflags.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <spawn.h>
+// #include <errno.h>
+
+errno_mod :: import "libc/include/errno"
+spawn_h :: import "libc/include/spawn"
+
+posix_spawnattr_setflags :: proc(attr: *spawn_h.posix_spawnattr_t, flags: i16) i32 {
+    all_flags := spawn_h.POSIX_SPAWN_RESETIDS |
+        spawn_h.POSIX_SPAWN_SETPGROUP |
+        spawn_h.POSIX_SPAWN_SETSIGDEF |
+        spawn_h.POSIX_SPAWN_SETSIGMASK |
+        spawn_h.POSIX_SPAWN_SETSCHEDPARAM |
+        spawn_h.POSIX_SPAWN_SETSCHEDULER |
+        spawn_h.POSIX_SPAWN_USEVFORK |
+        spawn_h.POSIX_SPAWN_SETSID
+    if (flags.(i32) & ((-1).(i32) ^ all_flags)) != 0 { return errno_mod.EINVAL }
+    attr.__flags = flags.(i32)
+    return 0
+}

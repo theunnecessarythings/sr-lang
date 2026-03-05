@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/time/ctime.c
+
+alltypes :: import "libc/include/alltypes"
+
+localtime :: extern proc(*i64) *alltypes.tm
+asctime :: extern proc(*alltypes.tm) *u8
+
+ctime :: proc(t: *i64) *u8 {
+    return asctime(localtime(t))
+}

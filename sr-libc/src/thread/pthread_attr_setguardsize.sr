@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_attr_setguardsize.c
+
+attr_int :: import "libc/src/thread/pthread_attr_internal"
+errno_mod :: import "libc/include/errno"
+
+pthread_attr_setguardsize :: proc(a: *alltypes.pthread_attr_t, size: usize) i32 {
+    if size > ((~0).(usize) / 8) { return errno_mod.EINVAL }
+    attr_int.attr_guardsize(a).* = size
+    return 0
+}

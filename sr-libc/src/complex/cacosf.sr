@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/cacosf.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+pi_2 :: (1.57079632679489661923).(f32)
+
+cacosf :: proc(z: complex(f32)) complex(f32) {
+    z = casinf(z)
+    return impl.cmplxf(pi_2 - z.real, -z.imag)
+}

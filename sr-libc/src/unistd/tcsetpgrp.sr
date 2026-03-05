@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/tcsetpgrp.c
+
+ioctl_mod :: import "libc/src/misc/ioctl"
+ioctl_consts :: import "libc/include/sys/ioctl"
+
+tcsetpgrp :: proc(fd: i32, pgrp: i32) i32 {
+    return ioctl_mod.ioctl(fd, ioctl_consts.TIOCSPGRP, (&pgrp).^*void)
+}

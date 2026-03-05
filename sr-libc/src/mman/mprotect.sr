@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/mman/mprotect.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+__mprotect :: proc(addr: ?*void, len: usize, prot: i32) i32 {
+    start := (addr?).^usize & ((-1.(usize)) ^ (PAGE_SIZE - 1))
+    end := ((addr?).^usize + len + PAGE_SIZE - 1) & ((-1.(usize)) ^ (PAGE_SIZE - 1))
+    return sc.syscall3_ret(nums.SYS_mprotect.(i64), start.(i64), (end - start).(i64), prot.(i64)).(i32)
+}
+
+mprotect :: __mprotect

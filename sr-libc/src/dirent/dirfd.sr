@@ -1,0 +1,8 @@
+package libc
+
+// Derived from musl-1.2.5/src/dirent/dirfd.c
+
+dirfd :: proc(d: *DIR) i32 {
+    if d == null { return -1 }
+    return d.fd
+}

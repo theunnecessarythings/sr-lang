@@ -1,0 +1,73 @@
+package libc
+
+// Derived from musl-1.2.5/src/malloc/mallocng/glue.h
+
+atomic :: import "libc/src/internal/atomic"
+lock_mod :: import "libc/src/internal/lock"
+libc_mod :: import "libc/src/internal/libc"
+replaced :: import "libc/src/malloc/replaced"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+// Constants
+USE_MADV_FREE :: 0
+
+// Lock object
+__malloc_lock: [1]i32
+
+// Helper functions for locking
+rdlock :: proc() void {
+    if libc_mod.__libc.need_locks != 0 {
+        lock_mod.__lock(&__malloc_lock[0])
+    }
+}
+
+wrlock :: proc() void {
+    if libc_mod.__libc.need_locks != 0 {
+        lock_mod.__lock(&__malloc_lock[0])
+    }
+}
+
+unlock :: proc() void {
+    lock_mod.__unlock(&__malloc_lock[0])
+}
+
+resetlock :: proc() void {
+    __malloc_lock[0] = 0
+}
+
+malloc_atfork :: proc(who: i32) void {
+    if who < 0 {
+        rdlock()
+    } else if who > 0 {
+        resetlock()
+    } else {
+        unlock()
+    }
+}
+
+// Random secret
+get_random_secret :: proc() u64 {
+    secret: u64 = 0 
+    
+    if libc_mod.__libc.auxv.^usize != 0 {
+        i: usize = 0
+        auxv := libc_mod.__libc.auxv
+        step := sizeof(usize).(usize)
+        while ((auxv.^usize + i * step).(usize).^*usize).* != 0 {
+            if ((auxv.^usize + i * step).(usize).^*usize).* == 25 { // AT_RANDOM = 25
+                rand_ptr := ((auxv.^usize + (i + 1) * step).(usize).^*usize).*.^*u8
+                secret = (rand_ptr.^*u64).*
+            }
+            i += 2
+        }
+    }
+    return secret
+}
+
+// syscall wrappers
+brk :: proc(p: usize) usize {
+    return sc.syscall1_ret(nums.SYS_brk.(i64), p.(i64)).(usize)
+}
+
+size_classes: [48]u16 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 18, 20, 25, 31, 36, 42, 50, 63, 72, 84, 102, 127, 146, 170, 204, 255, 292, 340, 409, 511, 584, 682, 818, 1023, 1169, 1364, 1637, 2047, 2340, 2730, 3276, 4095, 4680, 5460, 6552, 8191]

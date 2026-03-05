@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/prng/rand.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <stdlib.h>
+// #include <stdint.h>
+
+seed: u64
+
+srand :: proc(s: u32) void {
+    seed = s.(u64) - 1
+}
+
+rand :: proc() i32 {
+    seed = 6364136223846793005u64 * seed + 1
+    return (seed >> 33).(i32)
+}

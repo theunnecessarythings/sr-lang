@@ -1,0 +1,110 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_key_create.c
+
+pthread_impl :: import "libc/src/internal/pthread_impl"
+errno_mod :: import "libc/include/errno"
+rwlock_rd :: import "libc/src/thread/pthread_rwlock_rdlock"
+rwlock_wr :: import "libc/src/thread/pthread_rwlock_wrlock"
+rwlock_un :: import "libc/src/thread/pthread_rwlock_unlock"
+sig_block :: import "libc/src/signal/block"
+string_h :: import "libc/src/string/memset"
+tl_list :: import "libc/src/internal/thread_list"
+
+PTHREAD_KEYS_MAX :: 128
+PTHREAD_DESTRUCTOR_ITERATIONS :: 4
+
+__pthread_tsd_size: usize = sizeof(*void) * PTHREAD_KEYS_MAX
+__pthread_tsd_main: [PTHREAD_KEYS_MAX]*void
+
+keys: [PTHREAD_KEYS_MAX]?fn(?*void) void
+key_lock: alltypes.pthread_rwlock_t
+next_key: alltypes.pthread_key_t
+
+nodtor :: proc(dummy: ?*void) void {}
+
+dummy_0 :: proc() void {}
+
+__pthread_key_atfork :: proc(who: i32) void {
+    if who < 0 {
+        _ = rwlock_rd.__pthread_rwlock_rdlock(&key_lock)
+    } else if who == 0 {
+        _ = rwlock_un.__pthread_rwlock_unlock(&key_lock)
+    } else {
+        _ = string_h.memset((&key_lock).^*void, 0, sizeof(alltypes.pthread_rwlock_t))
+    }
+}
+
+__pthread_key_create :: proc(k: ?*alltypes.pthread_key_t, dtor: ?fn(?*void) void) i32 {
+    self := pthread_impl.__pthread_self()
+    if self.*.tsd == null { self.*.tsd = (&__pthread_tsd_main[0]).^**void }
+    dt := if dtor == null { null.(?fn(?*void) void) } else { dtor }
+
+    _ = rwlock_wr.__pthread_rwlock_wrlock(&key_lock)
+    j := next_key
+    while true {
+        if keys[j.(usize)] == null {
+            next_key = j
+            (k?).* = j
+            keys[j.(usize)] = dt
+            _ = rwlock_un.__pthread_rwlock_unlock(&key_lock)
+            return 0
+        }
+        j = ((j + 1) % PTHREAD_KEYS_MAX).(alltypes.pthread_key_t)
+        if j == next_key { break }
+    }
+    _ = rwlock_un.__pthread_rwlock_unlock(&key_lock)
+    return errno_mod.EAGAIN
+}
+
+__pthread_key_delete :: proc(k: alltypes.pthread_key_t) i32 {
+    set: alltypes.sigset_t
+    self := pthread_impl.__pthread_self()
+    td := self
+
+    sig_block.__block_app_sigs(&set)
+    _ = rwlock_wr.__pthread_rwlock_wrlock(&key_lock)
+
+    tl_list.__tl_lock()
+    while true {
+        if td.*.tsd != null { (td.*.tsd?)[k.(usize)] = null }
+        td = (td.*.next?)
+        if td == self { break }
+    }
+    tl_list.__tl_unlock()
+
+    keys[k.(usize)] = null
+
+    _ = rwlock_un.__pthread_rwlock_unlock(&key_lock)
+    sig_block.__restore_sigs(&set)
+    return 0
+}
+
+__pthread_tsd_run_dtors :: proc() void {
+    self := pthread_impl.__pthread_self()
+    if self.*.tsd == null { return }
+    for j in 0..PTHREAD_DESTRUCTOR_ITERATIONS {
+        if self.*.tsd_used == 0 { break }
+        _ = rwlock_rd.__pthread_rwlock_rdlock(&key_lock)
+        self.*.tsd_used = 0
+        for i in 0..PTHREAD_KEYS_MAX {
+            val := (self.*.tsd?)[i]
+            dtor := keys[i]
+            (self.*.tsd?)[i] = null
+            if (val != null) and (dtor != null) {
+                _ = rwlock_un.__pthread_rwlock_unlock(&key_lock)
+                dtor?(val)
+                _ = rwlock_rd.__pthread_rwlock_rdlock(&key_lock)
+            }
+        }
+        _ = rwlock_un.__pthread_rwlock_unlock(&key_lock)
+    }
+}
+
+pthread_key_create :: proc(k: ?*alltypes.pthread_key_t, dtor: ?fn(?*void) void) i32 {
+    return __pthread_key_create(k, dtor)
+}
+
+pthread_key_delete :: proc(k: alltypes.pthread_key_t) i32 {
+    return __pthread_key_delete(k)
+}

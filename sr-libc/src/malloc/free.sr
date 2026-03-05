@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/malloc/free.c
+
+free_mod :: import "libc/src/malloc/mallocng/free"
+
+free :: proc(p: ?*void) void {
+    free_mod.free(p)
+}

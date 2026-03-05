@@ -1,0 +1,36 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/accept4.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <errno.h>
+// #include <fcntl.h>
+// #include <syscall.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+errno_mod :: import "libc/include/errno"
+fcntl_h :: import "libc/include/fcntl"
+
+accept4 :: proc(fd: i32, addr: *sockaddr restrict, len: *socklen_t restrict, flg: i32) i32 {
+    if flg == 0 { return accept(fd, addr, len) }
+    r := sc.syscall4_ret(nums.SYS_accept4.(i64), fd.(i64), addr.^usize.(i64), len.^usize.(i64), flg.(i64))
+    if r >= 0 { return r.(i32) }
+    if errno_mod.errno().* != errno_mod.ENOSYS && errno_mod.errno().* != errno_mod.EINVAL {
+        return -1
+    }
+    if (flg & ~(SOCK_CLOEXEC | SOCK_NONBLOCK)) != 0 {
+        errno_mod.errno().* = errno_mod.EINVAL
+        return -1
+    }
+    ret := accept(fd, addr, len)
+    if ret < 0 { return ret }
+    if (flg & SOCK_CLOEXEC) != 0 {
+        _ = sc.syscall3(nums.SYS_fcntl.(i64), ret.(i64), fcntl_h.F_SETFD.(i64), fcntl_h.FD_CLOEXEC.(i64))
+    }
+    if (flg & SOCK_NONBLOCK) != 0 {
+        _ = sc.syscall3(nums.SYS_fcntl.(i64), ret.(i64), fcntl_h.F_SETFL.(i64), fcntl_h.O_NONBLOCK.(i64))
+    }
+    return ret
+}

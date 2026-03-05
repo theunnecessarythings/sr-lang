@@ -1,0 +1,8 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/sigsetjmp_tail.c
+
+__sigsetjmp_tail :: proc(jb: sigjmp_buf, ret: i32) i32 {
+    _ = jb
+    return ret
+}

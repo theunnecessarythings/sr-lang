@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/thrd_exit.c
+
+create_mod :: import "libc/src/thread/pthread_create"
+
+thrd_exit :: proc(result: i32) void {
+    create_mod.__pthread_exit(result.(isize).^*void)
+}

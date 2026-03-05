@@ -1,0 +1,117 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdlib/strtol.c and internal/intscan.c (string-only path).
+
+ctype :: import "libc/src/ctype/ctype"
+errno_mod :: import "libc/include/errno"
+
+U64_MAX :: 0xffffffffffffffffu64
+I64_MAX :: 0x7fffffffffffffff
+I64_MIN_ABS :: 0x8000000000000000u64
+
+digit_val :: fn(c: u8) i32 {
+    if c >= 48 and c <= 57 { return (c - 48).(i32) }
+    if c >= 65 and c <= 90 { return (c - 65 + 10).(i32) }
+    if c >= 97 and c <= 122 { return (c - 97 + 10).(i32) }
+    return -1
+}
+
+scan_unsigned :: fn(s: *const u8, base_in: i32, limit: u64, signed_mode: bool, endptr: ?**u8) u64 {
+    p := s
+    while ctype.isspace(p[0].(i32)) != 0 { p = (&p[1]).^*u8 }
+
+    neg := false
+    if p[0] == 45 { neg = true; p = (&p[1]).^*u8 }
+    else if p[0] == 43 { p = (&p[1]).^*u8 }
+
+    base := base_in
+    if base != 0 and (base < 2 or base > 36) {
+        errno_mod.__errno_location().* = errno_mod.EINVAL
+        if endptr != null { endptr?.* = p }
+        return 0
+    }
+
+    // Prefix handling
+    if (base == 0 or base == 16) and p[0] == 48 and (p[1] | 32) == 120 and digit_val(p[2]) >= 0 {
+        base = 16
+        p = (&p[2]).^*u8
+    } else if base == 0 and p[0] == 48 {
+        base = 8
+    } else if base == 0 {
+        base = 10
+    }
+
+    any := false
+    val: u64 = 0
+    if base == 8 and p[0] == 48 {
+        any = true
+        p = (&p[1]).^*u8
+    }
+    cutoff := limit / base.(u64)
+    cutlim := (limit % base.(u64)).(i32)
+
+    while true {
+        d := digit_val(p[0])
+        if d < 0 or d >= base { break }
+        any = true
+        if val > cutoff or (val == cutoff and d > cutlim) {
+            errno_mod.__errno_location().* = errno_mod.ERANGE
+            val = limit
+            // consume remaining valid digits
+            p = (&p[1]).^*u8
+            while true {
+                d2 := digit_val(p[0])
+                if d2 < 0 or d2 >= base { break }
+                p = (&p[1]).^*u8
+            }
+            break
+        }
+        val = val * base.(u64) + d.(u64)
+        p = (&p[1]).^*u8
+    }
+
+    if !any {
+        errno_mod.__errno_location().* = errno_mod.EINVAL
+        if endptr != null { endptr?.* = s }
+        return 0
+    }
+
+    if endptr != null { endptr?.* = p }
+
+    if neg {
+        // Negate using two's complement range
+        if signed_mode and val == limit {
+            return limit
+        }
+        return (0u64 - val)
+    }
+    return val
+}
+
+strtoul :: proc(s: *const u8, endptr: ?**u8, base: i32) u64 {
+    return scan_unsigned(s, base, U64_MAX, false, endptr)
+}
+
+strtoull :: proc(s: *const u8, endptr: ?**u8, base: i32) u64 {
+    return scan_unsigned(s, base, U64_MAX, false, endptr)
+}
+
+strtol :: proc(s: *const u8, endptr: ?**u8, base: i32) isize {
+    lim := I64_MIN_ABS
+    v := scan_unsigned(s, base, lim, true, endptr)
+    return v.(i64).(isize)
+}
+
+strtoll :: proc(s: *const u8, endptr: ?**u8, base: i32) i64 {
+    lim := I64_MIN_ABS
+    v := scan_unsigned(s, base, lim, true, endptr)
+    return v.(i64)
+}
+
+strtoimax :: proc(s: *const u8, endptr: ?**u8, base: i32) intmax_t {
+    return strtoll(s, endptr, base)
+}
+
+strtoumax :: proc(s: *const u8, endptr: ?**u8, base: i32) uintmax_t {
+    return strtoull(s, endptr, base)
+}

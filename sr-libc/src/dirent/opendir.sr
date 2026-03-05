@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/dirent/opendir.c
+
+fcntl_h :: import "libc/include/fcntl"
+open_mod :: import "libc/src/unistd/open"
+close_mod :: import "libc/src/unistd/close"
+
+opendir :: proc(name: *const u8) *DIR {
+    fd := open_mod.open(name, (fcntl_h.O_RDONLY | fcntl_h.O_DIRECTORY | fcntl_h.O_CLOEXEC).(i32), 0)
+    if fd < 0 { return null }
+    d := fdopendir(fd)
+    if d == null {
+        _ = close_mod.close(fd)
+    }
+    return d
+}

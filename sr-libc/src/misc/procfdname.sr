@@ -1,0 +1,37 @@
+package libc
+
+// Derived from musl-1.2.5/src/internal/procfdname.c
+
+procfdname :: proc(buf: *u8, fd: u32) void {
+    // Writes "/proc/self/fd/%u" into buf (caller provides enough space).
+    s := "/proc/self/fd/"
+    i: usize = 0
+    while s[i] != 0 {
+        buf[i] = s[i]
+        i += 1
+    }
+
+    // write decimal fd
+    if fd == 0 {
+        buf[i] = 48
+        i += 1
+        buf[i] = 0
+        return
+    }
+
+    tmp: [12]u8
+    n: usize = 0
+    v := fd
+    while v != 0 {
+        tmp[n] = (48 + (v % 10).(u8)).(u8)
+        v = v / 10
+        n += 1
+    }
+    j: usize = 0
+    while j < n {
+        buf[i + j] = tmp[n - 1 - j]
+        j += 1
+    }
+    i += n
+    buf[i] = 0
+}

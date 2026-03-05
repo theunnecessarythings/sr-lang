@@ -1,0 +1,30 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/cache.c
+// x86_64 has no cacheflush/cachectl syscalls; return ENOSYS.
+
+err :: import "libc/include/errno"
+
+_flush_cache :: proc(addr: *void, len: i32, op: i32) i32 {
+    errp := __errno_location()
+    errp.* = err.ENOSYS
+    return -1
+}
+
+__cachectl :: proc(addr: *void, len: i32, op: i32) i32 {
+    errp := __errno_location()
+    errp.* = err.ENOSYS
+    return -1
+}
+
+flush_icache_init :: proc(start: *void, end: *void, flags: u64) i32 {
+    errp := __errno_location()
+    errp.* = err.ENOSYS
+    return -1
+}
+
+__riscv_flush_icache :: proc(start: *void, end: *void, flags: u64) i32 {
+    errp := __errno_location()
+    errp.* = err.ENOSYS
+    return -1
+}

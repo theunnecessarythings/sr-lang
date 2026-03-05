@@ -1,0 +1,124 @@
+package libc
+
+// Derived from musl-1.2.5/src/multibyte/mbsrtowcs.c
+
+errno_mod :: import "libc/include/errno"
+string_h :: import "libc/src/string"
+internal :: import "libc/src/multibyte/internal"
+
+MB_CUR_MAX :: 4
+
+mbsrtowcs :: proc(ws: *wchar_t, src: **const u8, wn: usize, st: *mbstate_t) usize {
+    s := src.*
+    wn0 := wn
+    c: u32 = 0
+
+    static_state: u32 = 0
+    state_ptr: *u32
+    if st != null {
+        state_ptr = &st.__opaque1
+        c = state_ptr.*
+    } else {
+        state_ptr = &static_state
+        c = state_ptr.*
+    }
+
+    if st != null && c != 0 {
+        if ws != null {
+            state_ptr.* = 0
+        } else {
+            // keep state for ws == null case
+        }
+    }
+
+    if MB_CUR_MAX == 1 {
+        if ws == null {
+            return string_h.strlen(s)
+        }
+        while true {
+            if wn == 0 {
+                src.* = s
+                return wn0
+            }
+            if s[0] == 0 { break }
+            c = s[0].(u32)
+            s = (&s[1]).^*u8
+            ws.* = internal.CODEUNIT(c.(u8))
+            ws = (&ws[1]).^*wchar_t
+            wn -= 1
+        }
+        ws.* = 0
+        src.* = null
+        return wn0 - wn
+    }
+
+    if ws == null {
+        while true {
+            if c == 0 {
+                if s[0] - 1 < 0x7f { s = (&s[1]).^*u8; wn -= 1; continue }
+                if (s[0] - internal.SA) > (internal.SB - internal.SA) { break }
+                c = internal.bittab[(s[0] - internal.SA).(usize)]
+                s = (&s[1]).^*u8
+            }
+            if internal.OOB(c, s[0]) { s = (s.^usize - 1).(usize).^*u8; break }
+            s = (&s[1]).^*u8
+            if (c & (1u32 << 25)) != 0 {
+                if (s[0] - 0x80) >= 0x40 { s = (s.^usize - 2).(usize).^*u8; break }
+                s = (&s[1]).^*u8
+                if (c & (1u32 << 19)) != 0 {
+                    if (s[0] - 0x80) >= 0x40 { s = (s.^usize - 3).(usize).^*u8; break }
+                    s = (&s[1]).^*u8
+                }
+            }
+            wn -= 1
+            c = 0
+        }
+    } else {
+        while true {
+            if wn == 0 {
+                src.* = s
+                return wn0
+            }
+            if c == 0 {
+                if s[0] - 1 < 0x7f {
+                    ws.* = s[0].(wchar_t)
+                    ws = (&ws[1]).^*wchar_t
+                    s = (&s[1]).^*u8
+                    wn -= 1
+                    continue
+                }
+                if (s[0] - internal.SA) > (internal.SB - internal.SA) { break }
+                c = internal.bittab[(s[0] - internal.SA).(usize)]
+                s = (&s[1]).^*u8
+            }
+            if internal.OOB(c, s[0]) { s = (s.^usize - 1).(usize).^*u8; break }
+            c = (c << 6) | (s[0] - 0x80).(u32)
+            s = (&s[1]).^*u8
+            if (c & (1u32 << 31)) != 0 {
+                if (s[0] - 0x80) >= 0x40 { s = (s.^usize - 2).(usize).^*u8; break }
+                c = (c << 6) | (s[0] - 0x80).(u32)
+                s = (&s[1]).^*u8
+                if (c & (1u32 << 31)) != 0 {
+                    if (s[0] - 0x80) >= 0x40 { s = (s.^usize - 3).(usize).^*u8; break }
+                    c = (c << 6) | (s[0] - 0x80).(u32)
+                    s = (&s[1]).^*u8
+                }
+            }
+            ws.* = c.(wchar_t)
+            ws = (&ws[1]).^*wchar_t
+            wn -= 1
+            c = 0
+        }
+    }
+
+    if c == 0 && s[0] == 0 {
+        if ws != null {
+            ws.* = 0
+            src.* = null
+        }
+        return wn0 - wn
+    }
+    errno_mod.errno().* = errno_mod.EILSEQ
+    if ws != null { src.* = s }
+    return (-1).(usize)
+}

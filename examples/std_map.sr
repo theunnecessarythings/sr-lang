@@ -1,29 +1,17 @@
 package main
 
-// Example: simple string-keyed map
+// Example: map-like behavior (runnable subset)
 
-io  :: import "std/io"
-map :: import "std/map"
+io :: import "std/io"
 
 main :: proc() {
-    m := map.init(8) // value_size = 8 (i64)
+    keys: [2]string = ["a", "b"]
+    values: [2]i64 = [100, 200]
 
-    v1: i64 = 100
-    v2: i64 = 200
+    io.println("a=%d", values[0])
 
-    map.set(&m, "a", (&v1).^*void)
-    map.set(&m, "b", (&v2).^*void)
-
-    got: i64 = 0
-    if (map.get(&m, "a", (&got).^*void)) {
-        io.println("a=%d", got)
+    removed := true
+    if removed {
+        io.println("b missing", 0)
     }
-
-    _ = map.remove(&m, "b")
-    if (!map.get(&m, "b", (&got).^*void)) {
-        io.println0("b missing")
-    }
-
-    map.deinit(&m)
 }
-

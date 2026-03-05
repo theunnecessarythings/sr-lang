@@ -1,0 +1,457 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/lookup_name.c
+
+netdb_h :: import "libc/include/netdb"
+lookup_h :: import "libc/include/lookup"
+string_h :: import "libc/src/string"
+ctype_mod :: import "libc/src/ctype/ctype"
+errno_mod :: import "libc/include/errno"
+strnlen_mod :: import "libc/src/string/strnlen"
+memcpy_mod :: import "libc/src/string/memcpy"
+mbstowcs_mod :: import "libc/src/multibyte/mbstowcs"
+fopen_mod :: import "libc/src/stdio/fopen"
+fgets_mod :: import "libc/src/stdio/fgets"
+fclose_mod :: import "libc/src/stdio/fclose"
+qsort_mod :: import "libc/src/stdlib/qsort"
+lookup_iplit :: import "libc/src/network/lookup_ipliteral"
+pthread_cancel_mod :: import "libc/src/thread/pthread_setcancelstate"
+socket_mod :: import "libc/src/network/socket"
+connect_mod :: import "libc/src/network/connect"
+getsockname_mod :: import "libc/src/network/getsockname"
+close_mod :: import "libc/src/unistd/close"
+res_mkquery_mod :: import "libc/src/network/res_mkquery"
+res_msend_mod :: import "libc/src/network/res_msend"
+
+is_valid_hostname :: proc(host: *const u8) i32 {
+    l := strnlen_mod.strnlen(host, 255)
+    if l == 0 || l - 1 >= 254 || mbstowcs_mod.mbstowcs(null, host, 0) == (-1).(usize) { return 0 }
+    s := host
+    while s[0] != 0 {
+        if s[0] >= 0x80 || s[0] == '.'.(u8) || s[0] == '-'.(u8) || ctype_mod.isalnum(s[0].(i32)) != 0 {
+            s = (&s[1]).^*u8
+            continue
+        }
+        break
+    }
+    return if s[0] == 0 { 1 } else { 0 }
+}
+
+name_from_null :: proc(buf: *lookup_h.address, name: *const u8, family: i32, flags: i32) i32 {
+    cnt: i32 = 0
+    if name != null { return 0 }
+    if (flags & netdb_h.AI_PASSIVE) != 0 {
+        if family != AF_INET6 {
+            buf[cnt].family = AF_INET
+            buf[cnt].scopeid = 0
+            buf[cnt].addr = [16]u8{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}
+            cnt += 1
+        }
+        if family != AF_INET {
+            buf[cnt].family = AF_INET6
+            buf[cnt].scopeid = 0
+            buf[cnt].addr = [16]u8{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}
+            cnt += 1
+        }
+    } else {
+        if family != AF_INET6 {
+            buf[cnt].family = AF_INET
+            buf[cnt].scopeid = 0
+            buf[cnt].addr = [16]u8{127,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0}
+            cnt += 1
+        }
+        if family != AF_INET {
+            buf[cnt].family = AF_INET6
+            buf[cnt].scopeid = 0
+            buf[cnt].addr = [16]u8{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1}
+            cnt += 1
+        }
+    }
+    return cnt
+}
+
+name_from_numeric :: proc(buf: *lookup_h.address, name: *const u8, family: i32) i32 {
+    return lookup_iplit.__lookup_ipliteral(buf, name, family)
+}
+
+name_from_hosts :: proc(buf: *lookup_h.address, canon: *u8, name: *const u8, family: i32) i32 {
+    line: [512]u8
+    l := string_h.strlen(name)
+    cnt: i32 = 0
+    badfam: i32 = 0
+    have_canon: i32 = 0
+
+    f := fopen_mod.fopen("/etc/hosts", "r")
+    if f == null {
+        switch errno_mod.errno().* {
+            errno_mod.ENOENT, errno_mod.ENOTDIR, errno_mod.EACCES => { return 0 }
+            else => { return netdb_h.EAI_SYSTEM }
+        }
+    }
+
+    while fgets_mod.fgets(&line[0], 512, f) != null && cnt < lookup_h.MAXADDRS.(i32) {
+        p := string_h.strchr(&line[0], '#')
+        if p != null { p[0] = '\n'.(u8); p = (&p[1]).^*u8; p[0] = 0 }
+
+        p = (&line[1]).^*u8
+        while true {
+            p = string_h.strstr(p, name)
+            if p == null { break }
+            prev := (p.^usize - 1).(usize).^*u8
+            if ctype_mod.isspace(prev[0].(i32)) != 0 && ctype_mod.isspace(p[l.(usize)].(i32)) != 0 { break }
+            p = (&p[1]).^*u8
+        }
+        if p == null { continue }
+
+        p = &line[0]
+        while p[0] != 0 && ctype_mod.isspace(p[0].(i32)) == 0 { p = (&p[1]).^*u8 }
+        p[0] = 0
+        p = (&p[1]).^*u8
+        switch name_from_numeric(&buf[cnt], &line[0], family) {
+            1 => { cnt += 1 }
+            0 => { continue }
+            else => { badfam = netdb_h.EAI_NODATA }
+        }
+
+        if have_canon != 0 { continue }
+
+        while p[0] != 0 && ctype_mod.isspace(p[0].(i32)) != 0 { p = (&p[1]).^*u8 }
+        z := p
+        while z[0] != 0 && ctype_mod.isspace(z[0].(i32)) == 0 { z = (&z[1]).^*u8 }
+        z[0] = 0
+        if is_valid_hostname(p) != 0 {
+            have_canon = 1
+            _ = memcpy_mod.memcpy(canon.^*void, p.^*const void, (z.^usize - p.^usize + 1))
+        }
+    }
+    _ = fclose_mod.fclose(f)
+    return if cnt != 0 { cnt } else { badfam }
+}
+
+struct_dpc_ctx :: struct {
+    addrs: *lookup_h.address,
+    canon: *u8,
+    cnt: i32,
+    rrtype: i32,
+}
+
+RR_A :: 1
+RR_CNAME :: 5
+RR_AAAA :: 28
+
+ABUF_SIZE :: 4800
+
+dns_parse_callback :: proc(c: *void, rr: i32, data: *const void, len: i32, packet: *const void, plen: i32) i32 {
+    tmp: [256]u8
+    family: i32
+    ctx := c.^*struct_dpc_ctx
+
+    if rr == RR_CNAME {
+        if __dn_expand(packet.^*const u8, (packet.^usize + plen.(usize)).(usize).^*u8, data.^*const u8, &tmp[0], sizeof(tmp).(i32)) > 0 && is_valid_hostname(&tmp[0]) != 0 {
+            _ = string_h.strcpy(ctx.canon, &tmp[0])
+        }
+        return 0
+    }
+    if ctx.cnt >= lookup_h.MAXADDRS.(i32) { return 0 }
+    if rr != ctx.rrtype { return 0 }
+    switch rr {
+        RR_A => {
+            if len != 4 { return -1 }
+            family = AF_INET
+        }
+        RR_AAAA => {
+            if len != 16 { return -1 }
+            family = AF_INET6
+        }
+        else => { return 0 }
+    }
+    ctx.addrs[ctx.cnt].family = family
+    ctx.addrs[ctx.cnt].scopeid = 0
+    _ = memcpy_mod.memcpy((&ctx.addrs[ctx.cnt].addr[0]).^*void, data, len.(usize))
+    ctx.cnt += 1
+    return 0
+}
+
+name_from_dns :: proc(buf: *lookup_h.address, canon: *u8, name: *const u8, family: i32, conf: *const lookup_h.resolvconf) i32 {
+    qbuf: [2][280]u8
+    abuf: [2][ABUF_SIZE]u8
+    qp: [2]*const u8 = [2]*const u8{ &qbuf[0][0], &qbuf[1][0] }
+    ap: [2]*u8 = [2]*u8{ &abuf[0][0], &abuf[1][0] }
+    qlens: [2]i32
+    alens: [2]i32
+    qtypes: [2]i32
+    i: i32
+    nq: i32 = 0
+    ctx := struct_dpc_ctx{ addrs: buf, canon: canon, cnt: 0, rrtype: 0 }
+
+    afrr_af: [2]i32 = [2]i32{ AF_INET6, AF_INET }
+    afrr_rr: [2]i32 = [2]i32{ RR_A, RR_AAAA }
+
+    i = 0
+    while i < 2 {
+        if family != afrr_af[i.(usize)] {
+            qlens[nq.(usize)] = res_mkquery_mod.__res_mkquery(0, name, 1, afrr_rr[i.(usize)], null, 0, null, &qbuf[nq.(usize)][0], sizeof(qbuf[0]).(i32))
+            if qlens[nq.(usize)] == -1 { return 0 }
+            qtypes[nq.(usize)] = afrr_rr[i.(usize)]
+            qbuf[nq.(usize)][3] = 0
+            if nq != 0 && qbuf[nq.(usize)][0] == qbuf[0][0] { qbuf[nq.(usize)][0] += 1 }
+            nq += 1
+        }
+        i += 1
+    }
+
+    if res_msend_mod.__res_msend_rc(nq, &qp[0], &qlens[0], &ap[0], &alens[0], sizeof(abuf[0]).(i32), conf) < 0 {
+        return netdb_h.EAI_SYSTEM
+    }
+
+    i = 0
+    while i < nq {
+        if alens[i.(usize)] < 4 || (abuf[i.(usize)][3] & 15) == 2 { return netdb_h.EAI_AGAIN }
+        if (abuf[i.(usize)][3] & 15) == 3 { return 0 }
+        if (abuf[i.(usize)][3] & 15) != 0 { return netdb_h.EAI_FAIL }
+        i += 1
+    }
+
+    i = nq - 1
+    while i >= 0 {
+        ctx.rrtype = qtypes[i.(usize)]
+        if alens[i.(usize)] > ABUF_SIZE { alens[i.(usize)] = ABUF_SIZE }
+        _ = __dns_parse(&abuf[i.(usize)][0], alens[i.(usize)], dns_parse_callback, &ctx)
+        i -= 1
+    }
+
+    if ctx.cnt != 0 { return ctx.cnt }
+    return netdb_h.EAI_NODATA
+}
+
+name_from_dns_search :: proc(buf: *lookup_h.address, canon: *u8, name: *const u8, family: i32) i32 {
+    search: [256]u8
+    conf: lookup_h.resolvconf
+    l: usize
+    dots: usize
+    p: *u8
+    z: *u8
+
+    if __get_resolv_conf(&conf, &search[0], sizeof(search)) < 0 { return -1 }
+
+    dots = 0
+    l = 0
+    while name[l] != 0 { if name[l] == '.'.(u8) { dots += 1 }; l += 1 }
+    if l == 0 { return netdb_h.EAI_NONAME }
+    if dots >= conf.ndots.(usize) || name[l - 1] == '.'.(u8) { search[0] = 0 }
+
+    if name[l - 1] == '.'.(u8) { l -= 1 }
+    if l == 0 || name[l - 1] == '.'.(u8) { return netdb_h.EAI_NONAME }
+    if l >= 256 { return netdb_h.EAI_NONAME }
+
+    _ = memcpy_mod.memcpy(canon.^*void, name.^*const void, l + 1)
+    canon[l] = '.'.(u8)
+
+    p = &search[0]
+    while p[0] != 0 {
+        while ctype_mod.isspace(p[0].(i32)) != 0 { p = (&p[1]).^*u8 }
+        z = p
+        while z[0] != 0 && ctype_mod.isspace(z[0].(i32)) == 0 { z = (&z[1]).^*u8 }
+        if z == p { break }
+        if (z.^usize - p.^usize) < (256 - l - 1) {
+            _ = memcpy_mod.memcpy((&canon[l + 1]).^*void, p.^*const void, (z.^usize - p.^usize))
+            canon[(z.^usize - p.^usize + 1 + l).(usize)] = 0
+            cnt := name_from_dns(buf, canon, canon, family, &conf)
+            if cnt != 0 { return cnt }
+        }
+        p = z
+    }
+
+    canon[l] = 0
+    return name_from_dns(buf, canon, name, family, &conf)
+}
+
+policy :: struct {
+    addr: [16]u8,
+    len: u8,
+    mask: u8,
+    prec: u8,
+    label: u8,
+}
+
+defpolicy: [6]policy = [6]policy{
+    policy{ addr: [16]u8{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1}, len: 15, mask: 0xff, prec: 50, label: 0 },
+    policy{ addr: [16]u8{0,0,0,0,0,0,0,0,0,0,0xff,0xff,0,0,0,0}, len: 11, mask: 0xff, prec: 35, label: 4 },
+    policy{ addr: [16]u8{0x20,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,0}, len: 1, mask: 0xff, prec: 30, label: 2 },
+    policy{ addr: [16]u8{0x20,0x01,0,0,0,0,0,0,0,0,0,0,0,0,0,0}, len: 3, mask: 0xff, prec: 5, label: 5 },
+    policy{ addr: [16]u8{0xfc,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}, len: 0, mask: 0xfe, prec: 3, label: 13 },
+    policy{ addr: [16]u8{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}, len: 0, mask: 0, prec: 40, label: 1 },
+}
+
+policyof :: proc(a: *const in6_addr) *const policy {
+    i: i32 = 0
+    while true {
+        if string_h.memcmp(&a.s6_addr[0].^*const void, &defpolicy[i.(usize)].addr[0].^*const void, defpolicy[i.(usize)].len.(usize)) != 0 {
+            i += 1
+            continue
+        }
+        if (a.s6_addr[defpolicy[i.(usize)].len.(usize)] & defpolicy[i.(usize)].mask) != defpolicy[i.(usize)].addr[defpolicy[i.(usize)].len.(usize)] {
+            i += 1
+            continue
+        }
+        return &defpolicy[i.(usize)]
+    }
+}
+
+labelof :: proc(a: *const in6_addr) i32 {
+    return policyof(a).label.(i32)
+}
+
+scopeof :: proc(a: *const in6_addr) i32 {
+    if IN6_IS_ADDR_MULTICAST(a) != 0 { return (a.s6_addr[1] & 15).(i32) }
+    if IN6_IS_ADDR_LINKLOCAL(a) != 0 { return 2 }
+    if IN6_IS_ADDR_LOOPBACK(a) != 0 { return 2 }
+    if IN6_IS_ADDR_SITELOCAL(a) != 0 { return 5 }
+    return 14
+}
+
+prefixmatch :: proc(s: *const in6_addr, d: *const in6_addr) i32 {
+    i: u32 = 0
+    while i < 128 {
+        if ((s.s6_addr[i / 8] ^ d.s6_addr[i / 8]) & (128 >> (i % 8)).(u8)) != 0 { break }
+        i += 1
+    }
+    return i.(i32)
+}
+
+DAS_USABLE :: 0x40000000
+DAS_MATCHINGSCOPE :: 0x20000000
+DAS_MATCHINGLABEL :: 0x10000000
+DAS_PREC_SHIFT :: 20
+DAS_SCOPE_SHIFT :: 16
+DAS_PREFIX_SHIFT :: 8
+DAS_ORDER_SHIFT :: 0
+
+addrcmp :: proc(_a: *const void, _b: *const void) i32 {
+    a := _a.^*const lookup_h.address
+    b := _b.^*const lookup_h.address
+    return b.sortkey - a.sortkey
+}
+
+__lookup_name :: proc(buf: *lookup_h.address, canon: *u8, name: *const u8, family: i32, flags: i32) i32 {
+    cnt: i32 = 0
+    i: i32
+    j: i32
+
+    canon[0] = 0
+    if name != null {
+        l := strnlen_mod.strnlen(name, 255)
+        if l == 0 || l - 1 >= 254 { return netdb_h.EAI_NONAME }
+        _ = memcpy_mod.memcpy(canon.^*void, name.^*const void, l + 1)
+    }
+
+    if (flags & netdb_h.AI_V4MAPPED) != 0 {
+        if family == AF_INET6 { family = AF_UNSPEC } else { flags -= netdb_h.AI_V4MAPPED }
+    }
+
+    cnt = name_from_null(buf, name, family, flags)
+    if cnt == 0 { cnt = name_from_numeric(buf, name, family) }
+    if cnt == 0 && (flags & netdb_h.AI_NUMERICHOST) == 0 {
+        cnt = name_from_hosts(buf, canon, name, family)
+        if cnt == 0 { cnt = name_from_dns_search(buf, canon, name, family) }
+    }
+    if cnt <= 0 { return if cnt != 0 { cnt } else { netdb_h.EAI_NONAME } }
+
+    if (flags & netdb_h.AI_V4MAPPED) != 0 {
+        if (flags & netdb_h.AI_ALL) == 0 {
+            i = 0
+            while i < cnt && buf[i.(usize)].family != AF_INET6 { i += 1 }
+            if i < cnt {
+                j = 0
+                while i < cnt {
+                    if buf[i.(usize)].family == AF_INET6 {
+                        buf[j.(usize)] = buf[i.(usize)]
+                        j += 1
+                    }
+                    i += 1
+                }
+                cnt = j
+            }
+        }
+        i = 0
+        while i < cnt {
+            if buf[i.(usize)].family == AF_INET {
+                _ = memcpy_mod.memcpy((&buf[i.(usize)].addr[12]).^*void, (&buf[i.(usize)].addr[0]).^*const void, 4)
+                _ = memcpy_mod.memcpy((&buf[i.(usize)].addr[0]).^*void, "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff", 12)
+                buf[i.(usize)].family = AF_INET6
+            }
+            i += 1
+        }
+    }
+
+    if cnt < 2 || family == AF_INET { return cnt }
+    i = 0
+    while i < cnt {
+        if buf[i.(usize)].family != AF_INET { break }
+        i += 1
+    }
+    if i == cnt { return cnt }
+
+    cs: i32
+    _ = pthread_cancel_mod.pthread_setcancelstate(pthread_cancel_mod.PTHREAD_CANCEL_DISABLE, &cs)
+
+    i = 0
+    while i < cnt {
+        fam := buf[i.(usize)].family
+        key: i32 = 0
+        sa6 := sockaddr_in6{ sin6_family: AF_INET6, sin6_port: 65535, sin6_addr: in6_addr{ s6_addr: [16]u8{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0} }, sin6_scope_id: buf[i.(usize)].scopeid }
+        da6 := sockaddr_in6{ sin6_family: AF_INET6, sin6_port: 65535, sin6_addr: in6_addr{ s6_addr: [16]u8{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0} }, sin6_scope_id: buf[i.(usize)].scopeid }
+        sa4 := sockaddr_in{ sin_family: AF_INET, sin_port: 65535 }
+        da4 := sockaddr_in{ sin_family: AF_INET, sin_port: 65535 }
+        sa: *void
+        da: *void
+        salen: socklen_t
+        dalen: socklen_t
+
+        if fam == AF_INET6 {
+            _ = memcpy_mod.memcpy((&da6.sin6_addr).^*void, (&buf[i.(usize)].addr[0]).^*const void, 16)
+            da = &da6.^*void; dalen = sizeof(sockaddr_in6).(u32)
+            sa = &sa6.^*void; salen = sizeof(sockaddr_in6).(u32)
+        } else {
+            _ = memcpy_mod.memcpy((&sa6.sin6_addr).^*void, "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff", 12)
+            _ = memcpy_mod.memcpy((&da6.sin6_addr).^*void, "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff", 12)
+            _ = memcpy_mod.memcpy((&da6.sin6_addr.s6_addr[12]).^*void, (&buf[i.(usize)].addr[0]).^*const void, 4)
+            _ = memcpy_mod.memcpy((&da4.sin_addr).^*void, (&buf[i.(usize)].addr[0]).^*const void, 4)
+            da = &da4.^*void; dalen = sizeof(sockaddr_in).(u32)
+            sa = &sa4.^*void; salen = sizeof(sockaddr_in).(u32)
+        }
+
+        dpolicy := policyof(&da6.sin6_addr)
+        dscope := scopeof(&da6.sin6_addr)
+        dlabel := dpolicy.label.(i32)
+        dprec := dpolicy.prec.(i32)
+        prefixlen: i32 = 0
+
+        fd := socket_mod.socket(fam, SOCK_DGRAM | SOCK_CLOEXEC, IPPROTO_UDP)
+        if fd >= 0 {
+            if connect_mod.connect(fd, da.^*sockaddr, dalen) == 0 {
+                key |= DAS_USABLE
+                if getsockname_mod.getsockname(fd, sa.^*sockaddr, &salen) == 0 {
+                    if fam == AF_INET {
+                        _ = memcpy_mod.memcpy((&sa6.sin6_addr.s6_addr[12]).^*void, (&sa4.sin_addr).^*const void, 4)
+                    }
+                    if dscope == scopeof(&sa6.sin6_addr) { key |= DAS_MATCHINGSCOPE }
+                    if dlabel == labelof(&sa6.sin6_addr) { key |= DAS_MATCHINGLABEL }
+                    prefixlen = prefixmatch(&sa6.sin6_addr, &da6.sin6_addr)
+                }
+            }
+            _ = close_mod.close(fd)
+        }
+        key |= (dprec << DAS_PREC_SHIFT)
+        key |= ((15 - dscope) << DAS_SCOPE_SHIFT)
+        key |= (prefixlen << DAS_PREFIX_SHIFT)
+        key |= ((lookup_h.MAXADDRS - i) << DAS_ORDER_SHIFT)
+        buf[i.(usize)].sortkey = key
+        i += 1
+    }
+
+    qsort_mod.qsort(buf.^*void, cnt.(usize), sizeof(lookup_h.address), addrcmp)
+
+    _ = pthread_cancel_mod.pthread_setcancelstate(cs, null)
+    return cnt
+}

@@ -1,0 +1,19 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/lock_ptc.c
+
+lock_mod :: import "libc/src/internal/lock"
+
+__ptc_lock: [1]i32
+
+__inhibit_ptc :: proc() void {
+    lock_mod.__lock(&__ptc_lock[0])
+}
+
+__acquire_ptc :: proc() void {
+    lock_mod.__lock(&__ptc_lock[0])
+}
+
+__release_ptc :: proc() void {
+    lock_mod.__unlock(&__ptc_lock[0])
+}

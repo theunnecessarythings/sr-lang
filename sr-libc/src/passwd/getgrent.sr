@@ -1,0 +1,49 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/getgrent.c
+
+grp_h :: import "libc/include/grp"
+errno_h :: import "libc/include/errno"
+fopen_mod :: import "libc/src/stdio/fopen"
+fclose_mod :: import "libc/src/stdio/fclose"
+rewind_mod :: import "libc/src/stdio/rewind"
+getgrent_a :: import "libc/src/passwd/getgrent_a"
+getgr_a :: import "libc/src/passwd/getgr_a"
+
+__gr_file: *alltypes.FILE = null
+__gr_line: [1024]u8
+__gr_mem: [256]usize
+__gr_res: grp_h.group
+
+setgrent :: proc() void {
+    if __gr_file == null {
+        __gr_file = fopen_mod.fopen("/etc/group", "r")
+        return
+    }
+    rewind_mod.rewind(__gr_file)
+}
+
+getgrent :: proc() *grp_h.group {
+    if __gr_file == null {
+        __gr_file = fopen_mod.fopen("/etc/group", "r")
+        if __gr_file == null { return null }
+    }
+    res: *grp_h.group = null
+    r := getgrent_a.__getgrent_a(__gr_file, &__gr_res, &__gr_line[0], 1024, (&__gr_mem[0]).^*u8, sizeof(__gr_mem), &res)
+    if r != 0 { return null }
+    return res
+}
+
+getgrgid :: proc(gid: gid_t) *grp_h.group {
+    res: *grp_h.group = null
+    r := getgr_a.__getgr_a(null, gid, &__gr_res, &__gr_line[0], 1024, (&__gr_mem[0]).^*u8, sizeof(__gr_mem), &res)
+    if r != 0 { errno_h.errno().* = r; return null }
+    return res
+}
+
+getgrnam :: proc(name: *const u8) *grp_h.group {
+    res: *grp_h.group = null
+    r := getgr_a.__getgr_a(name, 0xffffffff, &__gr_res, &__gr_line[0], 1024, (&__gr_mem[0]).^*u8, sizeof(__gr_mem), &res)
+    if r != 0 { errno_h.errno().* = r; return null }
+    return res
+}

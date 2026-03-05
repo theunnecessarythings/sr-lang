@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/fopen.c.
+
+open_mod :: import "libc/src/unistd/open"
+unistd :: import "libc/include/unistd"
+
+fopen :: proc(path: *const u8, mode: *const u8) *alltypes.FILE {
+    flags := __fmodeflags(mode)
+    fd := open_mod.open(path, flags, 0o666)
+    if fd < 0 { return null }
+    f := __fdopen(fd, mode)
+    if f == null { _ = unistd.close(fd) }
+    return f
+}

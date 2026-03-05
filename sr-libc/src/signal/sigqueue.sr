@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/sigqueue.c
+
+sig_h :: import "libc/include/signal"
+kill_mod :: import "libc/src/signal/kill"
+
+sigqueue :: proc(pid: alltypes.pid_t, sig: i32, value: sig_h.sigval) i32 {
+    _ = value
+    return kill_mod.kill(pid, sig)
+}

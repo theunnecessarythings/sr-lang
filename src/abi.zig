@@ -29,7 +29,8 @@ pub fn abiSizeAlign(self: *Codegen, ty: types.TypeId) SizeAlign {
         .Bool, .I8, .U8 => return .{ .size = 1, .alignment = 1 },
         .I16, .U16 => return .{ .size = 2, .alignment = 2 },
         .I32, .U32, .F32 => return .{ .size = 4, .alignment = 4, .hasFloat = ts.getKind(ty) == .F32, .allIntsOnly = ts.getKind(ty) != .F32 },
-        .I64, .U64, .Usize, .Ptr, .Any, .Code, .Function, .MlirModule, .MlirAttribute, .MlirType, .F64 => return .{ .size = 8, .alignment = 8, .hasFloat = ts.getKind(ty) == .F64, .allIntsOnly = ts.getKind(ty) != .F64 },
+        .I64, .U64, .Usize, .Isize, .Ptr, .Any, .Code, .Function, .MlirModule, .MlirAttribute, .MlirType, .F64 => return .{ .size = 8, .alignment = 8, .hasFloat = ts.getKind(ty) == .F64, .allIntsOnly = ts.getKind(ty) != .F64 },
+        .F128 => return .{ .size = 16, .alignment = 16, .hasFloat = true, .allIntsOnly = false },
 
         .Simd => {
             const S = ts.get(.Simd, ty);
@@ -146,9 +147,10 @@ pub fn abiClassifyX64SysV(self: *Codegen, ty: types.TypeId, isReturn: bool) AbiC
         .I16, .U16 => return .{ .kind = .DirectScalar, .scalar0 = mlir.Type.getSignlessIntegerType(self.mlir_ctx, 16), .size = 2, .alignment = 2 },
         .I32, .U32 => return .{ .kind = .DirectScalar, .scalar0 = self.i32_ty, .size = 4, .alignment = 4 },
         .I64, .U64, .Usize => return .{ .kind = .DirectScalar, .scalar0 = self.i64_ty, .size = 8, .alignment = 8 },
-        .Ptr, .Any, .Function, .MlirModule, .MlirAttribute, .MlirType => return .{ .kind = .DirectScalar, .scalar0 = self.llvm_ptr_ty, .size = 8, .alignment = 8 },
+        .Ptr, .Any, .Isize, .Function, .MlirModule, .MlirAttribute, .MlirType => return .{ .kind = .DirectScalar, .scalar0 = self.llvm_ptr_ty, .size = 8, .alignment = 8 },
         .F32 => return .{ .kind = .DirectScalar, .scalar0 = self.f32_ty, .size = 4, .alignment = 4 },
         .F64 => return .{ .kind = .DirectScalar, .scalar0 = self.f64_ty, .size = 8, .alignment = 8 },
+        .F128 => return .{ .kind = .DirectScalar, .scalar0 = self.f128_ty, .size = 16, .alignment = 16 },
         .Optional => if (ts.isOptionalPointer(ty)) {
             const sa = abiSizeAlign(self, ty);
             return .{ .kind = .DirectScalar, .scalar0 = self.llvm_ptr_ty, .size = sa.size, .alignment = @intCast(sa.alignment) };

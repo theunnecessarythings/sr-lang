@@ -1,0 +1,71 @@
+package libc
+
+// Minimal regex executor supporting ^, $, ., and *.
+
+regex_h :: import "libc/include/regex"
+
+matchhere_len :: fn(p: *const u8, s: *const u8) isize {
+    if p[0] == 0 { return 0 }
+    if p[0] == '$'.(u8) && p[1] == 0 { return if s[0] == 0 { 0 } else { -1 } }
+    if p[1] == '*'.(u8) {
+        c := p[0]
+        i: isize = 0
+        loop {
+            l := matchhere_len((p.^usize + 2).(usize).^*const u8, (s.^usize + i.(usize)).(usize).^*const u8)
+            if l >= 0 { return i + l }
+            if s[i.(usize)] == 0 { break }
+            if c != '.'.(u8) && s[i.(usize)] != c { break }
+            i += 1
+        }
+        return -1
+    }
+    if s[0] != 0 && (p[0] == '.'.(u8) || p[0] == s[0]) {
+        l := matchhere_len((p.^usize + 1).(usize).^*const u8, (s.^usize + 1).(usize).^*const u8)
+        if l >= 0 { return 1 + l }
+    }
+    return -1
+}
+
+regexec :: proc(preg: *const regex_h.regex_t, str: *const u8, nmatch: usize, pmatch: *regex_h.regmatch_t, eflags: i32) i32 {
+    _ = eflags
+    if preg == null || preg.__pattern == null { return regex_h.REG_BADPAT }
+    p := preg.__pattern.^*const u8
+
+    start: usize = 0
+    if p[0] == '^'.(u8) {
+        p = (p.^usize + 1).(usize).^*const u8
+        l := matchhere_len(p, str)
+        if l < 0 { return regex_h.REG_NOMATCH }
+        if nmatch > 0 {
+            pmatch[0].rm_so = 0
+            pmatch[0].rm_eo = l
+            i: usize = 1
+            while i < nmatch {
+                pmatch[i].rm_so = -1
+                pmatch[i].rm_eo = -1
+                i += 1
+            }
+        }
+        return 0
+    }
+
+    while true {
+        l := matchhere_len(p, (str.^usize + start).(usize).^*const u8)
+        if l >= 0 {
+            if nmatch > 0 {
+                pmatch[0].rm_so = start.(isize)
+                pmatch[0].rm_eo = (start + l.(usize)).(isize)
+                i: usize = 1
+                while i < nmatch {
+                    pmatch[i].rm_so = -1
+                    pmatch[i].rm_eo = -1
+                    i += 1
+                }
+            }
+            return 0
+        }
+        if str[start] == 0 { break }
+        start += 1
+    }
+    return regex_h.REG_NOMATCH
+}

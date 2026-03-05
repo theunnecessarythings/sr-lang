@@ -1,0 +1,43 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/fseek.c.
+
+errno_mod :: import "libc/include/errno"
+impl :: import "libc/src/stdio/stdio_impl"
+
+__fseeko_unlocked :: proc(f: *alltypes.FILE, off: alltypes.off_t, whence: i32) i32 {
+    if whence != SEEK_CUR and whence != SEEK_SET and whence != SEEK_END {
+        errno_mod.__errno_location().* = errno_mod.EINVAL
+        return -1
+    }
+
+    if whence == SEEK_CUR and f.rend != null { off = off - (f.rend.^isize - f.rpos.^isize).(alltypes.off_t) }
+
+    if f.wpos != f.wbase {
+        _ = f.write(f, null, 0)
+        if f.wpos == null { return -1 }
+    }
+
+    f.wpos = null
+    f.wbase = null
+    f.wend = null
+
+    if f.seek(f, off, whence) < 0 { return -1 }
+
+    f.rpos = null
+    f.rend = null
+    f.flags = f.flags & ~(impl.F_EOF.(u32))
+
+    return 0
+}
+
+__fseeko :: proc(f: *alltypes.FILE, off: alltypes.off_t, whence: i32) i32 {
+    _ = __lockfile(f)
+    result := __fseeko_unlocked(f, off, whence)
+    _ = __unlockfile(f)
+    return result
+}
+
+fseek :: proc(f: *alltypes.FILE, off: i64, whence: i32) i32 { return __fseeko(f, off, whence) }
+
+fseeko :: proc(f: *alltypes.FILE, off: alltypes.off_t, whence: i32) i32 { return __fseeko(f, off, whence) }

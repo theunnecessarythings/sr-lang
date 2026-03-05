@@ -1,0 +1,25 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/signal.c
+
+sig_h :: import "libc/include/signal"
+sigaction_mod :: import "libc/src/signal/sigaction"
+sigempty_mod :: import "libc/src/signal/sigemptyset"
+
+signal :: proc(sig: i32, func: sig_h.sigaction_handler) sig_h.sigaction_handler {
+    sa_old: sig_h.sigaction
+    sa: sig_h.sigaction
+
+    sa.sa_handler = func
+    sa.sa_flags = sig_h.SA_RESTART.(u64)
+    sa.sa_restorer = null
+    _ = sigempty_mod.sigemptyset(&sa.sa_mask)
+
+    if sigaction_mod.__sigaction(sig, &sa, &sa_old) < 0 {
+        return sig_h.SIG_ERR
+    }
+    return sa_old.sa_handler
+}
+
+bsd_signal :: signal
+__sysv_signal :: signal

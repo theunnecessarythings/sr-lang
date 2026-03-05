@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/ldso/dladdr.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <dlfcn.h>
+
+stub_dladdr :: proc(addr: void, info: Dl_info) i32 {
+    // TODO: Translate function body
+    unreachable
+}
+

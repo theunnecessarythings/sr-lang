@@ -1,0 +1,36 @@
+package libc
+
+// Minimal locale implementation (C and C.UTF-8 only), derived from musl.
+
+__locale_map :: struct {
+    map: *const u32,
+    map_size: usize,
+    name: *const u8,
+}
+
+__locale_struct :: struct {
+    cat: [6]*const __locale_map,
+}
+
+// Empty message catalog header (MO magic + placeholder values)
+__empty_mo :: [5]u32 = {
+    0x950412de,
+    0,
+    0xffffffff,
+    0xffffffff,
+    0xffffffff,
+}
+
+__c_dot_utf8 :: __locale_map = __locale_map{
+    map: (&__empty_mo[0]).^*const u32,
+    map_size: sizeof([5]u32),
+    name: "C.UTF-8",
+}
+
+__c_locale :: __locale_struct = __locale_struct{ cat: {0, 0, 0, 0, 0, 0} }
+__c_dot_utf8_locale :: __locale_struct = __locale_struct{
+    cat: {&__c_dot_utf8, 0, 0, 0, 0, 0},
+}
+
+__global_locale :: locale_t = (&__c_locale).^*void
+__current_locale :: locale_t = (&__c_locale).^*void

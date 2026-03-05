@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/getpw_r.c
+
+pwd_h :: import "libc/include/pwd"
+getpw_a :: import "libc/src/passwd/getpw_a"
+
+getpw_r :: proc(name: *const u8, uid: uid_t, pw: *pwd_h.passwd, buf: *u8, size: usize, res: **pwd_h.passwd) i32 {
+    return getpw_a.__getpw_a(name, uid, pw, buf, size, res)
+}
+
+getpwnam_r :: proc(name: *const u8, pw: *pwd_h.passwd, buf: *u8, size: usize, res: **pwd_h.passwd) i32 {
+    return getpw_a.__getpw_a(name, 0xffffffff, pw, buf, size, res)
+}
+
+getpwuid_r :: proc(uid: uid_t, pw: *pwd_h.passwd, buf: *u8, size: usize, res: **pwd_h.passwd) i32 {
+    return getpw_a.__getpw_a(null, uid, pw, buf, size, res)
+}

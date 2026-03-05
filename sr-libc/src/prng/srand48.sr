@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/prng/srand48.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <stdlib.h>
+
+seed48_mod :: import "libc/src/prng/seed48"
+
+srand48 :: proc(seed: i64) void {
+    tmp: [3]u16
+    tmp[0] = 0x330e
+    tmp[1] = seed.(u16)
+    tmp[2] = (seed >> 16).(u16)
+    _ = seed48_mod.seed48(&tmp[0])
+}

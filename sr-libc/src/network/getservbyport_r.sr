@@ -1,0 +1,56 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/getservbyport_r.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <netinet/in.h>
+// #include <netdb.h>
+// #include <inttypes.h>
+// #include <errno.h>
+// #include <string.h>
+// #include <stdlib.h>
+
+errno_mod :: import "libc/include/errno"
+string_h :: import "libc/src/string"
+strtoul_mod :: import "libc/src/stdlib/strtol"
+netdb_h :: import "libc/include/netdb"
+
+getservbyport_r :: proc(port: i32, prots: *const u8, se: *servent, buf: *u8, buflen: usize, res: **servent) i32 {
+    if prots == null {
+        r := getservbyport_r(port, "tcp", se, buf, buflen, res)
+        if r != 0 { r = getservbyport_r(port, "udp", se, buf, buflen, res) }
+        return r
+    }
+    res.* = null
+
+    i := (buf.^usize) & (sizeof(*u8) - 1)
+    if i == 0 { i = sizeof(*u8) }
+    if buflen <= 3 * sizeof(*u8) - i { return errno_mod.ERANGE }
+    buf = (buf.^usize + (sizeof(*u8) - i)).(usize).^*u8
+    buflen -= (sizeof(*u8) - i)
+
+    if string_h.strcmp(prots, "tcp") != 0 && string_h.strcmp(prots, "udp") != 0 { return errno_mod.EINVAL }
+
+    se.s_port = port
+    se.s_proto = prots.^*u8
+    se.s_aliases = buf.^**u8
+    buf = (buf.^usize + 2 * sizeof(*u8)).(usize).^*u8
+    buflen -= 2 * sizeof(*u8)
+    se.s_aliases[1] = null
+    se.s_aliases[0] = se.s_name = buf
+
+    sin: sockaddr_in = { sin_family: AF_INET, sin_port: port.(u16), sin_addr: in_addr{ s_addr: 0 }, sin_zero: [8]u8{0,0,0,0,0,0,0,0} }
+    ni := getnameinfo((&sin).^*sockaddr, sizeof(sockaddr_in).(u32), null, 0, buf, buflen.(u32), if string_h.strcmp(prots, "udp") != 0 { 0 } else { netdb_h.NI_DGRAM })
+    switch ni {
+        netdb_h.EAI_MEMORY, netdb_h.EAI_SYSTEM => { return errno_mod.ENOMEM }
+        netdb_h.EAI_OVERFLOW => { return errno_mod.ERANGE }
+        0 => {}
+        else => { return errno_mod.ENOENT }
+    }
+
+    if strtoul_mod.strtoul(buf, null, 10).(i32) == ntohs(port.(u16)).(i32) { return errno_mod.ENOENT }
+
+    res.* = se
+    return 0
+}

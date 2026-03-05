@@ -1,0 +1,438 @@
+package libc
+
+// Basic math helpers (f32/f64/f128). Derived from musl behavior (partial).
+
+f128_inf :: 1.0 / 0.0
+f128_nan :: 0.0 / 0.0
+I128_MAX_F128 :: 170141183460469231731687303715884105727.0
+I128_MIN_F128 :: -170141183460469231731687303715884105728.0
+I64_MAX_F64 :: 9223372036854775807.0
+I64_MIN_F64 :: -9223372036854775808.0
+I32_MAX_F32 :: 2147483647.0
+I32_MIN_F32 :: -2147483648.0
+
+FP_INFINITE :: 1
+FP_NAN :: 2
+FP_NORMAL :: 3
+FP_SUBNORMAL :: 4
+FP_ZERO :: 5
+
+isnan :: proc(x: f64) i32 { return (x != x).(i32) }
+isinf :: proc(x: f64) i32 { return (x == (1.0 / 0.0) or x == -(1.0 / 0.0)).(i32) }
+isfinite :: proc(x: f64) i32 { return (x == x and x != (1.0 / 0.0) and x != -(1.0 / 0.0)).(i32) }
+isnormal :: proc(x: f64) i32 {
+    bits := x.^u64
+    exp := (bits >> 52) & 0x7ff
+    frac := bits & 0x000f_ffff_ffff_ffff
+    if exp == 0 { return if frac == 0 { 0 } else { 0 } }
+    if exp == 0x7ff { return 0 }
+    return 1
+}
+
+signbit :: proc(x: f64) i32 { return ((x.^u64 >> 63) & 1).(i32) }
+fabs :: proc(x: f64) f64 { return (x.^u64 & 0x7fff_ffff_ffff_ffff).^f64 }
+copysign :: proc(x: f64, y: f64) f64 {
+    xb := x.^u64
+    yb := y.^u64
+    return ((xb & 0x7fff_ffff_ffff_ffff) | (yb & 0x8000_0000_0000_0000)).^f64
+}
+
+fpclassify :: proc(x: f64) i32 {
+    bits := x.^u64
+    exp := (bits >> 52) & 0x7ff
+    frac := bits & 0x000f_ffff_ffff_ffff
+    if exp == 0 {
+        return if frac == 0 { FP_ZERO } else { FP_SUBNORMAL }
+    }
+    if exp == 0x7ff {
+        return if frac == 0 { FP_INFINITE } else { FP_NAN }
+    }
+    return FP_NORMAL
+}
+
+isgreater :: proc(x: f64, y: f64) i32 { return (x > y and isnan(x) == 0 and isnan(y) == 0).(i32) }
+isgreaterequal :: proc(x: f64, y: f64) i32 { return (x >= y and isnan(x) == 0 and isnan(y) == 0).(i32) }
+isless :: proc(x: f64, y: f64) i32 { return (x < y and isnan(x) == 0 and isnan(y) == 0).(i32) }
+islessequal :: proc(x: f64, y: f64) i32 { return (x <= y and isnan(x) == 0 and isnan(y) == 0).(i32) }
+islessgreater :: proc(x: f64, y: f64) i32 { return ((x < y or x > y) and isnan(x) == 0 and isnan(y) == 0).(i32) }
+isunordered :: proc(x: f64, y: f64) i32 { return (isnan(x) != 0 or isnan(y) != 0).(i32) }
+
+
+fmod :: proc(x: f64, y: f64) f64 {
+    ux := x.^u64
+    uy := y.^u64
+    ex := ((ux >> 52) & 0x7ff).(i32)
+    ey := ((uy >> 52) & 0x7ff).(i32)
+    sx := (ux >> 63).(u32)
+    i: u64
+    uxi := ux
+
+    if (uy << 1) == 0 or isnan(y) != 0 or ex == 0x7ff { return (x * y) / (x * y) }
+    if (uxi << 1) <= (uy << 1) {
+        if (uxi << 1) == (uy << 1) { return 0.0 * x }
+        return x
+    }
+
+    if ex == 0 {
+        i = uxi << 12
+        while (i >> 63) == 0 {
+            ex -= 1
+            i <<= 1
+        }
+        uxi <<= (-ex + 1).(u32)
+    } else {
+        uxi &= (~0u64) >> 12
+        uxi |= 1u64 << 52
+    }
+    if ey == 0 {
+        i = uy << 12
+        while (i >> 63) == 0 {
+            ey -= 1
+            i <<= 1
+        }
+        uy <<= (-ey + 1).(u32)
+    } else {
+        uy &= (~0u64) >> 12
+        uy |= 1u64 << 52
+    }
+
+    while ex > ey {
+        i = uxi - uy
+        if (i >> 63) == 0 {
+            if i == 0 { return 0.0 * x }
+            uxi = i
+        }
+        uxi <<= 1
+        ex -= 1
+    }
+    i = uxi - uy
+    if (i >> 63) == 0 {
+        if i == 0 { return 0.0 * x }
+        uxi = i
+    }
+    while (uxi >> 52) == 0 {
+        uxi <<= 1
+        ex -= 1
+    }
+
+    if ex > 0 {
+        uxi -= 1u64 << 52
+        uxi |= (ex.(u64) << 52)
+    } else {
+        uxi >>= (-ex + 1).(u32)
+    }
+    uxi |= (sx.(u64) << 63)
+    return uxi.^f64
+}
+
+
+fmax :: proc(x: f64, y: f64) f64 {
+    if isnan(x) != 0 { return y }
+    if isnan(y) != 0 { return x }
+    if signbit(x) != signbit(y) { return if signbit(x) != 0 { y } else { x } }
+    return if x < y { y } else { x }
+}
+
+fmin :: proc(x: f64, y: f64) f64 {
+    if isnan(x) != 0 { return y }
+    if isnan(y) != 0 { return x }
+    if signbit(x) != signbit(y) { return if signbit(x) != 0 { x } else { y } }
+    return if x < y { x } else { y }
+}
+
+f32_isnan :: fn(x: f32) bool { return x != x }
+f32_isinf :: fn(x: f32) bool { return x == (1.0f / 0.0f) or x == -(1.0f / 0.0f) }
+f32_isfinite :: fn(x: f32) bool { return x == x and x != (1.0f / 0.0f) and x != -(1.0f / 0.0f) }
+
+isnanf :: proc(x: f32) i32 { return f32_isnan(x).(i32) }
+isinff :: proc(x: f32) i32 { return f32_isinf(x).(i32) }
+isfinitef :: proc(x: f32) i32 { return f32_isfinite(x).(i32) }
+isnormalf :: proc(x: f32) i32 {
+    bits := x.^u32
+    exp := (bits >> 23) & 0xff
+    frac := bits & 0x007f_ffff
+    if exp == 0 { return if frac == 0 { 0 } else { 0 } }
+    if exp == 0xff { return 0 }
+    return 1
+}
+
+signbitf :: proc(x: f32) i32 { return ((x.^u32 >> 31) & 1).(i32) }
+fabsf :: proc(x: f32) f32 { return (x.^u32 & 0x7fff_ffff).^f32 }
+copysignf :: proc(x: f32, y: f32) f32 {
+    xb := x.^u32
+    yb := y.^u32
+    return ((xb & 0x7fff_ffff) | (yb & 0x8000_0000)).^f32
+}
+
+fpclassifyf :: proc(x: f32) i32 {
+    bits := x.^u32
+    exp := (bits >> 23) & 0xff
+    frac := bits & 0x007f_ffff
+    if exp == 0 {
+        return if frac == 0 { FP_ZERO } else { FP_SUBNORMAL }
+    }
+    if exp == 0xff {
+        return if frac == 0 { FP_INFINITE } else { FP_NAN }
+    }
+    return FP_NORMAL
+}
+
+
+fmodf :: proc(x: f32, y: f32) f32 {
+    ux := x.^u32
+    uy := y.^u32
+    ex := ((ux >> 23) & 0xff).(i32)
+    ey := ((uy >> 23) & 0xff).(i32)
+    sx := ux & 0x80000000
+    i: u32
+    uxi := ux
+
+    if (uy << 1) == 0 or isnanf(y) != 0 or ex == 0xff { return (x * y) / (x * y) }
+    if (uxi << 1) <= (uy << 1) {
+        if (uxi << 1) == (uy << 1) { return 0.0f * x }
+        return x
+    }
+
+    if ex == 0 {
+        i = uxi << 9
+        while (i >> 31) == 0 {
+            ex -= 1
+            i <<= 1
+        }
+        uxi <<= (-ex + 1).(u32)
+    } else {
+        uxi &= (~0u32) >> 9
+        uxi |= 1u32 << 23
+    }
+    if ey == 0 {
+        i = uy << 9
+        while (i >> 31) == 0 {
+            ey -= 1
+            i <<= 1
+        }
+        uy <<= (-ey + 1).(u32)
+    } else {
+        uy &= (~0u32) >> 9
+        uy |= 1u32 << 23
+    }
+
+    while ex > ey {
+        i = uxi - uy
+        if (i >> 31) == 0 {
+            if i == 0 { return 0.0f * x }
+            uxi = i
+        }
+        uxi <<= 1
+        ex -= 1
+    }
+    i = uxi - uy
+    if (i >> 31) == 0 {
+        if i == 0 { return 0.0f * x }
+        uxi = i
+    }
+    while (uxi >> 23) == 0 {
+        uxi <<= 1
+        ex -= 1
+    }
+
+    if ex > 0 {
+        uxi -= 1u32 << 23
+        uxi |= (ex.(u32) << 23)
+    } else {
+        uxi >>= (-ex + 1).(u32)
+    }
+    uxi |= sx
+    return uxi.^f32
+}
+
+
+fmaxf :: proc(x: f32, y: f32) f32 {
+    if f32_isnan(x) { return y }
+    if f32_isnan(y) { return x }
+    if signbitf(x) != signbitf(y) { return if signbitf(x) != 0 { y } else { x } }
+    return if x < y { y } else { x }
+}
+
+fminf :: proc(x: f32, y: f32) f32 {
+    if f32_isnan(x) { return y }
+    if f32_isnan(y) { return x }
+    if signbitf(x) != signbitf(y) { return if signbitf(x) != 0 { x } else { y } }
+    return if x < y { x } else { y }
+}
+
+isgreaterf :: proc(x: f32, y: f32) i32 { return (x > y and !f32_isnan(x) and !f32_isnan(y)).(i32) }
+isgreaterequalf :: proc(x: f32, y: f32) i32 { return (x >= y and !f32_isnan(x) and !f32_isnan(y)).(i32) }
+islessf :: proc(x: f32, y: f32) i32 { return (x < y and !f32_isnan(x) and !f32_isnan(y)).(i32) }
+islessequalf :: proc(x: f32, y: f32) i32 { return (x <= y and !f32_isnan(x) and !f32_isnan(y)).(i32) }
+islessgreaterf :: proc(x: f32, y: f32) i32 { return ((x < y or x > y) and !f32_isnan(x) and !f32_isnan(y)).(i32) }
+isunorderedf :: proc(x: f32, y: f32) i32 { return (f32_isnan(x) or f32_isnan(y)).(i32) }
+
+isnanl :: proc(x: f128) bool {
+    return x != x
+}
+
+isinfl :: proc(x: f128) bool {
+    return x == f128_inf or x == -f128_inf
+}
+
+isfinitel :: proc(x: f128) bool {
+    return !isnanl(x) and !isinfl(x)
+}
+
+fabsl :: proc(x: f128) f128 {
+    if x == 0.0 { return 0.0 }
+    return if x < 0.0 { -x } else { x }
+}
+
+copysignl :: proc(x: f128, y: f128) f128 {
+    // Detect negative zero via reciprocal sign.
+    neg := y < 0.0 or (y == 0.0 and (1.0 / y) < 0.0)
+    return if neg { -fabsl(x) } else { fabsl(x) }
+}
+
+
+signbitl :: proc(x: f128) i32 {
+    bits := x.^u128
+    return ((bits >> 127) & 1).(i32)
+}
+
+frexpl :: proc(x: f128, e: *i32) f128 {
+    bits := x.^u128
+    exp := ((bits >> 112) & 0x7fff).(u16)
+    sign := bits & (1u128 << 127)
+    frac_mask := (1u128 << 112) - 1
+    frac := bits & frac_mask
+
+    if exp == 0 {
+        if x == 0.0 {
+            e.* = 0
+            return x
+        }
+        // Normalize subnormal
+        shift: i32 = 0
+        while (frac & (1u128 << 111)) == 0 {
+            frac = frac << 1
+            shift += 1
+        }
+        e.* = -16381 - shift
+        frac = frac & frac_mask
+        exp = 0x3ffe
+    } else if exp == 0x7fff {
+        return x
+    } else {
+        e.* = exp.(i32) - 0x3ffe
+        exp = 0x3ffe
+    }
+
+    out_bits := sign | (exp.(u128) << 112) | (frac & frac_mask)
+    return out_bits.^f128
+}
+
+fmaxl :: proc(x: f128, y: f128) f128 {
+    if isnanl(x) { return y }
+    if isnanl(y) { return x }
+    if signbitl(x) != signbitl(y) { return if signbitl(x) != 0 { y } else { x } }
+    return if x < y { y } else { x }
+}
+
+fminl :: proc(x: f128, y: f128) f128 {
+    if isnanl(x) { return y }
+    if isnanl(y) { return x }
+    if signbitl(x) != signbitl(y) { return if signbitl(x) != 0 { x } else { y } }
+    return if x < y { x } else { y }
+}
+
+truncl :: proc(x: f128) f128 {
+    if !isfinitel(x) { return x }
+    if x == 0.0 { return x }
+    if x >= I128_MAX_F128 or x <= I128_MIN_F128 { return x }
+    return (@intFromFloat(x)).(f128)
+}
+
+floorl :: proc(x: f128) f128 {
+    if !isfinitel(x) { return x }
+    t := truncl(x)
+    if x < 0.0 and x != t { return t - 1.0 }
+    return t
+}
+
+ceill :: proc(x: f128) f128 {
+    if !isfinitel(x) { return x }
+    t := truncl(x)
+    if x > 0.0 and x != t { return t + 1.0 }
+    return t
+}
+
+sqrtl :: proc(x: f128) f128 {
+    if x < 0.0 { return f128_nan }
+    if !isfinitel(x) or x == 0.0 { return x }
+    // Newton-Raphson
+    y := if x > 1.0 { x } else { 1.0 }
+    i: i32 = 0
+    while i < 32 {
+        y = 0.5 * (y + x / y)
+        i += 1
+    }
+    return y
+}
+
+
+frexp :: proc(x: f64, e: *i32) f64 {
+    bits := x.^u64
+    exp := ((bits >> 52) & 0x7ff).(u16)
+    sign := bits & (1u64 << 63)
+    frac_mask := (1u64 << 52) - 1
+    frac := bits & frac_mask
+
+    if exp == 0 {
+        if x == 0.0 {
+            e.* = 0
+            return x
+        }
+        shift: i32 = 0
+        while (frac & (1u64 << 51)) == 0 {
+            frac = frac << 1
+            shift += 1
+        }
+        e.* = -1021 - shift
+        frac = frac & frac_mask
+        exp = 0x3fe
+    } else if exp == 0x7ff {
+        return x
+    } else {
+        e.* = exp.(i32) - 0x3fe
+        exp = 0x3fe
+    }
+    out_bits := sign | (exp.(u64) << 52) | (frac & frac_mask)
+    return out_bits.^f64
+}
+
+frexpf :: proc(x: f32, e: *i32) f32 {
+    bits := x.^u32
+    exp := ((bits >> 23) & 0xff).(u16)
+    sign := bits & (1u32 << 31)
+    frac_mask := (1u32 << 23) - 1
+    frac := bits & frac_mask
+
+    if exp == 0 {
+        if x == 0.0f {
+            e.* = 0
+            return x
+        }
+        shift: i32 = 0
+        while (frac & (1u32 << 22)) == 0 {
+            frac = frac << 1
+            shift += 1
+        }
+        e.* = -125 - shift
+        frac = frac & frac_mask
+        exp = 0x7e
+    } else if exp == 0xff {
+        return x
+    } else {
+        e.* = exp.(i32) - 0x7e
+        exp = 0x7e
+    }
+    out_bits := sign | (exp.(u32) << 23) | (frac & frac_mask)
+    return out_bits.^f32
+}

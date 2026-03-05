@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_rwlock_init.c
+
+string_h :: import "libc/src/string"
+rw_int :: import "libc/src/thread/pthread_rwlock_internal"
+
+pthread_rwlock_init :: proc(rw: *alltypes.pthread_rwlock_t, a: *const pthread_rwlockattr_t) i32 {
+    _ = string_h.memset(rw.^*void, 0, sizeof(alltypes.pthread_rwlock_t))
+    if a != null {
+        rw_int.rw_shared(rw).* = (a.__attr[0].(i32) * 128)
+    }
+    return 0
+}

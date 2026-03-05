@@ -1,0 +1,72 @@
+package libc
+
+// Derived from musl-1.2.5/src/conf/fpathconf.c
+
+// File path configuration queries
+
+errno_h :: import "libc/include/errno"
+
+// PC_ constants (pathconf / fpathconf names)
+_PC_LINK_MAX :: 0
+_PC_MAX_CANON :: 1
+_PC_MAX_INPUT :: 2
+_PC_NAME_MAX :: 3
+_PC_PATH_MAX :: 4
+_PC_PIPE_BUF :: 5
+_PC_CHOWN_RESTRICTED :: 6
+_PC_NO_TRUNC :: 7
+_PC_VDISABLE :: 8
+_PC_SYNC_IO :: 9
+_PC_ASYNC_IO :: 10
+_PC_PRIO_IO :: 11
+_PC_SOCK_MAXBUF :: 12
+_PC_FILESIZEBITS :: 13
+_PC_REC_INCR_XFER_SIZE :: 14
+_PC_REC_MAX_XFER_SIZE :: 15
+_PC_REC_MIN_XFER_SIZE :: 16
+_PC_REC_XFER_ALIGN :: 17
+_PC_ALLOC_SIZE_MIN :: 18
+_PC_SYMLINK_MAX :: 19
+_PC_2_SYMLINKS :: 20
+
+// POSIX limits (simplified for x86_64)
+_POSIX_LINK_MAX :: 8
+_POSIX_MAX_CANON :: 255
+_POSIX_MAX_INPUT :: 255
+NAME_MAX :: 255
+PATH_MAX :: 4096
+PIPE_BUF :: 4096
+FILESIZEBITS :: 64
+
+fpathconf :: proc(fd: i32, name: i32) i64 {
+    values := [21]i16{
+        /* [_PC_LINK_MAX] = */ _POSIX_LINK_MAX,
+        /* [_PC_MAX_CANON] = */ _POSIX_MAX_CANON,
+        /* [_PC_MAX_INPUT] = */ _POSIX_MAX_INPUT,
+        /* [_PC_NAME_MAX] = */ NAME_MAX,
+        /* [_PC_PATH_MAX] = */ PATH_MAX,
+        /* [_PC_PIPE_BUF] = */ PIPE_BUF,
+        /* [_PC_CHOWN_RESTRICTED] = */ 1,
+        /* [_PC_NO_TRUNC] = */ 1,
+        /* [_PC_VDISABLE] = */ 0,
+        /* [_PC_SYNC_IO] = */ 1,
+        /* [_PC_ASYNC_IO] = */ -1,
+        /* [_PC_PRIO_IO] = */ -1,
+        /* [_PC_SOCK_MAXBUF] = */ -1,
+        /* [_PC_FILESIZEBITS] = */ FILESIZEBITS,
+        /* [_PC_REC_INCR_XFER_SIZE] = */ 4096,
+        /* [_PC_REC_MAX_XFER_SIZE] = */ 4096,
+        /* [_PC_REC_MIN_XFER_SIZE] = */ 4096,
+        /* [_PC_REC_XFER_ALIGN] = */ 4096,
+        /* [_PC_ALLOC_SIZE_MIN] = */ 4096,
+        /* [_PC_SYMLINK_MAX] = */ -1,
+        /* [_PC_2_SYMLINKS] = */ 1,
+    }
+    
+    if name >= values.len {
+        errno_h.errno().* = errno_h.EINVAL
+        return -1
+    }
+    
+    return values[name.(usize)].(i64)
+}

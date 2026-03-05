@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/ldso/dlsym.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <dlfcn.h>
+// #include <dynlink.h>
+
+dlsym :: proc(p: *void restrict, s: *const char restrict) void {
+    // TODO: Translate function body
+    unreachable
+}
+

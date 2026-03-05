@@ -1,0 +1,20 @@
+package libc
+
+// Derived from musl-1.2.5/src/prng/rand_r.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <stdlib.h>
+
+temper :: proc(x: u32) u32 {
+    y := x
+    y ^= y >> 11
+    y ^= (y << 7) & 0x9D2C5680u32
+    y ^= (y << 15) & 0xEFC60000u32
+    y ^= y >> 18
+    return y
+}
+
+rand_r :: proc(seed: *u32) i32 {
+    seed.* = seed.* * 1103515245u32 + 12345u32
+    return (temper(seed.*) / 2).(i32)
+}

@@ -887,6 +887,10 @@ const Formatter = struct {
             },
             .Match => {
                 const node = self.exprs.get(.Match, id);
+                if (!node.label.isNone()) {
+                    try self.printLiteral(self.s(node.label.unwrap()));
+                    try self.printLiteral(": ");
+                }
                 try self.printLiteral("match ");
                 try self.printExpr(node.expr);
                 try self.printLiteral(" {");
@@ -927,6 +931,10 @@ const Formatter = struct {
                 if (!node.label.isNone()) {
                     try self.printLiteral(" :");
                     try self.printLiteral(self.s(node.label.unwrap()));
+                }
+                if (!node.value.isNone()) {
+                    try self.printLiteral(" ");
+                    try self.printExpr(node.value.unwrap());
                 }
             },
             .Unreachable => {

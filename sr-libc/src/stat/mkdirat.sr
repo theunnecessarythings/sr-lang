@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/stat/mkdirat.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+mkdirat :: proc(fd: i32, path: *const u8, mode: mode_t) i32 {
+    r := sc.syscall3_ret(nums.SYS_mkdirat.(i64), fd.(i64), path.^usize.(i64), mode.(i64))
+    return r.(i32)
+}

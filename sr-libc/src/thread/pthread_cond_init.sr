@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_cond_init.c
+
+string_h :: import "libc/src/string"
+cond_int :: import "libc/src/thread/pthread_cond_internal"
+
+pthread_cond_init :: proc(c: *pthread_cond_t restrict, a: *const pthread_condattr_t restrict) i32 {
+    _ = string_h.memset(c.^*void, 0, sizeof(pthread_cond_t))
+    if a != null {
+        cond_int.c_clock(c).* = (a.__attr & 0x7fffffff).(i32)
+        if (a.__attr >> 31) != 0 {
+            cond_int.c_shared(c).* = (-1).(usize).^*void
+        }
+    }
+    return 0
+}

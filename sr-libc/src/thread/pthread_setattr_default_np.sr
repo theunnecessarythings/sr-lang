@@ -1,0 +1,43 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_setattr_default_np.c
+
+attr_int :: import "libc/src/thread/pthread_attr_internal"
+string_h :: import "libc/src/string"
+errno_mod :: import "libc/include/errno"
+ptc_lock :: import "libc/src/thread/lock_ptc"
+def_attr :: import "libc/src/thread/default_attr"
+
+MIN :: fn(a: usize, b: usize) usize { return if a < b { a } else { b } }
+MAX :: fn(a: usize, b: usize) usize { return if a > b { a } else { b } }
+
+pthread_setattr_default_np :: proc(attrp: *const alltypes.pthread_attr_t) i32 {
+    tmp: alltypes.pthread_attr_t
+    zero: alltypes.pthread_attr_t
+    _ = string_h.memcpy(&tmp.^*void, attrp.^*const void, sizeof(alltypes.pthread_attr_t))
+    _ = string_h.memset(&zero.^*void, 0, sizeof(alltypes.pthread_attr_t))
+    attr_int.attr_stacksize(&tmp).* = 0
+    attr_int.attr_guardsize(&tmp).* = 0
+    if string_h.memcmp(&tmp.^*const void, &zero.^*const void, sizeof(alltypes.pthread_attr_t)) != 0 {
+        return errno_mod.EINVAL
+    }
+
+    stack := MIN(attr_int.attr_stacksize(attrp.^*alltypes.pthread_attr_t).*, attr_int.DEFAULT_STACK_MAX.(usize))
+    guard := MIN(attr_int.attr_guardsize(attrp.^*alltypes.pthread_attr_t).*, attr_int.DEFAULT_GUARD_MAX.(usize))
+
+    ptc_lock.__inhibit_ptc()
+    def_attr.__default_stacksize = MAX(def_attr.__default_stacksize, stack)
+    def_attr.__default_guardsize = MAX(def_attr.__default_guardsize, guard)
+    ptc_lock.__release_ptc()
+
+    return 0
+}
+
+pthread_getattr_default_np :: proc(attrp: *alltypes.pthread_attr_t) i32 {
+    ptc_lock.__acquire_ptc()
+    _ = string_h.memset(attrp.^*void, 0, sizeof(alltypes.pthread_attr_t))
+    attr_int.attr_stacksize(attrp).* = def_attr.__default_stacksize
+    attr_int.attr_guardsize(attrp).* = def_attr.__default_guardsize
+    ptc_lock.__release_ptc()
+    return 0
+}

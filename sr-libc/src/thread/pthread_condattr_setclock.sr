@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_condattr_setclock.c
+
+errno_mod :: import "libc/include/errno"
+
+pthread_condattr_setclock :: proc(a: *pthread_condattr_t, clk: clockid_t) i32 {
+    if clk < 0 || (clk - 2).(u32) < 2 { return errno_mod.EINVAL }
+    a.__attr &= 0x80000000
+    a.__attr |= clk.(u32)
+    return 0
+}

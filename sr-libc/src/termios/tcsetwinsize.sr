@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/termios/tcsetwinsize.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <termios.h>
+// #include <sys/ioctl.h>
+// #include <syscall.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+ioctl_consts :: import "libc/include/sys/ioctl"
+
+tcsetwinsize :: proc(fd: i32, wsz: *const winsize) i32 {
+    r := sc.syscall3_ret(nums.SYS_ioctl.(i64), fd.(i64), ioctl_consts.TIOCSWINSZ.(i64), wsz.^usize.(i64))
+    return r.(i32)
+}

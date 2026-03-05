@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/getlogin.c
+
+env_mod :: import "libc/src/env/getenv"
+
+getlogin :: proc() ?*u8 {
+    return env_mod.getenv("LOGNAME")
+}

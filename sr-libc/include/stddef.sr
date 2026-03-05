@@ -1,0 +1,21 @@
+package libc
+
+// Derived from musl-1.2.5/include/stddef.h
+
+alltypes :: import "libc/include/alltypes"
+
+// Core typedefs
+size_t :: alltypes.size_t
+ptrdiff_t :: alltypes.ptrdiff_t
+wchar_t :: alltypes.wchar_t
+
+NULL : ?*u8 : null
+
+// offsetof helper: pass a field accessor that returns a pointer to the field.
+// Example:
+//   off := offsetof(MyStruct, fn(p: *MyStruct) *u8 { return (&p.*.field).^*u8 })
+offsetof :: fn(comptime T: type, comptime field: fn(*T) *u8) usize {
+    base := null
+    field_ptr := field(base)
+    return (field_ptr.^usize - base.^usize).(usize)
+}

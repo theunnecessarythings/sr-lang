@@ -1,0 +1,61 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/ccoshf.c
+
+impl :: import "libc/src/complex/complex_impl"
+ldexp_mod :: import "libc/src/complex/__cexpf"
+
+huge :: 0x1p127f
+
+ccoshf :: proc(z: complex(f32)) complex(f32) {
+    x := z.real
+    y := z.imag
+    hx := x.^u32
+    hy := y.^u32
+
+    ix := hx & 0x7fffffff
+    iy := hy & 0x7fffffff
+
+    if ix < 0x7f800000 and iy < 0x7f800000 {
+        if iy == 0 {
+            return impl.cmplxf(coshf(x), x * y)
+        }
+        if ix < 0x41100000 {
+            return impl.cmplxf(coshf(x) * cosf(y), sinhf(x) * sinf(y))
+        }
+        if ix < 0x42b17218 {
+            h := expf(fabsf(x)) * 0.5f
+            return impl.cmplxf(h * cosf(y), copysignf(h, x) * sinf(y))
+        }
+        if ix < 0x4340b1e7 {
+            w := ldexp_mod.__ldexp_cexpf(impl.cmplxf(fabsf(x), y), -1)
+            return impl.cmplxf(w.real, w.imag * copysignf(1.0f, x))
+        }
+        h := huge * x
+        return impl.cmplxf(h * h * cosf(y), h * sinf(y))
+    }
+
+    if ix == 0 and iy >= 0x7f800000 {
+        return impl.cmplxf(y - y, copysignf(0.0f, x * (y - y)))
+    }
+
+    if iy == 0 and ix >= 0x7f800000 {
+        if (hx & 0x7fffff) == 0 {
+            return impl.cmplxf(x * x, copysignf(0.0f, x) * y)
+        }
+        return impl.cmplxf(x * x, copysignf(0.0f, (x + x) * y))
+    }
+
+    if ix < 0x7f800000 and iy >= 0x7f800000 {
+        return impl.cmplxf(y - y, x * (y - y))
+    }
+
+    if ix >= 0x7f800000 and (hx & 0x7fffff) == 0 {
+        if iy >= 0x7f800000 {
+            return impl.cmplxf(x * x, x * (y - y))
+        }
+        return impl.cmplxf((x * x) * cosf(y), x * sinf(y))
+    }
+
+    return impl.cmplxf((x * x) * (y - y), (x + x) * (y - y))
+}

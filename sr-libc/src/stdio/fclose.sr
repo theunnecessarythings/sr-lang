@@ -1,0 +1,27 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/fclose.c (simplified, no thread lock list).
+
+impl :: import "libc/src/stdio/stdio_impl"
+
+free :: extern proc(p: *void) void
+
+fclose :: proc(f: *alltypes.FILE) i32 {
+    if f == null { return 0 }
+    _ = __lockfile(f)
+    r := fflush(f)
+    r |= f.close(f)
+    _ = __unlockfile(f)
+
+    if (f.flags & impl.F_PERM.(u32)) != 0 { return r }
+
+    head := __ofl_lock()
+    if f.prev != null { f.prev.next = f.next }
+    if f.next != null { f.next.prev = f.prev }
+    if head.* == f { head.* = f.next }
+    __ofl_unlock()
+
+    if f.getln_buf != null { free(f.getln_buf.^*void) }
+    free(f.^*void)
+    return r
+}

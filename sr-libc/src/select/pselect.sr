@@ -1,0 +1,37 @@
+package libc
+
+// Derived from musl-1.2.5/src/select/pselect.c
+
+errno_h :: import "libc/include/errno"
+nums :: import "libc/include/syscall"
+select_h :: import "libc/include/sys/select"
+alltypes :: import "libc/include/alltypes"
+sc :: import "libc/src/syscall/syscall"
+
+pselect :: proc(n: i32, rfds: *select_h.fd_set, wfds: *select_h.fd_set, efds: *select_h.fd_set, ts: *const alltypes.timespec, mask: *const alltypes.sigset_t) i32 {
+    data: [2]usize = {mask.(usize), sizeof(alltypes.sigset_t)}
+
+    ts_local: alltypes.timespec
+    ts_ptr: usize = 0
+
+    if ts != 0 {
+        if ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000 {
+            errno_h.errno().* = errno_h.EINVAL
+            return -1
+        }
+        ts_local.tv_sec = ts.tv_sec
+        ts_local.tv_nsec = ts.tv_nsec
+        ts_ptr = (&ts_local).(usize)
+    }
+
+    r := sc.syscall6_ret(
+        nums.SYS_pselect6.(i64),
+        n.(i64),
+        rfds.^usize.(i64),
+        wfds.^usize.(i64),
+        efds.^usize.(i64),
+        ts_ptr.(i64),
+        (&data[0]).^usize.(i64),
+    )
+    return r.(i32)
+}

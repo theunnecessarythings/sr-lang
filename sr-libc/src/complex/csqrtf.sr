@@ -1,0 +1,35 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/csqrtf.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+csqrtf :: proc(z: complex(f32)) complex(f32) {
+    a := z.real
+    b := z.imag
+    t: f64
+
+    if a == 0.0f and b == 0.0f {
+        return impl.cmplxf(0.0f, b)
+    }
+    if isinff(b) != 0 {
+        return impl.cmplxf(1.0f / 0.0f, b)
+    }
+    if isnanf(a) != 0 {
+        t = (b - b) / (b - b)
+        return impl.cmplxf(a, t.(f32))
+    }
+    if isinff(a) != 0 {
+        if signbitf(a) != 0 {
+            return impl.cmplxf(fabsf(b - b), copysignf(a, b))
+        }
+        return impl.cmplxf(a, copysignf(b - b, b))
+    }
+
+    if a >= 0.0f {
+        t = sqrt((a.(f64) + hypot(a.(f64), b.(f64))) * 0.5)
+        return impl.cmplxf(t.(f32), (b / (2.0f * t.(f32))))
+    }
+    t = sqrt(((-a).(f64) + hypot(a.(f64), b.(f64))) * 0.5)
+    return impl.cmplxf((fabsf(b) / (2.0f * t.(f32))), copysignf(t.(f32), b))
+}

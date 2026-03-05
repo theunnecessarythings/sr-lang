@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/locale/iconv_close.c
+
+iconv_h :: import "libc/include/iconv"
+
+free :: extern proc(p: *void) void
+
+iconv_close :: proc(cd: iconv_h.iconv_t) i32 {
+    if cd != null && cd != (-1).(isize).^*void {
+        free(cd.^*void)
+    }
+    return 0
+}

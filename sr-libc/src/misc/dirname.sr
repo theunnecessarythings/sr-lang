@@ -1,0 +1,40 @@
+package libc
+
+// Derived from musl-1.2.5/src/misc/dirname.c
+
+string_h :: import "libc/src/string"
+
+dirname :: proc(s: *u8) *u8 {
+    if s == 0 || s.* == 0 {
+        return "."
+    }
+    
+    i: usize = string_h.strlen(s) - 1
+    
+    // Strip trailing slashes
+    while s[i] == '/'.(u8) {
+        if i == 0 {
+            return "/"
+        }
+        i -= 1
+    }
+    
+    // Find last slash before filename
+    while s[i] != '/'.(u8) {
+        if i == 0 {
+            return "."
+        }
+        i -= 1
+    }
+    
+    // Strip trailing slashes from directory
+    while s[i] == '/'.(u8) {
+        if i == 0 {
+            return "/"
+        }
+        i -= 1
+    }
+    
+    s[i + 1] = 0
+    return s
+}

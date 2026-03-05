@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/utimes.c
+
+statc :: import "libc/include/sys/stat"
+futimesat_mod :: import "libc/src/stat/futimesat"
+
+utimes :: proc(path: *const u8, times: ?*const timeval) i32 {
+    return futimesat_mod.futimesat(statc.AT_FDCWD, path, times)
+}

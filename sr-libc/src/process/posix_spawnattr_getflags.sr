@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/process/posix_spawnattr_getflags.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <spawn.h>
+
+posix_spawnattr_getflags :: proc(attr: *const posix_spawnattr_t restrict, flags: *i16 restrict) i32 {
+    flags.* = attr.__flags.(i16)
+    return 0
+}

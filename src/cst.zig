@@ -481,10 +481,10 @@ pub const Rows = struct {
     pub const If = struct { cond: ExprId, then_block: ExprId, else_block: OptExprId, loc: LocId };
     pub const While = struct { cond: OptExprId, pattern: SentinelIndex(PatTag), body: ExprId, is_pattern: bool, label: OptStrId, loc: LocId };
     pub const For = struct { pattern: Index(PatTag), iterable: ExprId, body: ExprId, label: OptStrId, loc: LocId };
-    pub const Match = struct { expr: ExprId, arms: RangeOf(MatchArmId), loc: LocId };
+    pub const Match = struct { expr: ExprId, arms: RangeOf(MatchArmId), label: OptStrId, loc: LocId };
     pub const MatchArm = struct { pattern: Index(PatTag), guard: OptExprId, body: ExprId, loc: LocId };
     pub const Break = struct { label: OptStrId, value: OptExprId, loc: LocId };
-    pub const Continue = struct { label: OptStrId, loc: LocId };
+    pub const Continue = struct { label: OptStrId, value: OptExprId, loc: LocId };
     pub const Unreachable = struct { loc: LocId };
     pub const Null = struct { loc: LocId };
     pub const Undefined = struct { loc: LocId };
@@ -1106,6 +1106,7 @@ pub const DodPrinter = struct {
             .Match => {
                 const n = self.exprs.get(.Match, id);
                 try self.open("(match", .{});
+                if (!n.label.isNone()) try self.leaf("label=\"{s}\"", .{self.s(n.label.unwrap())});
                 try self.open("(expr", .{});
                 try self.printExpr(n.expr);
                 try self.close();
@@ -1141,11 +1142,14 @@ pub const DodPrinter = struct {
             },
             .Continue => {
                 const n = self.exprs.get(.Continue, id);
-                if (n.label.isNone()) {
-                    try self.leaf("(continue)", .{});
-                } else {
-                    try self.leaf("(continue label=\"{s}\")", .{self.s(n.label.unwrap())});
+                try self.open("(continue", .{});
+                if (!n.label.isNone()) try self.leaf("label=\"{s}\"", .{self.s(n.label.unwrap())});
+                if (!n.value.isNone()) {
+                    try self.open("(value", .{});
+                    try self.printExpr(n.value.unwrap());
+                    try self.close();
                 }
+                try self.close();
             },
             .Unreachable => try self.leaf("(unreachable)", .{}),
             .Null => try self.leaf("(null)", .{}),

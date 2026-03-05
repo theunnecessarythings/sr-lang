@@ -1,0 +1,106 @@
+package libc
+
+// Derived from musl-1.2.5/src/ctype/*.c
+// Collection of ASCII character classification functions
+
+isalpha :: proc(c: i32) i32 {
+    return if ((c.(u32) | 32) - 'a'.(u32)) < 26 { 1 } else { 0 }
+}
+
+isdigit :: proc(c: i32) i32 {
+    return if (c.(u32) - '0'.(u32)) < 10 { 1 } else { 0 }
+}
+
+isalnum :: proc(c: i32) i32 {
+    return if isalpha(c) != 0 || isdigit(c) != 0 { 1 } else { 0 }
+}
+
+isspace :: proc(c: i32) i32 {
+    return if c == ' ' || (c.(u32) - '\t'.(u32)) < 5 { 1 } else { 0 }
+}
+
+isupper :: proc(c: i32) i32 {
+    return if (c.(u32) - 'A'.(u32)) < 26 { 1 } else { 0 }
+}
+
+islower :: proc(c: i32) i32 {
+    return if (c.(u32) - 'a'.(u32)) < 26 { 1 } else { 0 }
+}
+
+isprint :: proc(c: i32) i32 {
+    return if (c.(u32) - 0x20) < 0x5f { 1 } else { 0 }
+}
+
+isgraph :: proc(c: i32) i32 {
+    return if (c.(u32) - 0x21) < 0x5e { 1 } else { 0 }
+}
+
+iscntrl :: proc(c: i32) i32 {
+    return if c.(u32) < 0x20 || c == 0x7f { 1 } else { 0 }
+}
+
+ispunct :: proc(c: i32) i32 {
+    return if isgraph(c) != 0 && isalnum(c) == 0 { 1 } else { 0 }
+}
+
+isxdigit :: proc(c: i32) i32 {
+    return if isdigit(c) != 0 || ((c.(u32) | 32) - 'a'.(u32)) < 6 { 1 } else { 0 }
+}
+
+isblank :: proc(c: i32) i32 {
+    return if c == ' ' || c == '\t' { 1 } else { 0 }
+}
+
+isascii :: proc(c: i32) i32 {
+    return if c.(u32) < 128 { 1 } else { 0 }
+}
+
+tolower :: proc(c: i32) i32 {
+    if isupper(c) != 0 {
+        return c | 32
+    }
+    return c
+}
+
+toupper :: proc(c: i32) i32 {
+    if islower(c) != 0 {
+        return c & ~32
+    }
+    return c
+}
+
+toascii :: proc(c: i32) i32 {
+    return c & 0x7f
+}
+
+// Locale variants (same as non-locale for ASCII/C locale)
+__isalpha_l :: proc(c: i32, l: *void) i32 { return isalpha(c) }
+__isdigit_l :: proc(c: i32, l: *void) i32 { return isdigit(c) }
+__isalnum_l :: proc(c: i32, l: *void) i32 { return isalnum(c) }
+__isspace_l :: proc(c: i32, l: *void) i32 { return isspace(c) }
+__isupper_l :: proc(c: i32, l: *void) i32 { return isupper(c) }
+__islower_l :: proc(c: i32, l: *void) i32 { return islower(c) }
+__isprint_l :: proc(c: i32, l: *void) i32 { return isprint(c) }
+__isgraph_l :: proc(c: i32, l: *void) i32 { return isgraph(c) }
+__iscntrl_l :: proc(c: i32, l: *void) i32 { return iscntrl(c) }
+__ispunct_l :: proc(c: i32, l: *void) i32 { return ispunct(c) }
+__isxdigit_l :: proc(c: i32, l: *void) i32 { return isxdigit(c) }
+__isblank_l :: proc(c: i32, l: *void) i32 { return isblank(c) }
+__tolower_l :: proc(c: i32, l: *void) i32 { return tolower(c) }
+__toupper_l :: proc(c: i32, l: *void) i32 { return toupper(c) }
+
+// Weak aliases
+isalpha_l :: __isalpha_l
+isdigit_l :: __isdigit_l
+isalnum_l :: __isalnum_l
+isspace_l :: __isspace_l
+isupper_l :: __isupper_l
+islower_l :: __islower_l
+isprint_l :: __isprint_l
+isgraph_l :: __isgraph_l
+iscntrl_l :: __iscntrl_l
+ispunct_l :: __ispunct_l
+isxdigit_l :: __isxdigit_l
+isblank_l :: __isblank_l
+tolower_l :: __tolower_l
+toupper_l :: __toupper_l

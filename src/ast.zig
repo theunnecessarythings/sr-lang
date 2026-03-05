@@ -129,10 +129,10 @@ pub const Rows = struct {
     pub const If = struct { cond: ExprId, then_block: ExprId, else_block: OptExprId, loc: LocId };
     pub const While = struct { cond: OptExprId, pattern: OptPatternId, body: ExprId, is_pattern: bool, label: OptStrId, loc: LocId };
     pub const For = struct { pattern: PatternId, iterable: ExprId, body: ExprId, label: OptStrId, loc: LocId };
-    pub const Match = struct { expr: ExprId, arms: RangeMatchArm, loc: LocId };
+    pub const Match = struct { expr: ExprId, arms: RangeMatchArm, label: OptStrId, loc: LocId };
     pub const MatchArm = struct { pattern: PatternId, guard: OptExprId, body: ExprId, loc: LocId };
     pub const Break = struct { label: OptStrId, value: OptExprId, loc: LocId };
-    pub const Continue = struct { label: OptStrId, loc: LocId };
+    pub const Continue = struct { label: OptStrId, value: OptExprId, loc: LocId };
     pub const Unreachable = struct { loc: LocId };
     pub const NullLit = struct { loc: LocId };
     pub const UndefLit = struct { loc: LocId };
@@ -217,7 +217,7 @@ pub inline fn PatRowT(comptime K: PatternKind) type {
 }
 
 pub const LiteralInt = struct { text: StrId, value: u128, base: u8, valid: bool };
-pub const LiteralFloat = struct { text: StrId, value: f64, valid: bool };
+pub const LiteralFloat = struct { text: StrId, value: f128, valid: bool };
 pub const LiteralValue = union(enum) { none, bool: bool, char: u32, string: StrId, int: LiteralInt, float: LiteralFloat, imaginary: LiteralFloat };
 
 // Stores

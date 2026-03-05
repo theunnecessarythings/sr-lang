@@ -1,0 +1,33 @@
+package libc
+
+// Derived from musl-1.2.5/src/misc/getrlimit.c
+
+errno_h :: import "libc/include/errno"
+res :: import "libc/include/sys/resource"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+fix_rlim :: fn(x: u64) u64 {
+    if x >= res.SYSCALL_RLIM_INFINITY { return res.RLIM_INFINITY }
+    return x
+}
+
+getrlimit :: proc(resource: i32, rlim: *res.rlimit) i32 {
+    r := sc.syscall4_ret(nums.SYS_prlimit64.(i64), 0, resource.(i64), 0, rlim.^usize.(i64))
+    if r == 0 {
+        rlim.*.rlim_cur = fix_rlim(rlim.*.rlim_cur)
+        rlim.*.rlim_max = fix_rlim(rlim.*.rlim_max)
+        return 0
+    }
+
+    if errno_h.errno().* != errno_h.ENOSYS { return -1 }
+
+    k_rlim: [2]u64
+    r2 := sc.syscall2_ret(nums.SYS_getrlimit.(i64), resource.(i64), (&k_rlim[0]).^usize.(i64))
+    if r2 < 0 { return -1 }
+    rlim.*.rlim_cur = if k_rlim[0] == 0xffff_ffff_ffff_ffff { res.RLIM_INFINITY } else { k_rlim[0] }
+    rlim.*.rlim_max = if k_rlim[1] == 0xffff_ffff_ffff_ffff { res.RLIM_INFINITY } else { k_rlim[1] }
+    rlim.*.rlim_cur = fix_rlim(rlim.*.rlim_cur)
+    rlim.*.rlim_max = fix_rlim(rlim.*.rlim_max)
+    return 0
+}

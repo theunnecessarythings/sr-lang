@@ -1,0 +1,31 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/socketpair.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <fcntl.h>
+// #include <errno.h>
+// #include <syscall.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+errno_mod :: import "libc/include/errno"
+fcntl_h :: import "libc/include/fcntl"
+
+socketpair :: proc(domain: i32, type: i32, protocol: i32, fd: *i32) i32 {
+    r := sc.syscall4(nums.SYS_socketpair.(i64), domain.(i64), type.(i64), protocol.(i64), fd.^usize.(i64))
+    if r < 0 and (errno_mod.errno().* == errno_mod.EINVAL || errno_mod.errno().* == errno_mod.EPROTONOSUPPORT) and ((type & (SOCK_CLOEXEC | SOCK_NONBLOCK)) != 0) {
+        r = sc.syscall4(nums.SYS_socketpair.(i64), domain.(i64), (type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK)).(i64), protocol.(i64), fd.^usize.(i64))
+        if r < 0 { return sc.__syscall_ret(r).(i32) }
+        if (type & SOCK_CLOEXEC) != 0 {
+            _ = sc.syscall3(nums.SYS_fcntl.(i64), fd[0].(i64), fcntl_h.F_SETFD.(i64), fcntl_h.FD_CLOEXEC.(i64))
+            _ = sc.syscall3(nums.SYS_fcntl.(i64), fd[1].(i64), fcntl_h.F_SETFD.(i64), fcntl_h.FD_CLOEXEC.(i64))
+        }
+        if (type & SOCK_NONBLOCK) != 0 {
+            _ = sc.syscall3(nums.SYS_fcntl.(i64), fd[0].(i64), fcntl_h.F_SETFL.(i64), fcntl_h.O_NONBLOCK.(i64))
+            _ = sc.syscall3(nums.SYS_fcntl.(i64), fd[1].(i64), fcntl_h.F_SETFL.(i64), fcntl_h.O_NONBLOCK.(i64))
+        }
+    }
+    return sc.__syscall_ret(r).(i32)
+}

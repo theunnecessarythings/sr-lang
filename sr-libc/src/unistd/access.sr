@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/access.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+access :: proc(path: *const u8, mode: i32) i32 {
+    r := sc.syscall2_ret(nums.SYS_access.(i64), path.^usize.(i64), mode.(i64))
+    return r.(i32)
+}

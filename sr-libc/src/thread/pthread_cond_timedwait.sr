@@ -1,0 +1,242 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_cond_timedwait.c
+
+cond_int :: import "libc/src/thread/pthread_cond_internal"
+mutex_int :: import "libc/src/thread/pthread_mutex_internal"
+atomic :: import "libc/src/internal/atomic"
+wait_mod :: import "libc/src/thread/__wait"
+timedwait_mod :: import "libc/src/thread/__timedwait"
+lock_mod :: import "libc/src/internal/lock"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+errno_mod :: import "libc/include/errno"
+alltypes :: import "libc/include/alltypes"
+pthread_cancel_mod :: import "libc/src/thread/pthread_setcancelstate"
+pthread_testcancel_mod :: import "libc/src/thread/pthread_testcancel"
+mutex_unlock_mod :: import "libc/src/thread/pthread_mutex_unlock"
+mutex_lock_mod :: import "libc/src/thread/pthread_mutex_lock"
+pthread_impl :: import "libc/src/internal/pthread_impl"
+
+FUTEX_REQUEUE :: 3
+FUTEX_PRIVATE :: 128
+WAITING :: 0
+SIGNALED :: 1
+LEAVING :: 2
+INT_MAX :: 2147483647
+PTHREAD_CANCEL_MASKED :: 2
+
+waiter :: struct {
+    prev: *waiter,
+    next: *waiter,
+    state: i32,
+    barrier: i32,
+    notify: *i32,
+}
+
+lock :: proc(l: *i32) void {
+    if atomic.a_cas(l, 0, 1) != 0 {
+        _ = atomic.a_cas(l, 1, 2)
+        while true {
+            wait_mod.__wait(l, null, 2, 1)
+            if atomic.a_cas(l, 0, 2) == 0 { break }
+        }
+    }
+}
+
+unlock :: proc(l: *i32) void {
+    if atomic.a_swap(l, 0) == 2 {
+        lock_mod.__wake(l.^*void, 1, 1)
+    }
+}
+
+unlock_requeue :: proc(l: *i32, r: *i32, w: i32) void {
+    atomic.a_store(l, 0)
+    if w != 0 {
+        lock_mod.__wake(l.^*void, 1, 1)
+    } else {
+        r0 := sc.syscall5(nums.SYS_futex.(i64), l.^usize.(i64), (FUTEX_REQUEUE | FUTEX_PRIVATE).(i64), 0, 1, r.^usize.(i64))
+        if r0 == -errno_mod.ENOSYS {
+            _ = sc.syscall5(nums.SYS_futex.(i64), l.^usize.(i64), FUTEX_REQUEUE.(i64), 0, 1, r.^usize.(i64))
+        }
+    }
+}
+
+__pthread_cond_timedwait :: proc(c: *pthread_cond_t restrict, m: *alltypes.pthread_mutex_t restrict, ts: *const alltypes.timespec restrict) i32 {
+    node: waiter
+    node.prev = null
+    node.next = null
+    node.state = 0
+    node.barrier = 0
+    node.notify = null
+
+    e: i32
+    seq: i32
+    clock := cond_int.c_clock(c).*
+    cs: i32
+    shared: i32 = 0
+    oldstate: i32
+    tmp: i32
+    fut: *i32
+
+    if (mutex_int.m_type(m).* & 15) != 0 &&
+       (mutex_int.m_lock(m).* & INT_MAX) != pthread_impl.__pthread_self().tid {
+        return errno_mod.EPERM
+    }
+
+    if ts != null && ts.*.tv_nsec >= 1000000000 {
+        return errno_mod.EINVAL
+    }
+
+    pthread_testcancel_mod.__pthread_testcancel()
+
+    if cond_int.c_shared(c).* != null {
+        shared = 1
+        fut = cond_int.c_seq(c)
+        seq = cond_int.c_seq(c).*
+        atomic.a_inc(cond_int.c_waiters(c))
+    } else {
+        lock(cond_int.c_lock(c))
+
+        seq = 2
+        node.barrier = 2
+        fut = &node.barrier
+        node.state = WAITING
+        node.next = cond_int.c_head(c).*.^*waiter
+        cond_int.c_head(c).* = (&node).^*void
+        if cond_int.c_tail(c).* == null {
+            cond_int.c_tail(c).* = (&node).^*void
+        } else {
+            node.next.*.prev = &node
+        }
+
+        unlock(cond_int.c_lock(c))
+    }
+
+    _ = mutex_unlock_mod.__pthread_mutex_unlock(m)
+
+    _ = pthread_cancel_mod.__pthread_setcancelstate(PTHREAD_CANCEL_MASKED, &cs)
+    if cs == pthread_cancel_mod.PTHREAD_CANCEL_DISABLE {
+        _ = pthread_cancel_mod.__pthread_setcancelstate(cs, null)
+    }
+
+    while true {
+        e = timedwait_mod.__timedwait_cp(fut, seq, clock, ts, if shared != 0 { 0 } else { 1 })
+        if fut.* != seq || (e != 0 && e != errno_mod.EINTR) { break }
+    }
+    if e == errno_mod.EINTR { e = 0 }
+
+    if shared != 0 {
+        if e == errno_mod.ECANCELED && cond_int.c_seq(c).* != seq { e = 0 }
+        if atomic.a_fetch_add(cond_int.c_waiters(c), -1) == -0x7fffffff {
+            lock_mod.__wake(cond_int.c_waiters(c).^*void, 1, 0)
+        }
+        oldstate = WAITING
+        goto relock
+    }
+
+    oldstate = atomic.a_cas(&node.state, WAITING, LEAVING)
+
+    if oldstate == WAITING {
+        lock(cond_int.c_lock(c))
+
+        if cond_int.c_head(c).* == (&node).^*void {
+            cond_int.c_head(c).* = node.next.^*void
+        } else if node.prev != null {
+            node.prev.*.next = node.next
+        }
+        if cond_int.c_tail(c).* == (&node).^*void {
+            cond_int.c_tail(c).* = node.prev.^*void
+        } else if node.next != null {
+            node.next.*.prev = node.prev
+        }
+
+        unlock(cond_int.c_lock(c))
+
+        if node.notify != null {
+            if atomic.a_fetch_add(node.notify, -1) == 1 {
+                lock_mod.__wake(node.notify.^*void, 1, 1)
+            }
+        }
+    } else {
+        lock(&node.barrier)
+    }
+
+relock:
+    tmp = mutex_lock_mod.pthread_mutex_lock(m)
+    if tmp != 0 { e = tmp }
+
+    if oldstate == WAITING { goto done }
+
+    if node.next == null && (mutex_int.m_type(m).* & 8) == 0 {
+        atomic.a_inc(mutex_int.m_waiters(m))
+    }
+
+    if node.prev != null {
+        val := mutex_int.m_lock(m).*
+        if val > 0 {
+            _ = atomic.a_cas(mutex_int.m_lock(m), val, val | 0x80000000)
+        }
+        unlock_requeue(&node.prev.*.barrier, mutex_int.m_lock(m), mutex_int.m_type(m).* & (8 | 128))
+    } else if (mutex_int.m_type(m).* & 8) == 0 {
+        atomic.a_dec(mutex_int.m_waiters(m))
+    }
+
+    if e == errno_mod.ECANCELED { e = 0 }
+
+done:
+    _ = pthread_cancel_mod.__pthread_setcancelstate(cs, null)
+
+    if e == errno_mod.ECANCELED {
+        pthread_testcancel_mod.__pthread_testcancel()
+        _ = pthread_cancel_mod.__pthread_setcancelstate(pthread_cancel_mod.PTHREAD_CANCEL_DISABLE, null)
+    }
+
+    return e
+}
+
+__private_cond_signal :: proc(c: *pthread_cond_t, n: i32) i32 {
+    p: *waiter
+    first: *waiter = null
+    ref: i32 = 0
+    cur: i32
+
+    lock(cond_int.c_lock(c))
+    p = cond_int.c_tail(c).*.^*waiter
+    while true {
+        if n == 0 || p == null { break }
+        if atomic.a_cas(&p.*.state, WAITING, SIGNALED) != WAITING {
+            ref += 1
+            p.*.notify = &ref
+        } else {
+            n -= 1
+            if first == null { first = p }
+        }
+        p = p.*.prev
+    }
+
+    if p != null {
+        if p.*.next != null { p.*.next.*.prev = null }
+        p.*.next = null
+    } else {
+        cond_int.c_head(c).* = null
+    }
+    cond_int.c_tail(c).* = p.^*void
+    unlock(cond_int.c_lock(c))
+
+    while true {
+        cur = ref
+        if cur == 0 { break }
+        wait_mod.__wait(&ref, null, cur, 1)
+    }
+
+    if first != null {
+        unlock(&first.*.barrier)
+    }
+
+    return 0
+}
+
+pthread_cond_timedwait :: proc(c: *pthread_cond_t restrict, m: *alltypes.pthread_mutex_t restrict, ts: *const alltypes.timespec restrict) i32 {
+    return __pthread_cond_timedwait(c, m, ts)
+}

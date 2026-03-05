@@ -1,0 +1,29 @@
+package libc
+
+// Derived from musl-1.2.5/src/conf/legacy.c
+
+// Legacy GNU sysinfo wrappers that call sysconf
+
+sysconf :: extern proc(i32) i64
+
+// SC_ constants
+_SC_NPROCESSORS_CONF :: 83
+_SC_NPROCESSORS_ONLN :: 84
+_SC_PHYS_PAGES :: 85
+_SC_AVPHYS_PAGES :: 86
+
+get_nprocs_conf :: proc() i32 {
+    return sysconf(_SC_NPROCESSORS_CONF).(i32)
+}
+
+get_nprocs :: proc() i32 {
+    return sysconf(_SC_NPROCESSORS_ONLN).(i32)
+}
+
+get_phys_pages :: proc() i64 {
+    return sysconf(_SC_PHYS_PAGES)
+}
+
+get_avphys_pages :: proc() i64 {
+    return sysconf(_SC_AVPHYS_PAGES)
+}

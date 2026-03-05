@@ -1,0 +1,35 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/rename.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+rename :: proc(old: *const u8, new: *const u8) i32 {
+    // Prefer SYS_rename; fallback to renameat/renameat2 as needed.
+    r := sc.syscall2_ret(nums.SYS_rename.(i64), old.^usize.(i64), new.^usize.(i64))
+    return r.(i32)
+}
+
+renameat :: proc(olddir: i32, old: *const u8, newdir: i32, new: *const u8) i32 {
+    r := sc.syscall4_ret(
+        nums.SYS_renameat.(i64),
+        olddir.(i64),
+        old.^usize.(i64),
+        newdir.(i64),
+        new.^usize.(i64),
+    )
+    return r.(i32)
+}
+
+renameat2 :: proc(olddir: i32, old: *const u8, newdir: i32, new: *const u8, flags: i32) i32 {
+    r := sc.syscall5_ret(
+        nums.SYS_renameat2.(i64),
+        olddir.(i64),
+        old.^usize.(i64),
+        newdir.(i64),
+        new.^usize.(i64),
+        flags.(i64),
+    )
+    return r.(i32)
+}

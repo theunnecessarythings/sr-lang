@@ -78,12 +78,78 @@ fn runCrashTest(source_path: []const u8) !void {
     }
 }
 
+fn runCommandExpectSuccess(argv: []const []const u8) !std.process.Child.RunResult {
+    const result = try std.process.Child.run(.{
+        .allocator = alloc,
+        .argv = argv,
+        .max_output_bytes = 16 * 1024 * 1024,
+    });
+    errdefer {
+        alloc.free(result.stdout);
+        alloc.free(result.stderr);
+    }
+
+    switch (result.term) {
+        .Exited => |code| {
+            if (code != 0) {
+                std.debug.print("Command failed: ", .{});
+                for (argv) |arg| std.debug.print("{s} ", .{arg});
+                std.debug.print("\nStdout:\n{s}\nStderr:\n{s}\n", .{ result.stdout, result.stderr });
+                return error.CommandFailed;
+            }
+        },
+        else => {
+            std.debug.print("Command crashed: ", .{});
+            for (argv) |arg| std.debug.print("{s} ", .{arg});
+            std.debug.print("\nStdout:\n{s}\nStderr:\n{s}\n", .{ result.stdout, result.stderr });
+            return error.CommandCrashed;
+        },
+    }
+    return result;
+}
+
 test "behavior tests" {
     try runBehaviorTests();
 }
 
 test "crash tests" {
     try runCrashTest("tests/crash_optional_unwrap.sr");
+}
+
+test "sr-libc MVP regressions" {
+    // bare export_name identifier form must typecheck
+    {
+        const r = try runCommandExpectSuccess(&.{ "zig-out/bin/sr_lang", "check", "tests/sr_libc/export_name_attr.sr" });
+        defer alloc.free(r.stdout);
+        defer alloc.free(r.stderr);
+    }
+
+    // and must lower to renamed symbol in LLVM IR
+    {
+        const r = try runCommandExpectSuccess(&.{ "zig-out/bin/sr_lang", "llvm-ir", "tests/sr_libc/export_name_attr.sr" });
+        defer alloc.free(r.stdout);
+        defer alloc.free(r.stderr);
+        const has_my_add =
+            std.mem.indexOf(u8, r.stdout, "@my_add") != null or
+            std.mem.indexOf(u8, r.stderr, "@my_add") != null;
+        try std.testing.expect(has_my_add);
+    }
+
+    // plain main wrapper under --sr-libc must compile/run (std/io path)
+    {
+        const r = try runCommandExpectSuccess(&.{ "zig-out/bin/sr_lang", "run", "tests/sr_libc/plain_main_std_io.sr", "--sr-libc" });
+        defer alloc.free(r.stdout);
+        defer alloc.free(r.stderr);
+        try std.testing.expect(std.mem.indexOf(u8, r.stdout, "std io plain main\n") != null);
+    }
+
+    // argc/argv main under --sr-libc must still compile/run
+    {
+        const r = try runCommandExpectSuccess(&.{ "zig-out/bin/sr_lang", "run", "tests/sr_libc/argc_main_syscall.sr", "--sr-libc" });
+        defer alloc.free(r.stdout);
+        defer alloc.free(r.stderr);
+        try std.testing.expect(std.mem.indexOf(u8, r.stdout, "argc-main sr-libc\n") != null);
+    }
 }
 
 test "all" {

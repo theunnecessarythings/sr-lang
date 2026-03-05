@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/pread.c (x86_64 uses SYS_pread64).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+pread :: proc(fd: i32, buf: *void, size: usize, ofs: alltypes.off_t) isize {
+    r := sc.syscall4_ret(nums.SYS_pread64.(i64), fd.(i64), buf.^usize.(i64), size.(i64), ofs.(i64))
+    return r.(isize)
+}

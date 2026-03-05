@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/legacy/isastream.c
+
+errno_h :: import "libc/include/errno"
+
+isastream :: proc(fd: i32) i32 {
+    _ = fd
+    errno_h.errno().* = errno_h.ENOSYS
+    return 0
+}

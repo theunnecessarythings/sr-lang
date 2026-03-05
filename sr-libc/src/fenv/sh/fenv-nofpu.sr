@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/fenv/sh/fenv-nofpu.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <../fenv.c>
+
+// TODO: Manual translation needed - no functions detected
+// Original C code:
+/*
+#if !__SH_FPU_ANY__ && !__SH4__
+#include "../fenv.c"
+#endif
+
+...
+*/

@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/dprintf.c
+
+stdarg_mod :: import "libc/include/stdarg"
+
+dprintf :: proc(fd: i32, fmt: *const u8, args: any) i32 {
+    ap: stdarg_mod.va_list
+    stdarg_mod.va_start(&ap)
+    ret := vdprintf(fd, fmt, ap)
+    stdarg_mod.va_end(&ap)
+    return ret
+}

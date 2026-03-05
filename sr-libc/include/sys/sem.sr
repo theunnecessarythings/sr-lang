@@ -1,0 +1,50 @@
+package libc
+
+// Derived from musl-1.2.5/include/sys/sem.h and arch/generic/bits/sem.h
+
+SEM_UNDO :: 0x1000
+GETPID :: 11
+GETVAL :: 12
+GETALL :: 13
+GETNCNT :: 14
+GETZCNT :: 15
+SETVAL :: 16
+SETALL :: 17
+
+SEM_STAT :: (18 | (IPC_STAT & 0x100))
+SEM_INFO :: 19
+SEM_STAT_ANY :: (20 | (IPC_STAT & 0x100))
+
+semid_ds :: struct {
+    sem_perm: ipc_perm,
+    sem_otime: time_t,
+    sem_ctime: time_t,
+    sem_nsems: u16,
+    __sem_nsems_pad: [6]u8,
+    __unused3: i64,
+    __unused4: i64,
+}
+
+seminfo :: struct {
+    semmap: i32,
+    semmni: i32,
+    semmns: i32,
+    semmnu: i32,
+    semmsl: i32,
+    semopm: i32,
+    semume: i32,
+    semusz: i32,
+    semvmx: i32,
+    semaem: i32,
+}
+
+sembuf :: struct {
+    sem_num: u16,
+    sem_op: i16,
+    sem_flg: i16,
+}
+
+semctl :: proc(id: i32, num: i32, cmd: i32, /* TODO */ ...) i32
+semget :: proc(key: key_t, n: i32, fl: i32) i32
+semop :: proc(id: i32, buf: *sembuf, n: usize) i32
+semtimedop :: proc(id: i32, buf: *sembuf, n: usize, ts: *const timespec) i32

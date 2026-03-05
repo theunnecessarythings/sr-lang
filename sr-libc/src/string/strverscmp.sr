@@ -1,0 +1,40 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/strverscmp.c (ASCII-only).
+
+isdigit_ascii :: fn(c: u8) bool {
+    return c >= 48 and c <= 57
+}
+
+strverscmp :: proc(l0: *const u8, r0: *const u8) i32 {
+    l := l0
+    r := r0
+    i: usize = 0
+    dp: usize = 0
+    z: i32 = 1
+
+    while l[i] == r[i] {
+        c := l[i]
+        if c == 0 { return 0 }
+        if !isdigit_ascii(c) {
+            dp = i + 1
+            z = 1
+        } else if c != 48 {
+            z = 0
+        }
+        i += 1
+    }
+
+    if (l[dp] >= 49 and l[dp] <= 57) and (r[dp] >= 49 and r[dp] <= 57) {
+        j := i
+        while isdigit_ascii(l[j]) {
+            if !isdigit_ascii(r[j]) { return 1 }
+            j += 1
+        }
+        if isdigit_ascii(r[j]) { return -1 }
+    } else if z != 0 and dp < i and (isdigit_ascii(l[i]) or isdigit_ascii(r[i])) {
+        return (l[i] - 48).(i32) - (r[i] - 48).(i32)
+    }
+
+    return l[i].(i32) - r[i].(i32)
+}

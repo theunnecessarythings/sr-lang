@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/ftruncate.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+ftruncate :: proc(fd: i32, length: alltypes.off_t) i32 {
+    r := sc.syscall2_ret(nums.SYS_ftruncate.(i64), fd.(i64), length.(i64))
+    return r.(i32)
+}

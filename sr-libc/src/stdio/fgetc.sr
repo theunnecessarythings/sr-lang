@@ -1,0 +1,8 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/fgetc.c (locking elided).
+
+fgetc :: proc(f: *alltypes.FILE) i32 {
+    if f.rpos != f.rend { c := f.rpos.*; f.rpos = f.rpos + 1; return c.(i32) }
+    return __uflow(f)
+}

@@ -1,0 +1,42 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/getpw_a.c
+
+errno_h :: import "libc/include/errno"
+pwd_h :: import "libc/include/pwd"
+fopen_mod :: import "libc/src/stdio/fopen"
+fclose_mod :: import "libc/src/stdio/fclose"
+strcmp_mod :: import "libc/src/string/strcmp"
+getpwent_a :: import "libc/src/passwd/getpwent_a"
+
+__getpw_a :: proc(name: *const u8, uid: uid_t, pw: *pwd_h.passwd, buf: *u8, size: usize, res: **pwd_h.passwd) i32 {
+    if pw == null || buf == null || res == null {
+        return errno_h.EINVAL
+    }
+
+    f := fopen_mod.fopen("/etc/passwd", "r")
+    if f == null { return errno_h.errno().* }
+
+    out: *pwd_h.passwd = null
+    while true {
+        r := getpwent_a.__getpwent_a(f, pw, buf, size, &out)
+        if r != 0 || out == null { break }
+        if name != null {
+            if strcmp_mod.strcmp(out.pw_name, name) == 0 {
+                res.* = out
+                _ = fclose_mod.fclose(f)
+                return 0
+            }
+        } else {
+            if out.pw_uid == uid {
+                res.* = out
+                _ = fclose_mod.fclose(f)
+                return 0
+            }
+        }
+    }
+
+    _ = fclose_mod.fclose(f)
+    res.* = null
+    return errno_h.ENOENT
+}

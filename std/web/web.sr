@@ -1,0 +1,93 @@
+package web
+
+// --- Types ---
+Buffer          :: i32
+Framebuffer     :: i32
+Program         :: i32
+Renderbuffer    :: i32
+Shader          :: i32
+Texture         :: i32
+UniformLocation :: i32
+
+// Layout matching Odin's string { ptr, len } for array passing
+StringStruct :: struct {
+    ptr: *const u8,
+    len: usize,
+}
+
+GL_FRAGMENT_SHADER :: 0x8B30
+GL_VERTEX_SHADER   :: 0x8B31
+GL_ARRAY_BUFFER    :: 0x8892
+GL_STATIC_DRAW     :: 0x88E4
+GL_COLOR_BUFFER_BIT :: 0x00004000
+GL_FLOAT           :: 0x1406
+GL_TRIANGLES       :: 0x0004
+GL_COMPILE_STATUS  :: 0x8B81
+GL_LINK_STATUS     :: 0x8B82
+
+// --- Env ---
+print :: extern proc(ptr: *const u8, len: usize) void
+alert :: extern proc(ptr: *const u8, len: usize) void
+time_now :: extern proc() i64
+evaluate :: extern proc(ptr: *const u8, len: usize) void
+
+// --- WebGL ---
+
+// Context
+SetCurrentContextById :: extern proc(name_ptr: *const u8, name_len: usize) bool
+
+// Shaders & Programs
+CreateShader :: extern proc(kind: i32) Shader
+
+// Corrected signature: JS expects (shader, ptr_to_struct_array, count)
+ShaderSource :: extern proc(shader: Shader, strings_ptr: *const StringStruct, count: usize) void
+ShaderSourceRaw :: extern proc(shader: Shader, ptr: *const u8, len: usize) void
+
+CompileShader :: extern proc(shader: Shader) void
+GetShaderiv :: extern proc(shader: Shader, pname: i32, params: *i32) void
+
+CreateProgram :: extern proc() Program
+AttachShader :: extern proc(prog: Program, shader: Shader) void
+LinkProgram :: extern proc(prog: Program) void
+UseProgram :: extern proc(prog: Program) void
+GetAttribLocation :: extern proc(prog: Program, name_ptr: *const u8, name_len: usize) i32
+GetUniformLocation :: extern proc(prog: Program, name_ptr: *const u8, name_len: usize) UniformLocation
+GetProgramiv :: extern proc(prog: Program, pname: i32, params: *i32) void
+
+// Uniforms
+Uniform1f :: extern proc(loc: UniformLocation, v0: f32) void
+Uniform2f :: extern proc(loc: UniformLocation, v0: f32, v1: f32) void
+Uniform3f :: extern proc(loc: UniformLocation, v0: f32, v1: f32, v2: f32) void
+Uniform4f :: extern proc(loc: UniformLocation, v0: f32, v1: f32, v2: f32, v3: f32) void
+
+// Buffers
+CreateBuffer :: extern proc() Buffer
+BindBuffer :: extern proc(target: i32, buffer: Buffer) void
+BufferData :: extern proc(target: i32, size: usize, data: *const void, usage: i32) void
+
+// Attributes & Drawing
+EnableVertexAttribArray :: extern proc(index: i32) void
+VertexAttribPointer :: extern proc(index: i32, size: i32, kind: i32, normalized: bool, stride: i32, offset: usize) void
+DrawArrays :: extern proc(mode: i32, first: i32, count: i32) void
+
+// State
+ClearColor :: extern proc(r: f32, g: f32, b: f32, a: f32) void
+Clear :: extern proc(mask: i32) void
+Viewport :: extern proc(x: i32, y: i32, w: i32, h: i32) void
+
+// Helpers for sr-lang strings
+shaderSource :: proc(shader: Shader, src: string) void {
+    ShaderSourceRaw(shader, src.ptr, src.len)
+}
+
+setCurrentContextById :: proc(id: string) bool {
+    return SetCurrentContextById(id.ptr, id.len)
+}
+
+getAttribLocation :: proc(prog: Program, name: string) i32 {
+    return GetAttribLocation(prog, name.ptr, name.len)
+}
+
+getUniformLocation :: proc(prog: Program, name: string) UniformLocation {
+    return GetUniformLocation(prog, name.ptr, name.len)
+}

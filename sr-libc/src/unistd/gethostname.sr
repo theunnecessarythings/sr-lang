@@ -1,0 +1,24 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/gethostname.c
+
+uname_mod :: import "libc/src/unistd/uname"
+uts :: import "libc/include/sys/utsname"
+
+gethostname :: proc(name: *u8, len: usize) i32 {
+    u: uts.utsname
+    if uname_mod.uname(&u) != 0 { return -1 }
+    max := len
+    if max > u.nodename.len { max = u.nodename.len }
+    i: usize = 0
+    while i < max and u.nodename[i] != 0 {
+        name[i] = u.nodename[i]
+        i += 1
+    }
+    if i != 0 and i == max {
+        name[i - 1] = 0
+    } else if i < max {
+        name[i] = 0
+    }
+    return 0
+}

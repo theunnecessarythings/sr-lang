@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/malloc/reallocarray.c
+
+errno_h :: import "libc/include/errno"
+realloc_mod :: import "libc/src/malloc/realloc"
+
+reallocarray :: proc(ptr: *void, m: usize, n: usize) *void {
+    if m != 0 and n > (usize.max / m) {
+        errno_h.errno().* = errno_h.ENOMEM
+        return null
+    }
+    return realloc_mod.realloc(ptr, m * n)
+}

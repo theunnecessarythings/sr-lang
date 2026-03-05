@@ -1,0 +1,76 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/log1pf.c.
+
+libm :: import "libc/src/math/libm_internal"
+
+ln2_hi :: 6.9313812256e-01
+ln2_lo :: 9.0580006145e-06
+Lg1 :: 0xaaaaaa.0p-24
+Lg2 :: 0xccce13.0p-25
+Lg3 :: 0x91e9ee.0p-25
+Lg4 :: 0xf89e26.0p-26
+
+log1pf :: proc(x: f32) f32 {
+    u := libm.asuint(x)
+    hfsq: f32
+    f: f32
+    c: f32
+    s: f32
+    z: f32
+    R: f32
+    w: f32
+    t1: f32
+    t2: f32
+    dk: f32
+    ix: u32
+    iu: u32
+    k: i32
+
+    ix = u
+    k = 1
+    if ix < 0x3ed413d0 or (ix >> 31) != 0 {
+        if ix >= 0xbf800000 {
+            if x == -1.0f { return x / 0.0f }
+            return (x - x) / 0.0f
+        }
+        if (ix << 1) < (0x33800000 << 1) {
+            if (ix & 0x7f800000) == 0 { libm.fp_force_evalf(x * x) }
+            return x
+        }
+        if ix <= 0xbe95f619 {
+            k = 0
+            c = 0.0f
+            f = x
+        }
+    } else if ix >= 0x7f800000 {
+        return x
+    }
+
+    if k != 0 {
+        u = libm.asuint(1.0f + x)
+        uf := libm.asfloat(u)
+        iu = u
+        iu += 0x3f800000 - 0x3f3504f3
+        k = ((iu >> 23) - 0x7f).(i32)
+        if k < 25 {
+            c = if k >= 2 { 1.0f - (uf - x) } else { x - (uf - 1.0f) }
+            c /= uf
+        } else {
+            c = 0.0f
+        }
+        iu = (iu & 0x007fffff) + 0x3f3504f3
+        u = iu
+        f = libm.asfloat(u) - 1.0f
+    }
+
+    s = f / (2.0f + f)
+    z = s * s
+    w = z * z
+    t1 = w * (Lg2 + w * Lg4)
+    t2 = z * (Lg1 + w * Lg3)
+    R = t2 + t1
+    hfsq = 0.5f * f * f
+    dk = k.(f32)
+    return s * (hfsq + R) + (dk * ln2_lo + c) - hfsq + f + dk * ln2_hi
+}

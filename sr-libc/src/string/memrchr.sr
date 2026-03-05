@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/memrchr.c.
+
+memrchr :: proc(buf: *const void, c: i32, n: usize) ?*void {
+    b := buf.^*const u8
+    ch := c.(u8)
+    i := n
+    while i > 0 {
+        i -= 1
+        if b[i] == ch {
+            return (&b[i]).^?*void
+        }
+    }
+    return null
+}

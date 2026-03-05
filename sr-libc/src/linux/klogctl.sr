@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/klogctl.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+klogctl :: proc(type: i32, buf: *u8, len: i32) i32 {
+    r := sc.syscall3_ret(nums.SYS_klogctl.(i64), type.(i64), buf.^usize.(i64), len.(i64))
+    return r.(i32)
+}

@@ -1,0 +1,30 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/adjtime.c
+
+err :: import "libc/include/errno"
+
+adjtime :: proc(in: ?*timeval, out: ?*timeval) i32 {
+    tx := timex{}
+    if in != null {
+        if in.*.tv_sec > 1000 or in.*.tv_usec > 1000000000 {
+            errp := __errno_location()
+            errp.* = err.EINVAL
+            return -1
+        }
+        tx.offset = in.*.tv_sec * 1000000 + in.*.tv_usec
+        tx.modes = ADJ_OFFSET_SINGLESHOT
+    }
+
+    if adjtimex(&tx) < 0 { return -1 }
+
+    if out != null {
+        out.*.tv_sec = tx.offset / 1000000
+        out.*.tv_usec = tx.offset % 1000000
+        if out.*.tv_usec < 0 {
+            out.*.tv_sec -= 1
+            out.*.tv_usec += 1000000
+        }
+    }
+    return 0
+}

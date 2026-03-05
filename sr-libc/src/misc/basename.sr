@@ -1,0 +1,28 @@
+package libc
+
+// Derived from musl-1.2.5/src/misc/basename.c
+
+string_h :: import "libc/src/string"
+
+basename :: proc(s: *u8) *u8 {
+    if s == 0 || s.* == 0 {
+        return "."
+    }
+    
+    i: usize = string_h.strlen(s) - 1
+    
+    // Strip trailing slashes
+    while i > 0 && s[i] == '/'.(u8) {
+        s[i] = 0
+        i -= 1
+    }
+    
+    // Find start of filename
+    while i > 0 && s[i - 1] != '/'.(u8) {
+        i -= 1
+    }
+    
+    return s + i
+}
+
+__xpg_basename :: basename

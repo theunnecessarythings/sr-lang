@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/strndup.c.
+
+alloc_mod :: import "libc/src/malloc/mallocng/malloc"
+memcpy_mod :: import "libc/src/string/memcpy"
+
+strndup :: proc(s: *const u8, n: usize) ?*u8 {
+    len: usize = 0
+    while len < n and s[len] != 0 {
+        len += 1
+    }
+    out := alloc_mod.malloc(len + 1)
+    if out == null { return null }
+    _ = memcpy_mod.memcpy((out?).^*void, s.^*const void, len)
+    ((out?).^*u8)[len] = 0
+    return (out?).^*u8
+}

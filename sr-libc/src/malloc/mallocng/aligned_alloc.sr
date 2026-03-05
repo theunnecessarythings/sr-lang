@@ -1,0 +1,68 @@
+package libc
+
+// Derived from musl-1.2.5/src/malloc/mallocng/aligned_alloc.c
+
+malloc_mod :: import "libc/src/malloc/mallocng/malloc"
+meta_mod :: import "libc/src/malloc/mallocng/meta"
+glue :: import "libc/src/malloc/mallocng/glue"
+replaced :: import "libc/src/malloc/replaced"
+errno_mod :: import "libc/include/errno"
+
+aligned_alloc :: proc(align: usize, len: usize) *void {
+    if (align & (0 - align)) != align {
+        errno_mod.__errno_location().* = errno_mod.EINVAL
+        return null
+    }
+    
+    // len > SIZE_MAX - align || align >= (1ULL<<31)*UNIT
+    // simplify overflow check
+    if len > (meta_mod.SIZE_MAX - align) or align >= (2147483648 * meta_mod.UNIT) {
+        errno_mod.__errno_location().* = errno_mod.ENOMEM
+        return null
+    }
+    
+    if replaced.__malloc_replaced != 0 and replaced.__aligned_alloc_replaced == 0 {
+        errno_mod.__errno_location().* = errno_mod.ENOMEM
+        return null
+    }
+    
+    align_req := align
+    if align_req <= meta_mod.UNIT { align_req = meta_mod.UNIT }
+    
+    p := malloc_mod.malloc(len + align_req - meta_mod.UNIT).^*u8
+    if p == null { return null }
+    
+    g := meta_mod.get_meta(p)
+    idx := meta_mod.get_slot_index(p)
+    stride := meta_mod.get_stride(g)
+    
+    start := g.mem.storage.^*u8 + stride * idx.(usize)
+    end := g.mem.storage.^*u8 + stride * (idx + 1).(usize) - meta_mod.IB
+    
+    adj: usize = (0 - p.^usize) & (align_req - 1)
+    
+    if adj == 0 {
+        meta_mod.set_size(p, end, len)
+        return p.^*void
+    }
+    
+    p += adj
+    offset: u32 = ((p.^usize - g.mem.storage.^*u8.^usize) / meta_mod.UNIT).(u32)
+    
+    if offset <= 65535 {
+        (p - 2).^*u16.* = offset.(u16)
+        (p - 4).* = 0
+    } else {
+        (p - 2).^*u16.* = 0
+        (p - 8).^*u32.* = offset
+        (p - 4).* = 1
+    }
+    
+    (p - 3).* = idx.(u8)
+    meta_mod.set_size(p, end, len)
+    
+    (start - 2).^*u16.* = ((p.^usize - start.^usize) / meta_mod.UNIT).(u16)
+    (start - 3).* = 7 << 5
+    
+    return p.^*void
+}

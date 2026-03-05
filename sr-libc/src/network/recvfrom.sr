@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/recvfrom.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <syscall.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+recvfrom :: proc(fd: i32, buf: *void restrict, len: usize, flags: i32, addr: *sockaddr restrict, alen: *socklen_t restrict) isize {
+    addr_ptr := if addr == null { 0 } else { addr.^usize }
+    alen_ptr := if alen == null { 0 } else { alen.^usize }
+    r := sc.syscall6_ret(nums.SYS_recvfrom.(i64), fd.(i64), buf.^usize.(i64), len.(i64), flags.(i64), addr_ptr.(i64), alen_ptr.(i64))
+    return r.(isize)
+}

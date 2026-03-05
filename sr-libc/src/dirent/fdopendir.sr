@@ -1,0 +1,35 @@
+package libc
+
+// Derived from musl-1.2.5/src/dirent/fdopendir.c
+
+errno_h :: import "libc/include/errno"
+fcntl_h :: import "libc/include/fcntl"
+fcntl_mod :: import "libc/src/fcntl/fcntl"
+stat_h :: import "libc/include/sys/stat"
+fstat_mod :: import "libc/src/stat/fstat"
+
+calloc :: extern proc(n: usize, size: usize) *void
+
+fdopendir :: proc(fd: i32) *DIR {
+    st: stat
+
+    flags := fcntl_mod.fcntl(fd, fcntl_h.F_GETFL, 0)
+    if flags < 0 { return null }
+    if (flags & fcntl_h.O_PATH) != 0 {
+        errno_h.errno().* = errno_h.EBADF
+        return null
+    }
+
+    if fstat_mod.fstat(fd, &st) < 0 { return null }
+    if !stat_h.S_ISDIR(st.st_mode) {
+        errno_h.errno().* = errno_h.ENOTDIR
+        return null
+    }
+
+    d := calloc(1, sizeof(DIR)).^*DIR
+    if d == null { return null }
+
+    d.fd = fd
+    _ = fcntl_mod.fcntl(fd, fcntl_h.F_SETFD, fcntl_h.FD_CLOEXEC.(usize))
+    return d
+}

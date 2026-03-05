@@ -1,0 +1,13 @@
+package main
+
+io :: import "std/io"
+math_lib :: import "math_lib"
+
+main :: proc() {
+    v1 := math_lib.Vector{ x: 1.0, y: 2.0 }
+    v2 := math_lib.Vector{ x: 3.0, y: 4.0 }
+    v3 := math_lib.add(v1, v2)
+    v4 := math_lib.scale(v3, 0.5)
+    io.print("v4=(%f,%f)\n", v4.x)
+    io.print("y=%f\n", v4.y)
+}

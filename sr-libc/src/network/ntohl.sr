@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/ntohl.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <netinet/in.h>
+// #include <byteswap.h>
+
+ntohl :: proc(n: uint32_t) uint32_t {
+    return ((n & 0x000000ff) << 24) |
+           ((n & 0x0000ff00) << 8) |
+           ((n & 0x00ff0000) >> 8) |
+           ((n & 0xff000000) >> 24)
+}

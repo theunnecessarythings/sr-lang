@@ -1,0 +1,31 @@
+package libc
+
+// Derived from musl-1.2.5/src/stat/mknod.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+S_IFIFO :: 0o010000
+
+mknod :: proc(path: *const u8, mode: mode_t, dev: dev_t) i32 {
+    r := sc.syscall3_ret(nums.SYS_mknod.(i64), path.^usize.(i64), mode.(i64), dev.(i64))
+    return r.(i32)
+}
+
+mknodat :: proc(dirfd: i32, path: *const u8, mode: mode_t, dev: dev_t) i32 {
+    r := sc.syscall4_ret(
+        nums.SYS_mknodat.(i64),
+        dirfd.(i64),
+        path.^usize.(i64),
+        mode.(i64),
+        dev.(i64),
+    )
+    return r.(i32)
+}
+
+mkfifo :: proc(path: *const u8, mode: mode_t) i32 {
+    return mknod(path, mode | S_IFIFO, 0)
+}
+
+mkfifoat :: proc(dirfd: i32, path: *const u8, mode: mode_t) i32 {
+    return mknodat(dirfd, path, mode | S_IFIFO, 0)
+}

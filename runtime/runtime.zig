@@ -57,6 +57,13 @@ pub export fn rt_eprint(ptr: [*]const u8, len: usize) callconv(.c) void {
     _ = c.write(2, @ptrCast(ptr), len);
 }
 
+pub export fn rt_has_percent(ptr: [*]const u8, len: usize) callconv(.c) bool {
+    var i: usize = 0;
+    while (i < len) : (i += 1) {
+        if (ptr[i] == '%') return true;
+    }
+    return false;
+}
 // Panic: print message to stderr and abort
 pub export fn rt_panic(ptr: [*]const u8, len: usize) callconv(.c) noreturn {
     if (len > 0) {

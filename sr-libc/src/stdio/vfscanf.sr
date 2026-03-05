@@ -1,0 +1,360 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/vfscanf.c.
+
+alltypes :: import "libc/include/alltypes"
+ctype_mod :: import "libc/src/ctype/ctype"
+stdarg_mod :: import "libc/include/stdarg"
+memset_mod :: import "libc/src/string/memset"
+sh :: import "libc/src/internal/shgetc"
+toread_mod :: import "libc/src/stdio/toread"
+intscan_mod :: import "libc/src/internal/intscan"
+floatscan_mod :: import "libc/src/internal/floatscan"
+stdio_impl :: import "libc/src/stdio/stdio_impl"
+malloc_mod :: import "libc/src/stdlib/malloc"
+mbrtowc_mod :: import "libc/src/multibyte/mbrtowc"
+mbsinit_mod :: import "libc/src/multibyte/mbsinit"
+
+SIZE_hh :: -2
+SIZE_h :: -1
+SIZE_def :: 0
+SIZE_l :: 1
+SIZE_L :: 2
+SIZE_ll :: 3
+
+store_int :: proc(dest: ?*void, size: i32, i: u64) void {
+    if dest == null { return }
+    d := dest?
+    if size == SIZE_hh {
+        (d.^*i8).* = i.(i8)
+    } else if size == SIZE_h {
+        (d.^*i16).* = i.(i16)
+    } else if size == SIZE_def {
+        (d.^*i32).* = i.(i32)
+    } else if size == SIZE_l {
+        (d.^*isize).* = i.(isize)
+    } else if size == SIZE_ll {
+        (d.^*i64).* = i.(i64)
+    }
+}
+
+arg_n :: proc(ap: stdarg_mod.va_list, n: u32) *void {
+    ap2: stdarg_mod.va_list
+    stdarg_mod.va_copy(&ap2, &ap)
+    i: u32 = n
+    while i > 1 {
+        _ = stdarg_mod.va_arg(*void, &ap2)
+        i -= 1
+    }
+    p := stdarg_mod.va_arg(*void, &ap2)
+    stdarg_mod.va_end(&ap2)
+    return p
+}
+
+vfscanf :: proc(f: *alltypes.FILE, fmt: *const u8, ap: stdarg_mod.va_list) i32 {
+    width: i32
+    size: i32
+    alloc: i32 = 0
+    base: i32
+    p := fmt.^*u8
+    c: i32
+    t: i32
+    s: ?*u8 = null
+    wcs: ?*alltypes.wchar_t = null
+    st: alltypes.mbstate_t
+    dest: ?*void = null
+    invert: i32
+    matches: i32 = 0
+    x: u64
+    y: f128
+    pos: alltypes.off_t = 0
+    scanset: [257]u8
+    i: usize
+    k: usize
+    wc: alltypes.wchar_t
+
+    _ = stdio_impl.__lockfile(f)
+
+    if f.rpos.^usize == 0 { _ = toread_mod.__toread(f) }
+    if f.rpos.^usize == 0 {
+        _ = stdio_impl.__unlockfile(f)
+        return -1
+    }
+
+    while p.* != 0 {
+        alloc = 0
+
+        if ctype_mod.isspace(p.*.(i32)) != 0 {
+            while ctype_mod.isspace(p[1].(i32)) != 0 { p = (p.^usize + 1).(usize).^*u8 }
+            sh.shlim(f, 0)
+            while ctype_mod.isspace(sh.shgetc(f)) != 0 {}
+            sh.shunget(f)
+            pos += sh.shcnt(f)
+            p = (p.^usize + 1).(usize).^*u8
+            continue
+        }
+
+        if p.* != 37 or p[1] == 37 {
+            sh.shlim(f, 0)
+            if p.* == 37 {
+                p = (p.^usize + 1).(usize).^*u8
+                c = sh.shgetc(f)
+                while ctype_mod.isspace(c) != 0 { c = sh.shgetc(f) }
+            } else {
+                c = sh.shgetc(f)
+            }
+            if c != p.*.(i32) {
+                sh.shunget(f)
+                if c < 0 {
+                    _ = stdio_impl.__unlockfile(f)
+                    return -1
+                }
+                _ = stdio_impl.__unlockfile(f)
+                return matches
+            }
+            pos += sh.shcnt(f)
+            p = (p.^usize + 1).(usize).^*u8
+            continue
+        }
+
+        p = (p.^usize + 1).(usize).^*u8
+        if p.* == 42 {
+            dest = null
+            p = (p.^usize + 1).(usize).^*u8
+        } else if ctype_mod.isdigit(p.*.(i32)) != 0 and p[1] == 36 {
+            dest = arg_n(ap, (p.* - 48).(u32))
+            p = (p.^usize + 2).(usize).^*u8
+        } else {
+            dest = stdarg_mod.va_arg(*void, &ap)
+        }
+
+        width = 0
+        while ctype_mod.isdigit(p.*.(i32)) != 0 {
+            width = 10 * width + (p.* - 48).(i32)
+            p = (p.^usize + 1).(usize).^*u8
+        }
+
+        if p.* == 109 { // 'm'
+            wcs = null
+            s = null
+            alloc = (dest != null).(i32)
+            p = (p.^usize + 1).(usize).^*u8
+        } else {
+            alloc = 0
+        }
+
+        size = SIZE_def
+        if p.* == 104 {
+            p = (p.^usize + 1).(usize).^*u8
+            if p.* == 104 { p = (p.^usize + 1).(usize).^*u8; size = SIZE_hh } else { size = SIZE_h }
+        } else if p.* == 108 {
+            p = (p.^usize + 1).(usize).^*u8
+            if p.* == 108 { p = (p.^usize + 1).(usize).^*u8; size = SIZE_ll } else { size = SIZE_l }
+        } else if p.* == 106 {
+            size = SIZE_ll
+        } else if p.* == 122 or p.* == 116 {
+            size = SIZE_l
+        } else if p.* == 76 {
+            size = SIZE_L
+        } else if p.* == 100 or p.* == 105 or p.* == 111 or p.* == 117 or p.* == 120 or p.* == 97 or p.* == 101 or p.* == 102 or p.* == 103 or p.* == 65 or p.* == 69 or p.* == 70 or p.* == 71 or p.* == 88 or p.* == 115 or p.* == 99 or p.* == 91 or p.* == 83 or p.* == 67 or p.* == 112 or p.* == 110 {
+            // leave size default
+        } else {
+            _ = stdio_impl.__unlockfile(f)
+            if matches == 0 { return -1 }
+            return matches
+        }
+
+        t = p.*.(i32)
+        if ((t & 0x2f) == 3) { t |= 32; size = SIZE_l }
+
+        if t == 99 {
+            if width < 1 { width = 1 }
+        } else if t == 110 {
+            store_int(dest, size, pos.(u64))
+            p = (p.^usize + 1).(usize).^*u8
+            continue
+        } else if t != 91 {
+            sh.shlim(f, 0)
+            while ctype_mod.isspace(sh.shgetc(f)) != 0 {}
+            sh.shunget(f)
+            pos += sh.shcnt(f)
+        }
+
+        sh.shlim(f, width.(alltypes.off_t))
+        if sh.shgetc(f) < 0 {
+            _ = stdio_impl.__unlockfile(f)
+            return -1
+        }
+        sh.shunget(f)
+
+        if t == 115 or t == 99 or t == 91 {
+            if t == 99 or t == 115 {
+                _ = memset_mod.memset((&scanset[0]).^*void, 0xff, scanset.len)
+                scanset[0] = 0
+                if t == 115 {
+                    scanset[1 + 9] = 0
+                    scanset[1 + 10] = 0
+                    scanset[1 + 11] = 0
+                    scanset[1 + 12] = 0
+                    scanset[1 + 13] = 0
+                    scanset[1 + 32] = 0
+                }
+            } else {
+                p = (p.^usize + 1).(usize).^*u8
+                if p.* == 94 { p = (p.^usize + 1).(usize).^*u8; invert = 1 } else { invert = 0 }
+                _ = memset_mod.memset((&scanset[0]).^*void, if invert != 0 { 1 } else { 0 }, scanset.len)
+                scanset[0] = 0
+                if p.* == 45 {
+                    p = (p.^usize + 1).(usize).^*u8
+                    scanset[1 + 45] = (1 - invert).(u8)
+                } else if p.* == 93 {
+                    p = (p.^usize + 1).(usize).^*u8
+                    scanset[1 + 93] = (1 - invert).(u8)
+                }
+                while p.* != 93 {
+                    if p.* == 0 {
+                        _ = stdio_impl.__unlockfile(f)
+                        if matches == 0 { return -1 }
+                        return matches
+                    }
+                    if p.* == 45 and p[1] != 0 and p[1] != 93 {
+                        c = p[-1].(i32)
+                        p = (p.^usize + 1).(usize).^*u8
+                        while c < p.*.(i32) { scanset[1 + c] = (1 - invert).(u8); c += 1 }
+                    }
+                    scanset[1 + p.*] = (1 - invert).(u8)
+                    p = (p.^usize + 1).(usize).^*u8
+                }
+            }
+
+            wcs = (0.(usize)).^*alltypes.wchar_t
+            s = (0.(usize)).^*u8
+            i = 0
+            if t == 99 {
+                k = (width + 1).(usize)
+            } else {
+                k = 31
+            }
+            if size == SIZE_l {
+                if alloc != 0 {
+                    raw_w := malloc_mod.malloc(k * sizeof(alltypes.wchar_t).(usize))
+                    wcs = if raw_w != null { (raw_w?).^*alltypes.wchar_t } else { null }
+                    if wcs == null { _ = stdio_impl.__unlockfile(f); return -1 }
+                } else {
+                    wcs = dest?.^*alltypes.wchar_t
+                }
+                st = alltypes.mbstate_t{ __opaque1: 0, __opaque2: 0 }
+                c = sh.shgetc(f)
+                while c >= 0 and scanset[(c + 1).(usize)] != 0 {
+                    b: u8 = c.(u8)
+                    ret := mbrtowc_mod.mbrtowc(&wc, &b, 1, &st)
+                    if ret == -1 { _ = stdio_impl.__unlockfile(f); return -1 }
+                    if ret != -2 {
+                        if wcs != null { wcs?[i] = wc; i += 1 }
+                        if alloc != 0 and i == k {
+                            k = k + k + 1
+                            tmp_raw := malloc_mod.realloc((wcs?).^*void, k * sizeof(alltypes.wchar_t).(usize))
+                            tmp: ?*alltypes.wchar_t = if tmp_raw != null { (tmp_raw?).^*alltypes.wchar_t } else { null }
+                            if tmp == null { _ = stdio_impl.__unlockfile(f); return -1 }
+                            wcs = tmp
+                        }
+                    }
+                    c = sh.shgetc(f)
+                }
+                if mbsinit_mod.mbsinit(&st) == 0 { _ = stdio_impl.__unlockfile(f); return -1 }
+            } else if alloc != 0 {
+                raw_s := malloc_mod.malloc(k)
+                s = if raw_s != null { (raw_s?).^*u8 } else { null }
+                if s == null { _ = stdio_impl.__unlockfile(f); return -1 }
+                c = sh.shgetc(f)
+                while c >= 0 and scanset[(c + 1).(usize)] != 0 {
+                    s?[i] = c.(u8); i += 1
+                    if i == k {
+                        k = k + k + 1
+                        tmp_raw := malloc_mod.realloc((s?).^*void, k)
+                        tmp: ?*u8 = if tmp_raw != null { (tmp_raw?).^*u8 } else { null }
+                        if tmp == null { _ = stdio_impl.__unlockfile(f); return -1 }
+                        s = tmp
+                    }
+                    c = sh.shgetc(f)
+                }
+            } else if dest != null {
+                s = dest?.^*u8
+                c = sh.shgetc(f)
+                while c >= 0 and scanset[(c + 1).(usize)] != 0 {
+                    s?[i] = c.(u8); i += 1
+                    c = sh.shgetc(f)
+                }
+            } else {
+                c = sh.shgetc(f)
+                while c >= 0 and scanset[(c + 1).(usize)] != 0 { c = sh.shgetc(f) }
+            }
+
+            sh.shunget(f)
+            if sh.shcnt(f) == 0 { _ = stdio_impl.__unlockfile(f); return matches }
+            if t == 99 and sh.shcnt(f) != width.(alltypes.off_t) { _ = stdio_impl.__unlockfile(f); return matches }
+            if alloc != 0 {
+                if size == SIZE_l {
+                    (dest?.^**alltypes.wchar_t).* = wcs?
+                } else {
+                    (dest?.^**u8).* = s?
+                }
+            }
+            if t != 99 {
+                if wcs != null { wcs?[i] = 0 }
+                if s != null { s?[i] = 0 }
+            }
+        } else if t == 112 or t == 88 or t == 120 {
+            base = 16
+            x = intscan_mod.__intscan(f, base.(u32), 0, (-1).(u64))
+            if sh.shcnt(f) == 0 { _ = stdio_impl.__unlockfile(f); return matches }
+            if t == 112 and dest != null {
+                (dest?.^**void).* = x.^*void
+            } else {
+                store_int(dest, size, x)
+            }
+        } else if t == 111 {
+            base = 8
+            x = intscan_mod.__intscan(f, base.(u32), 0, (-1).(u64))
+            if sh.shcnt(f) == 0 { _ = stdio_impl.__unlockfile(f); return matches }
+            store_int(dest, size, x)
+        } else if t == 100 or t == 117 {
+            base = 10
+            x = intscan_mod.__intscan(f, base.(u32), 0, (-1).(u64))
+            if sh.shcnt(f) == 0 { _ = stdio_impl.__unlockfile(f); return matches }
+            store_int(dest, size, x)
+        } else if t == 105 {
+            base = 0
+            x = intscan_mod.__intscan(f, base.(u32), 0, (-1).(u64))
+            if sh.shcnt(f) == 0 { _ = stdio_impl.__unlockfile(f); return matches }
+            store_int(dest, size, x)
+        } else if t == 97 or t == 101 or t == 102 or t == 103 or t == 65 or t == 69 or t == 70 or t == 71 {
+            floatkind: i32
+            if size == SIZE_def {
+                floatkind = 0
+            } else if size == SIZE_l {
+                floatkind = 1
+            } else {
+                floatkind = 2
+            }
+            y = floatscan_mod.__floatscan(f, floatkind, 0)
+            if sh.shcnt(f) == 0 { _ = stdio_impl.__unlockfile(f); return matches }
+            if dest != null {
+                if size == SIZE_def {
+                    (dest?.^*f32).* = y.(f32)
+                } else if size == SIZE_l {
+                    (dest?.^*f64).* = y.(f64)
+                } else if size == SIZE_L {
+                    (dest?.^*f128).* = y
+                }
+            }
+        }
+
+        pos += sh.shcnt(f)
+        if dest != null { matches += 1 }
+        p = (p.^usize + 1).(usize).^*u8
+    }
+
+    _ = stdio_impl.__unlockfile(f)
+    return matches
+}

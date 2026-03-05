@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/vmsplice.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+vmsplice :: proc(fd: i32, iov: *const iovec, cnt: usize, flags: u32) isize {
+    r := sc.syscall4_ret(nums.SYS_vmsplice.(i64), fd.(i64), iov.^usize.(i64), cnt.(i64), flags.(i64))
+    return r.(isize)
+}

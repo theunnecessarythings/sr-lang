@@ -1,0 +1,26 @@
+package libc
+
+// Derived from musl-1.2.5/src/search/twalk.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <search.h>
+// #include <tsearch.h>
+
+impl :: import "libc/src/search/tsearch_impl"
+
+walk :: proc(r: *const impl.node, action: proc(*const void, VISIT, i32) void, d: i32) void {
+    if r == null { return }
+    if r.h == 1 {
+        action(r.^*const void, VISIT.leaf, d)
+    } else {
+        action(r.^*const void, VISIT.preorder, d)
+        walk(r.a[0], action, d + 1)
+        action(r.^*const void, VISIT.postorder, d)
+        walk(r.a[1], action, d + 1)
+        action(r.^*const void, VISIT.endorder, d)
+    }
+}
+
+twalk :: proc(root: *const void, action: proc(*const void, VISIT, i32) void) void {
+    walk(root.^*const impl.node, action, 0)
+}

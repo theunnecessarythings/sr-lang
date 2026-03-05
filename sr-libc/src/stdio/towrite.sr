@@ -1,0 +1,22 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/__towrite.c.
+
+impl :: import "libc/src/stdio/stdio_impl"
+
+__towrite :: proc(f: *alltypes.FILE) i32 {
+    f.mode = f.mode | (f.mode - 1)
+    if (f.flags & impl.F_NOWR.(u32)) != 0 {
+        f.flags = f.flags | impl.F_ERR.(u32)
+        return EOF
+    }
+
+    f.rpos = null
+    f.rend = null
+
+    f.wpos = f.buf
+    f.wbase = f.buf
+    f.wend = f.buf + f.buf_size
+
+    return 0
+}

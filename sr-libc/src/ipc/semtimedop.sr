@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/ipc/semtimedop.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/sem.h>
+// #include <errno.h>
+// #include <syscall.h>
+// #include <ipc.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+semtimedop :: proc(id: i32, buf: *sembuf, n: usize, ts: *const timespec) i32 {
+    ts_ptr := if ts == null { 0 } else { ts.^usize }
+    return sc.syscall4_ret(nums.SYS_semtimedop.(i64), id.(i64), buf.^usize.(i64), n.(i64), ts_ptr.(i64)).(i32)
+}

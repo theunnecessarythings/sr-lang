@@ -1,0 +1,131 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/powf.c.
+
+libm :: import "libc/src/math/libm_internal"
+exp2fdata :: import "libc/src/math/exp2f_data"
+powfdata :: import "libc/src/math/powf_data"
+
+SIGN_BIAS :: (1 << (exp2fdata.EXP2F_TABLE_BITS + 11))
+
+log2_inline :: fn(ix: u32) f64 {
+    z: f64
+    r: f64
+    r2: f64
+    r4: f64
+    p: f64
+    q: f64
+    y: f64
+    y0: f64
+    invc: f64
+    logc: f64
+    iz: u32
+    top: u32
+    tmp: u32
+    k: i32
+    i: u32
+
+    tmp = ix - 0x3f330000
+    i = (tmp >> (23 - powfdata.POWF_LOG2_TABLE_BITS)) % (1 << powfdata.POWF_LOG2_TABLE_BITS)
+    top = tmp & 0xff800000
+    iz = ix - top
+    k = (top.(i32) >> (23 - powfdata.POWF_SCALE_BITS))
+
+    invc = powfdata.__powf_log2_data.tab[i.(usize)].invc
+    logc = powfdata.__powf_log2_data.tab[i.(usize)].logc
+    z = libm.asfloat(iz).(f64)
+
+    r = z * invc - 1.0
+    y0 = logc + k.(f64)
+
+    r2 = r * r
+    y = powfdata.__powf_log2_data.poly[0] * r + powfdata.__powf_log2_data.poly[1]
+    p = powfdata.__powf_log2_data.poly[2] * r + powfdata.__powf_log2_data.poly[3]
+    r4 = r2 * r2
+    q = powfdata.__powf_log2_data.poly[4] * r + y0
+    q = p * r2 + q
+    y = y * r4 + q
+    return y
+}
+
+exp2_inline :: fn(xd: f64, sign_bias: u32) f32 {
+    ki: u64
+    ski: u64
+    t: u64
+    kd: f64
+    z: f64
+    r: f64
+    r2: f64
+    y: f64
+    s: f64
+
+    kd = libm.eval_as_double(xd + exp2fdata.__exp2f_data.shift_scaled)
+    ki = libm.asuint64(kd)
+    kd -= exp2fdata.__exp2f_data.shift_scaled
+    r = xd - kd
+
+    t = exp2fdata.__exp2f_data.tab[(ki % (1 << exp2fdata.EXP2F_TABLE_BITS)).(usize)]
+    ski = ki + sign_bias.(u64)
+    t += ski << (52 - exp2fdata.EXP2F_TABLE_BITS)
+    s = libm.asdouble(t)
+    z = exp2fdata.__exp2f_data.poly[0] * r + exp2fdata.__exp2f_data.poly[1]
+    r2 = r * r
+    y = exp2fdata.__exp2f_data.poly[2] * r + 1.0
+    y = z * r2 + y
+    y = y * s
+    return libm.eval_as_float(y.(f32))
+}
+
+checkint :: fn(iy: u32) i32 {
+    e := ((iy >> 23) & 0xff).(i32)
+    if e < 0x7f { return 0 }
+    if e > 0x7f + 23 { return 2 }
+    if (iy & ((1u32 << (0x7f + 23 - e)) - 1)) != 0 { return 0 }
+    if (iy & (1u32 << (0x7f + 23 - e))) != 0 { return 1 }
+    return 2
+}
+
+zeroinfnan :: fn(ix: u32) bool {
+    return (2 * ix - 1) >= (2u32 * 0x7f800000 - 1)
+}
+
+powf :: proc(x: f32, y: f32) f32 {
+    sign_bias: u32 = 0
+    ix := libm.asuint(x)
+    iy := libm.asuint(y)
+
+    if libm.predict_false(ix - 0x00800000 >= 0x7f800000 - 0x00800000 or zeroinfnan(iy)) {
+        if libm.predict_false(zeroinfnan(iy)) {
+            if 2 * iy == 0 { return if libm.issignalingf_inline(x) { x + y } else { 1.0f } }
+            if ix == 0x3f800000 { return if libm.issignalingf_inline(y) { x + y } else { 1.0f } }
+            if 2 * ix > 2u32 * 0x7f800000 or 2 * iy > 2u32 * 0x7f800000 { return x + y }
+            if 2 * ix == 2u32 * 0x3f800000 { return 1.0f }
+            if ((2 * ix < 2u32 * 0x3f800000) == ((iy & 0x80000000) == 0)) { return 0.0f }
+            return y * y
+        }
+        if libm.predict_false(zeroinfnan(ix)) {
+            x2 := x * x
+            if (ix & 0x80000000) != 0 and checkint(iy) == 1 { x2 = -x2 }
+            return if (iy & 0x80000000) != 0 { libm.fp_barrierf(1.0f / x2) } else { x2 }
+        }
+        if (ix & 0x80000000) != 0 {
+            yint := checkint(iy)
+            if yint == 0 { return libm.__math_invalidf(x) }
+            if yint == 1 { sign_bias = SIGN_BIAS }
+            ix &= 0x7fffffff
+        }
+        if ix < 0x00800000 {
+            ix = libm.asuint(x * 0x1p23f)
+            ix &= 0x7fffffff
+            ix -= 23 << 23
+        }
+    }
+
+    logx := log2_inline(ix)
+    ylogx := y.(f64) * logx
+    if libm.predict_false(((libm.asuint64(ylogx) >> 47) & 0xffff) >= (libm.asuint64(126.0 * powfdata.POWF_SCALE) >> 47)) {
+        if ylogx > 0x1.fffffffd1d571p+6 * powfdata.POWF_SCALE { return libm.__math_oflowf(sign_bias) }
+        if ylogx <= -150.0 * powfdata.POWF_SCALE { return libm.__math_uflowf(sign_bias) }
+    }
+    return exp2_inline(ylogx, sign_bias)
+}

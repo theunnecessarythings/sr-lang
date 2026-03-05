@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/errno and include/errno.h
+// TODO: replace global errno with thread-local storage once TLS is supported.
+
+__errno_value := 0
+
+@[export_name="__errno_location"]
+__errno_location_impl :: proc() *i32 {
+    return &__errno_value
+}
+
+// Provide a symbol named errno for sr-lang code expecting errno() accessor.
+@[export_name="errno"]
+errno_impl :: proc() *i32 {
+    return &__errno_value
+}

@@ -1,0 +1,26 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/res_send.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <resolv.h>
+// #include <string.h>
+
+memcpy_mod :: import "libc/src/string/memcpy"
+
+__res_send :: proc(msg: *const u8, msglen: i32, answer: *u8, anslen: i32) i32 {
+    r: i32
+    if anslen < 512 {
+        buf: [512]u8
+        r = __res_send(msg, msglen, &buf[0], 512)
+        if r >= 0 {
+            copy_len := if r < anslen { r } else { anslen }
+            _ = memcpy_mod.memcpy(answer.^*void, &buf[0], copy_len.(usize))
+        }
+        return r
+    }
+    r = __res_msend(1, &msg, &msglen, &answer, &anslen, anslen)
+    return if r < 0 || anslen == 0 { -1 } else { anslen }
+}
+
+res_send :: __res_send

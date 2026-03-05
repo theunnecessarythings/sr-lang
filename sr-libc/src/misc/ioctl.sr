@@ -1,0 +1,217 @@
+package libc
+
+// Derived from musl-1.2.5/src/misc/ioctl.c (full compat translation, x86_64).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+ioctl_consts :: import "libc/include/sys/ioctl"
+memset_mod :: import "libc/src/string/memset"
+alltypes :: import "libc/include/alltypes"
+errno_h :: import "libc/include/errno"
+
+W :: 1
+R :: 2
+WR :: 3
+
+ioctl_compat_map :: struct {
+    new_req: i32,
+    old_req: i32,
+    old_size: u8,
+    dir: u8,
+    force_align: u8,
+    noffs: u8,
+    offsets: [8]u8,
+}
+
+// Sizes for ioctl request encoding
+SIZE_88 :: 88
+SIZE_96 :: 96
+SIZE_108 :: 108
+SIZE_128 :: 128
+SIZE_132 :: 132
+SIZE_136 :: 136
+SIZE_36 :: 36
+SIZE_48 :: 48
+SIZE_68 :: 68
+SIZE_76 :: 76
+SIZE_120 :: 120
+SIZE_24 :: 24
+SIZE_32 :: 32
+SIZE_16 :: 16
+SIZE_8 :: 8
+SIZE_4 :: 4
+
+// new_misaligned(n) size for x86_64: 4 + 8 + (n-4)
+new_misaligned_68 :: 76
+new_misaligned_120 :: 128
+
+// v4l2_event struct (size only matters for request encoding)
+v4l2_event :: struct {
+    a: u32,
+    b: [8]u64,
+    c: [2]u32,
+    ts: [2]u32,
+    d: [9]u32,
+}
+
+// Compute _IOR/_IOWR values with explicit sizes (avoid type macros)
+_IOR :: fn(ty: u32, nr: u32, size: usize) i32 { return ioctl_consts._IOR_size(ty, nr, size) }
+_IOW :: fn(ty: u32, nr: u32, size: usize) i32 { return ioctl_consts._IOW_size(ty, nr, size) }
+_IOWR :: fn(ty: u32, nr: u32, size: usize) i32 { return ioctl_consts._IOWR_size(ty, nr, size) }
+
+// Offsets in v4l2_event (ts[0], ts[1]) for x86_64 layout
+V4L2_TS0_OFF :: 80
+V4L2_TS1_OFF :: 84
+
+compat_map: [20]ioctl_compat_map = [
+    // SIOCGSTAMP, SIOCGSTAMPNS
+    ioctl_compat_map{ new_req: ioctl_consts.SIOCGSTAMP, old_req: ioctl_consts.SIOCGSTAMP_OLD, old_size: 8, dir: R, force_align: 0, noffs: 2, offsets: [0,4,0,0,0,0,0,0] },
+    ioctl_compat_map{ new_req: ioctl_consts.SIOCGSTAMPNS, old_req: ioctl_consts.SIOCGSTAMPNS_OLD, old_size: 8, dir: R, force_align: 0, noffs: 2, offsets: [0,4,0,0,0,0,0,0] },
+
+    // SNDRV_TIMER_IOCTL_STATUS
+    ioctl_compat_map{ new_req: _IOR(84, 0x14, SIZE_96), old_req: _IOR(84, 0x14, SIZE_88), old_size: 88, dir: R, force_align: 0, noffs: 2, offsets: [0,4,0,0,0,0,0,0] },
+
+    // SNDRV_PCM_IOCTL_STATUS[_EXT]
+    ioctl_compat_map{ new_req: _IOR(65, 0x20, SIZE_128), old_req: _IOR(65, 0x20, SIZE_108), old_size: 108, dir: R, force_align: 1, noffs: 8, offsets: [4,8,12,16,52,56,60,64] },
+    ioctl_compat_map{ new_req: _IOWR(65, 0x24, SIZE_128), old_req: _IOWR(65, 0x24, SIZE_108), old_size: 108, dir: WR, force_align: 1, noffs: 8, offsets: [4,8,12,16,52,56,60,64] },
+
+    // SNDRV_RAWMIDI_IOCTL_STATUS
+    ioctl_compat_map{ new_req: _IOWR(87, 0x20, SIZE_48), old_req: _IOWR(87, 0x20, SIZE_36), old_size: 36, dir: WR, force_align: 1, noffs: 2, offsets: [4,8,0,0,0,0,0,0] },
+
+    // SNDRV_PCM_IOCTL_SYNC_PTR - with 3 subtables
+    ioctl_compat_map{ new_req: _IOWR(65, 0x23, SIZE_136), old_req: _IOWR(65, 0x23, SIZE_132), old_size: 0, dir: WR, force_align: 1, noffs: 0, offsets: [0,0,0,0,0,0,0,0] },
+    ioctl_compat_map{ new_req: 0, old_req: 0, old_size: 4, dir: WR, force_align: 1, noffs: 0, offsets: [0,0,0,0,0,0,0,0] }, // flags only
+    ioctl_compat_map{ new_req: 0, old_req: 0, old_size: 32, dir: WR, force_align: 1, noffs: 5, offsets: [8,12,16,24,28,0,0,0] }, // mmap_status
+    ioctl_compat_map{ new_req: 0, old_req: 0, old_size: 4, dir: WR, force_align: 1, noffs: 0, offsets: [0,0,0,0,0,0,0,0] }, // mmap_control
+
+    // VIDIOC_* buffers
+    ioctl_compat_map{ new_req: _IOWR(86, 9, new_misaligned_68), old_req: _IOWR(86, 9, SIZE_68), old_size: 68, dir: WR, force_align: 1, noffs: 2, offsets: [20,24,0,0,0,0,0,0] },
+    ioctl_compat_map{ new_req: _IOWR(86, 15, new_misaligned_68), old_req: _IOWR(86, 15, SIZE_68), old_size: 68, dir: WR, force_align: 1, noffs: 2, offsets: [20,24,0,0,0,0,0,0] },
+    ioctl_compat_map{ new_req: _IOWR(86, 17, new_misaligned_68), old_req: _IOWR(86, 17, SIZE_68), old_size: 68, dir: WR, force_align: 1, noffs: 2, offsets: [20,24,0,0,0,0,0,0] },
+    ioctl_compat_map{ new_req: _IOWR(86, 93, new_misaligned_68), old_req: _IOWR(86, 93, SIZE_68), old_size: 68, dir: WR, force_align: 1, noffs: 2, offsets: [20,24,0,0,0,0,0,0] },
+
+    // VIDIOC_DQEVENT
+    ioctl_compat_map{
+        new_req: _IOR(86, 89, new_misaligned_120),
+        old_req: _IOR(86, 89, sizeof(v4l2_event)),
+        old_size: sizeof(v4l2_event).(u8),
+        dir: R,
+        force_align: 0,
+        noffs: 2,
+        offsets: [V4L2_TS0_OFF.(u8), V4L2_TS1_OFF.(u8), 0.(u8), 0.(u8), 0.(u8), 0.(u8), 0.(u8), 0.(u8)],
+    },
+
+    // VIDIOC_OMAP3ISP_STAT_REQ
+    ioctl_compat_map{ new_req: _IOWR(86, 192+6, SIZE_32), old_req: _IOWR(86, 192+6, SIZE_24), old_size: 22, dir: WR, force_align: 0, noffs: 2, offsets: [0,4,0,0,0,0,0,0] },
+
+    // PPPIOCGIDLE
+    ioctl_compat_map{ new_req: _IOR(116, 63, SIZE_16), old_req: _IOR(116, 63, SIZE_8), old_size: 8, dir: R, force_align: 0, noffs: 2, offsets: [0,4,0,0,0,0,0,0] },
+
+    // PPGETTIME, PPSETTIME
+    ioctl_compat_map{ new_req: _IOR(112, 0x95, SIZE_16), old_req: _IOR(112, 0x95, SIZE_8), old_size: 8, dir: R, force_align: 0, noffs: 2, offsets: [0,4,0,0,0,0,0,0] },
+    ioctl_compat_map{ new_req: _IOW(112, 0x96, SIZE_16), old_req: _IOW(112, 0x96, SIZE_8), old_size: 8, dir: W, force_align: 0, noffs: 2, offsets: [0,4,0,0,0,0,0,0] },
+
+    // LPSETTIMEOUT
+    ioctl_compat_map{ new_req: _IOW(0x6, 0xf, SIZE_16), old_req: 0x060f, old_size: 8, dir: W, force_align: 0, noffs: 2, offsets: [0,4,0,0,0,0,0,0] },
+]
+
+ptr_add :: proc(p: *u8, off: usize) *u8 {
+    return (p.^usize + off).(usize).^*u8
+}
+
+copy_bytes :: proc(dst: *u8, src: *u8, len: usize) void {
+    i: usize = 0
+    while i < len {
+        dst[i] = src[i]
+        i += 1
+    }
+}
+
+align_up :: proc(x: usize, a: usize) usize {
+    return (x + a - 1) & (0.(usize) - a)
+}
+
+read_i64 :: proc(p: *u8) i64 {
+    v: i64 = 0
+    copy_bytes((&v).^*u8, p, 8)
+    return v
+}
+
+write_i64 :: proc(p: *u8, v: i64) void {
+    copy_bytes(p, (&v).^*u8, 8)
+}
+
+convert_ioctl_struct :: proc(map_index: usize, old: *u8, new: *u8, dir: i32) void {
+    map := compat_map[map_index]
+    if (dir & map.dir.(i32)) == 0 { return }
+    if map.old_size == 0 {
+        convert_ioctl_struct(map_index + 1, old, new, dir)
+        convert_ioctl_struct(map_index + 2, ptr_add(old, 4), ptr_add(new, 8), dir)
+        adj: usize = 0
+        if alltypes.__BYTE_ORDER == alltypes.__BIG_ENDIAN { adj = 4 }
+        convert_ioctl_struct(map_index + 3, ptr_add(old, 68), ptr_add(new, 72 + adj), dir)
+        convert_ioctl_struct(map_index + 3, ptr_add(old, 72), ptr_add(new, 76 + 3 * adj), dir)
+        return
+    }
+
+    new_offset: usize = 0
+    old_offset: usize = 0
+    old_size := map.old_size.(usize)
+
+    i: usize = 0
+    while i < map.noffs {
+        ts_offset := map.offsets[i].(usize)
+        len := ts_offset - old_offset
+        if dir == W {
+            copy_bytes(ptr_add(old, old_offset), ptr_add(new, new_offset), len)
+        } else {
+            copy_bytes(ptr_add(new, new_offset), ptr_add(old, old_offset), len)
+        }
+        new_offset += len
+        old_offset += len
+
+        r#align := 8.(usize)
+        if map.force_align == 0 { r#align = 8 }
+        new_offset = align_up(new_offset, r#align)
+
+        if dir == W {
+            new_ts := read_i64(ptr_add(new, new_offset))
+            write_i64(ptr_add(old, old_offset), new_ts)
+        } else {
+            old_ts := read_i64(ptr_add(old, old_offset))
+            write_i64(ptr_add(new, new_offset), old_ts)
+        }
+        new_offset += 8
+        old_offset += 8
+        i += 1
+    }
+
+    if dir == W {
+        copy_bytes(ptr_add(old, old_offset), ptr_add(new, new_offset), old_size - old_offset)
+    } else {
+        copy_bytes(ptr_add(new, new_offset), ptr_add(old, old_offset), old_size - old_offset)
+    }
+}
+
+ioctl :: proc(fd: i32, req: i32, arg: *void) i32 {
+    argv := arg.^usize
+    r := sc.syscall3(nums.SYS_ioctl.(i64), fd.(i64), req.(i64), argv.(i64))
+    if ioctl_consts.SIOCGSTAMP != ioctl_consts.SIOCGSTAMP_OLD and req != 0 and r == (-errno_h.ENOTTY).(i64) {
+        i: usize = 0
+        while i < compat_map.len {
+            if compat_map[i].new_req == req {
+                // 256 byte scratch buffer aligned by long long
+                buf: [256]u8
+                _ = memset_mod.memset((&buf[0]).^*void, 0, 256)
+                convert_ioctl_struct(i, &buf[0], arg.^*u8, W)
+                bufp := (&buf[0]).^usize
+                r = sc.syscall3(nums.SYS_ioctl.(i64), fd.(i64), compat_map[i].old_req.(i64), bufp.(i64))
+                if r < 0 { break }
+                convert_ioctl_struct(i, &buf[0], arg.^*u8, R)
+                break
+            }
+            i += 1
+        }
+    }
+    return sc.__syscall_ret(r).(i32)
+}

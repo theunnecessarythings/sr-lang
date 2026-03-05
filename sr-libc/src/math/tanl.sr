@@ -1,0 +1,29 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/tanl.c (113-bit path).
+
+libm :: import "libc/src/math/libm_internal"
+rem :: import "libc/src/math/rem_pio2l"
+
+tank :: import "libc/src/math/tanl_kernel"
+
+PIO4 :: 0x1.921fb54442d18469898cc51701b8p-1
+
+tanl :: proc(x: f128) f128 {
+    bits := x.^u128
+    exp := ((bits >> 112) & 0x7fff).(i32)
+    bits &= (1u128 << 127) - 1
+
+    if exp == 0x7fff { return x - x }
+    if (bits.^f128) < PIO4 {
+        if exp < 0x3fff - 56 {
+            libm.fp_force_evall(if exp == 0 { x * 0x1p-120 } else { x + 0x1p120 })
+            return x
+        }
+        return tank.__tanl(x, 0.0, 0)
+    }
+
+    y: [2]f128
+    n := rem.__rem_pio2l(x, &y[0])
+    return tank.__tanl(y[0], y[1], n & 1)
+}

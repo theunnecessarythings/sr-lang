@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/__overflow.c.
+
+__overflow :: proc(f: *alltypes.FILE, c_in: i32) i32 {
+    c := c_in.(u8)
+    if f.wend == null and __towrite(f) != 0 { return EOF }
+    if f.wpos != f.wend and c_in != f.lbf { f.wpos.* = c; f.wpos = f.wpos + 1; return c.(i32) }
+    if f.write(f, &c, 1) != 1 { return EOF }
+    return c.(i32)
+}

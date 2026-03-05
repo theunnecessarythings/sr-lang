@@ -1,0 +1,31 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/pipe2.c.
+
+errno_mod :: import "libc/include/errno"
+fcntl_mod :: import "libc/include/fcntl"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+pipe2 :: proc(fds: *i32, flags: i32) i32 {
+    if flags == 0 { return pipe(fds) }
+
+    ret := sc.syscall2(nums.SYS_pipe2.(i64), fds.^usize.(i64), flags.(i64))
+    if ret != (-errno_mod.ENOSYS).(i64) {
+        return sc.__syscall_ret(ret).(i32)
+    }
+
+    if (flags & ~(fcntl_mod.O_CLOEXEC | fcntl_mod.O_NONBLOCK)) != 0 {
+        return sc.__syscall_ret((-errno_mod.EINVAL).(i64)).(i32)
+    }
+    if pipe(fds) != 0 { return -1 }
+    if (flags & fcntl_mod.O_CLOEXEC) != 0 {
+        _ = sc.syscall3(nums.SYS_fcntl.(i64), fds[0].(i64), fcntl_mod.F_SETFD.(i64), fcntl_mod.FD_CLOEXEC.(i64))
+        _ = sc.syscall3(nums.SYS_fcntl.(i64), fds[1].(i64), fcntl_mod.F_SETFD.(i64), fcntl_mod.FD_CLOEXEC.(i64))
+    }
+    if (flags & fcntl_mod.O_NONBLOCK) != 0 {
+        _ = sc.syscall3(nums.SYS_fcntl.(i64), fds[0].(i64), fcntl_mod.F_SETFL.(i64), fcntl_mod.O_NONBLOCK.(i64))
+        _ = sc.syscall3(nums.SYS_fcntl.(i64), fds[1].(i64), fcntl_mod.F_SETFL.(i64), fcntl_mod.O_NONBLOCK.(i64))
+    }
+    return 0
+}

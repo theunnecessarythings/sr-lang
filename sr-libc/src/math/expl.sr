@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/expl.c (f128 implementation via exp2l).
+
+basic :: import "libc/src/math/basic"
+
+LOG2E :: 1.4426950408889634073599246810018921374266459541529859
+
+expl :: proc(x: f128) f128 {
+    if basic.isnanl(x) { return x }
+    return exp2l(x * LOG2E)
+}

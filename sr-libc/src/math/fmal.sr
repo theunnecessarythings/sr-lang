@@ -1,0 +1,148 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/fmal.c (113-bit path).
+
+basic :: import "libc/src/math/basic"
+
+LDBL_MANT_DIG :: 113
+LDBL_MIN :: 0x1p-16382
+
+// double-double struct
+_dd :: struct { hi: f128, lo: f128 }
+
+isnormall :: fn(x: f128) bool {
+    bits := x.^u128
+    exp := (bits >> 112) & 0x7fff
+    frac := bits & ((1u128 << 112) - 1)
+    if exp == 0 { return false }
+    if exp == 0x7fff { return false }
+    return frac != 0
+}
+
+lastbit :: fn(x: f128) bool {
+    bits := x.^u128
+    return (bits & 1) != 0
+}
+
+_dd_add :: fn(a: f128, b: f128) _dd {
+    s := a + b
+    v := s - a
+    lo := (a - (s - v)) + (b - v)
+    return _dd{ hi: s, lo: lo }
+}
+
+add_adjusted :: fn(a: f128, b: f128) f128 {
+    sum := _dd_add(a, b)
+    if sum.lo != 0.0 {
+        if !lastbit(sum.hi) {
+            sum.hi = nextafterl(sum.hi, (1.0/0.0) * sum.lo)
+        }
+    }
+    return sum.hi
+}
+
+add_and_denormalize :: fn(a: f128, b: f128, scale: i32) f128 {
+    sum := _dd_add(a, b)
+    if sum.lo != 0.0 {
+        bits := sum.hi.^u128
+        exp := ((bits >> 112) & 0x7fff).(i32)
+        bits_lost := -exp - scale + 1
+        if (bits_lost != 1) != lastbit(sum.hi) {
+            sum.hi = nextafterl(sum.hi, (1.0/0.0) * sum.lo)
+        }
+    }
+    return scalbnl(sum.hi, scale)
+}
+
+_dd_mul :: fn(a: f128, b: f128) _dd {
+    SPLIT :: (0x1p57 + 1.0)
+    p := a * SPLIT
+    ha := a - p
+    ha += p
+    la := a - ha
+
+    p = b * SPLIT
+    hb := b - p
+    hb += p
+    lb := b - hb
+
+    p = ha * hb
+    q := ha * lb + la * hb
+
+    hi := p + q
+    lo := p - hi + q + la * lb
+    return _dd{ hi: hi, lo: lo }
+}
+
+fmal :: proc(x: f128, y: f128, z: f128) f128 {
+    if !basic.isfinitel(x) or !basic.isfinitel(y) { return x * y + z }
+    if !basic.isfinitel(z) { return z }
+    if x == 0.0 or y == 0.0 { return x * y + z }
+    if z == 0.0 { return x * y }
+
+    xs: f128
+    ys: f128
+    zs: f128
+    adj: f128
+    oround := fegetround()
+    ex: i32
+    ey: i32
+    ez: i32
+
+    xs = frexpl(x, &ex)
+    ys = frexpl(y, &ey)
+    zs = frexpl(z, &ez)
+    spread := ex + ey - ez
+
+    if spread < -LDBL_MANT_DIG {
+        _ = feraiseexcept(FE_INEXACT)
+        if !isnormall(z) { _ = feraiseexcept(FE_UNDERFLOW) }
+        if oround == FE_TOWARDZERO {
+            s1 := (x > 0.0) != (y < 0.0)
+            s2 := s1 != (z < 0.0)
+            if s2 { return z } else { return nextafterl(z, 0.0) }
+        } else if oround == FE_DOWNWARD {
+            s1 := (x > 0.0) != (y < 0.0)
+            if s1 { return z } else { return nextafterl(z, -1.0/0.0) }
+        } else if oround == FE_UPWARD {
+            s1 := (x > 0.0) != (y < 0.0)
+            if s1 { return nextafterl(z, 1.0/0.0) } else { return z }
+        }
+        return z
+    }
+    if spread <= LDBL_MANT_DIG * 2 {
+        zs = scalbnl(zs, -spread)
+    } else {
+        zs = copysignl(LDBL_MIN, zs)
+    }
+
+    _ = fesetround(FE_TONEAREST)
+
+    xy := _dd_mul(xs, ys)
+    r := _dd_add(xy.hi, zs)
+
+    spread = ex + ey
+
+    if r.hi == 0.0 {
+        _ = fesetround(oround)
+        vzs := zs
+        return xy.hi + vzs + scalbnl(xy.lo, spread)
+    }
+
+    if oround != FE_TONEAREST {
+        ret: f128
+        _ = fesetround(oround)
+        adj = r.lo + xy.lo
+        ret = scalbnl(r.hi + adj, spread)
+        if ilogbl(ret) < -16382 and (fetestexcept(FE_INEXACT) != 0) {
+            _ = feraiseexcept(FE_UNDERFLOW)
+        }
+        return ret
+    }
+
+    adj = add_adjusted(r.lo, xy.lo)
+    if spread + ilogbl(r.hi) > -16383 {
+        return scalbnl(r.hi + adj, spread)
+    }
+    return add_and_denormalize(r.hi, adj, spread)
+}

@@ -1,0 +1,37 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_rwlock_timedwrlock.c
+
+atomic :: import "libc/src/internal/atomic"
+errno_mod :: import "libc/include/errno"
+wait_mod :: import "libc/src/thread/__timedwait"
+rw_int :: import "libc/src/thread/pthread_rwlock_internal"
+time_mod :: import "libc/src/time/time"
+alltypes :: import "libc/include/alltypes"
+
+__pthread_rwlock_timedwrlock :: proc(rw: *alltypes.pthread_rwlock_t, at: *const timespec) i32 {
+    r := pthread_rwlock_trywrlock(rw)
+    if r != errno_mod.EBUSY { return r }
+
+    spins: i32 = 100
+    while spins > 0 && rw_int.rw_lock(rw).* != 0 && rw_int.rw_waiters(rw).* == 0 {
+        atomic.a_spin()
+        spins -= 1
+    }
+
+    while (r = __pthread_rwlock_trywrlock(rw)) == errno_mod.EBUSY {
+        val := rw_int.rw_lock(rw).*
+        if val == 0 { continue }
+        t := val | 0x80000000
+        atomic.a_inc(rw_int.rw_waiters(rw))
+        _ = atomic.a_cas(rw_int.rw_lock(rw), val, t)
+        r = wait_mod.__timedwait(rw_int.rw_lock(rw), t, time_mod.CLOCK_REALTIME, at.^*const alltypes.timespec, rw_int.rw_shared(rw).* ^ 128)
+        atomic.a_dec(rw_int.rw_waiters(rw))
+        if r != 0 && r != errno_mod.EINTR { return r }
+    }
+    return r
+}
+
+pthread_rwlock_timedwrlock :: proc(rw: *alltypes.pthread_rwlock_t, at: *const timespec) i32 {
+    return __pthread_rwlock_timedwrlock(rw, at)
+}

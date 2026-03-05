@@ -1,0 +1,25 @@
+package libc
+
+// Minimal regex compilation.
+
+regex_h :: import "libc/include/regex"
+strdup_mod :: import "libc/src/string/strdup"
+free :: extern proc(p: *void) void
+
+regcomp :: proc(preg: *regex_h.regex_t, pattern: *const u8, cflags: i32) i32 {
+    if preg == null || pattern == null { return regex_h.REG_BADPAT }
+    p := strdup_mod.strdup(pattern)
+    if p == null { return regex_h.REG_ESPACE }
+    preg.re_nsub = 0
+    preg.__pattern = p
+    preg.__flags = cflags
+    return 0
+}
+
+regfree :: proc(preg: *regex_h.regex_t) void {
+    if preg == null { return }
+    if preg.__pattern != null {
+        free(preg.__pattern.^*void)
+    }
+    preg.__pattern = null
+}

@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/dup.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+dup :: proc(oldfd: i32) i32 {
+    r := sc.syscall1_ret(nums.SYS_dup.(i64), oldfd.(i64))
+    return r.(i32)
+}

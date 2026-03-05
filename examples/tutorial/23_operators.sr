@@ -1,0 +1,49 @@
+package main
+
+io :: import "std/io"
+
+main :: proc() {
+    // Arithmetic.
+    a := 10
+    b := 3
+    _ = a + b
+    _ = a - b
+    _ = a * b
+    _ = a / b
+    _ = a % b
+
+    // Comparison and logical.
+    _ = a == b
+    _ = a != b
+    _ = a < b
+    _ = a <= b
+    _ = a > b
+    _ = a >= b
+    _ = (a > b) and true
+    _ = (a < b) or false
+    _ = !false
+
+    // Bitwise.
+    _ = a & b
+    _ = a | b
+    _ = a ^ b
+    _ = a << 1
+    _ = a >> 1
+
+    // Assignment variants.
+    x := 5
+    x += 1
+    x -= 1
+    x *= 2
+    x /= 2
+    x %= 2
+
+    // Wrapping and saturating arithmetic.
+    u: u8 = 250
+    w := u +% 10
+
+    s: i8 = 120
+    sat := s +| 20
+
+    io.println("%d %d", w, sat)
+}

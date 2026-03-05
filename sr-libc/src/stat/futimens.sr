@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/stat/futimens.c
+
+stat_mod :: import "libc/include/sys/stat"
+utimensat_mod :: import "libc/src/stat/utimensat"
+
+futimens :: proc(fd: i32, times: ?*stat_mod.timespec) i32 {
+    return utimensat_mod.utimensat(fd, null, times, 0)
+}

@@ -1,0 +1,127 @@
+package libc
+
+// Minimal glob implementation.
+
+glob_h :: import "libc/include/glob"
+fnm_h :: import "libc/include/fnmatch"
+fnmatch_mod :: import "libc/src/regex/fnmatch"
+dirent_h :: import "libc/include/dirent"
+opendir_mod :: import "libc/src/dirent/opendir"
+readdir_mod :: import "libc/src/dirent/readdir"
+closedir_mod :: import "libc/src/dirent/closedir"
+stat_mod :: import "libc/src/stat/stat"
+stat_h :: import "libc/include/sys/stat"
+strdup_mod :: import "libc/src/string/strdup"
+strlcpy_mod :: import "libc/src/string/strlcpy"
+strlcat_mod :: import "libc/src/string/strlcat"
+malloc :: extern proc(n: usize) *void
+realloc :: extern proc(p: *void, n: usize) *void
+free :: extern proc(p: *void) void
+
+has_magic :: fn(p: *const u8) bool {
+    i: usize = 0
+    while p[i] != 0 {
+        c := p[i]
+        if c == '*'.(u8) || c == '?'.(u8) || c == '['.(u8) { return true }
+        i += 1
+    }
+    return false
+}
+
+append_path :: fn(pglob: *glob_h.glob_t, path: *const u8) bool {
+    n := pglob.gl_pathc
+    new_len := n + 1
+    arr := pglob.gl_pathv
+    new_arr := realloc(arr.^*void, (new_len + pglob.gl_offs) * sizeof(*u8)).(**u8)
+    if new_arr == null { return false }
+    pglob.gl_pathv = new_arr
+    s := strdup_mod.strdup(path)
+    if s == null { return false }
+    pglob.gl_pathv[pglob.gl_offs + n] = s
+    pglob.gl_pathc = new_len
+    return true
+}
+
+glob_dir :: fn(prefix: *const u8, pat: *const u8, flags: i32, pglob: *glob_h.glob_t) i32 {
+    // split pattern at first '/'
+    i: usize = 0
+    while pat[i] != 0 && pat[i] != '/'.(u8) { i += 1 }
+    has_slash := pat[i] == '/'.(u8)
+    comp := pat
+    rest := if has_slash { (pat.^usize + i + 1).(usize).^*const u8 } else { null }
+
+    dir_path := if prefix[0] == 0 { "." } else { prefix }
+    d := opendir_mod.opendir(dir_path)
+    if d == null { return glob_h.GLOB_ABORTED }
+
+    while true {
+        de := readdir_mod.readdir(d)
+        if de == null { break }
+        name := (&de.d_name[0]).^*const u8
+        if name[0] == '.'.(u8) && (flags & glob_h.GLOB_PERIOD) == 0 && comp[0] != '.'.(u8) { continue }
+        if fnmatch_mod.fnmatch(comp, name, 0) != 0 { continue }
+
+        buf: [4096]u8
+        if prefix[0] == 0 {
+            _ = strlcpy_mod.strlcpy(&buf[0], name, 4096)
+        } else {
+            _ = strlcpy_mod.strlcpy(&buf[0], prefix, 4096)
+            _ = strlcat_mod.strlcat(&buf[0], "/", 4096)
+            _ = strlcat_mod.strlcat(&buf[0], name, 4096)
+        }
+
+        if has_slash {
+            _ = glob_dir(&buf[0], rest, flags, pglob)
+        } else {
+            if !append_path(pglob, &buf[0]) { _ = closedir_mod.closedir(d); return glob_h.GLOB_NOSPACE }
+        }
+    }
+    _ = closedir_mod.closedir(d)
+    return 0
+}
+
+glob :: proc(pattern: *const u8, flags: i32, errfunc: *void, pglob: *glob_h.glob_t) i32 {
+    _ = errfunc
+    if pglob == null { return glob_h.GLOB_ABORTED }
+    if pglob.gl_pathv == null {
+        pglob.gl_pathc = 0
+        pglob.gl_offs = if (flags & glob_h.GLOB_DOOFFS) != 0 { pglob.gl_offs } else { 0 }
+    }
+
+    if !has_magic(pattern) {
+        st: stat_h.stat
+        if stat_mod.stat(pattern, &st) == 0 {
+            if !append_path(pglob, pattern) { return glob_h.GLOB_NOSPACE }
+            return 0
+        }
+        if (flags & glob_h.GLOB_NOCHECK) != 0 {
+            if !append_path(pglob, pattern) { return glob_h.GLOB_NOSPACE }
+            return 0
+        }
+        return glob_h.GLOB_NOMATCH
+    }
+
+    r := glob_dir("", pattern, flags, pglob)
+    if r == 0 && pglob.gl_pathc == 0 {
+        if (flags & glob_h.GLOB_NOCHECK) != 0 {
+            if !append_path(pglob, pattern) { return glob_h.GLOB_NOSPACE }
+            return 0
+        }
+        return glob_h.GLOB_NOMATCH
+    }
+    return r
+}
+
+globfree :: proc(pglob: *glob_h.glob_t) void {
+    if pglob == null { return }
+    if pglob.gl_pathv != null {
+        i: usize = 0
+        while i < pglob.gl_pathc {
+            free(pglob.gl_pathv[pglob.gl_offs + i].^*void)
+            i += 1
+        }
+        free(pglob.gl_pathv.^*void)
+    }
+    pglob.gl_pathv = null
+    pglob.gl_pathc = 0
+}

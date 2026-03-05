@@ -1,15 +1,13 @@
-package math
+package main
 
-// examples/imports/math.sr
-// A simple "library" file to be imported.
+// Standalone runner for the math module.
 
-// A public struct type.
-Vector :: struct {
-    x: f64,
-    y: f64,
-}
+math :: import "math_lib"
+io :: import "std/io"
 
-// A public helper function.
-add :: proc(a: Vector, b: Vector) Vector {
-    return Vector{ x: a.x + b.x, y: a.y + b.y };
+main :: proc() {
+    v1 := math.Vector{ x: 1.0, y: 2.0 }
+    v2 := math.Vector{ x: 3.0, y: 4.0 }
+    r := math.add(v1, v2)
+    io.println("sum: %f, %f", (r.x, r.y))
 }

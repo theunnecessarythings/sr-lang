@@ -18,6 +18,10 @@ const ContinueInfo = union(enum) {
         update_block: tir.BlockId,
         idx_value: tir.ValueId,
     },
+    match: struct {
+        header_block: tir.BlockId,
+        scrut_ty: types.TypeId,
+    },
 };
 
 pub const DeferEntry = struct {
@@ -427,15 +431,33 @@ pub fn lowerBreakCommon(
 }
 
 pub fn lowerContinue(self: *LowerTir, ctx: *LowerTir.LowerContext, a: *ast.Ast, env: *Env, f: *tir.Builder.FunctionFrame, blk: *tir.Builder.BlockFrame, sid: ast.StmtId) !void {
-    try lowerContinueCommon(self, ctx, a, env, f, blk, a.stmts.get(.Continue, sid).label, LowerTir.optLoc(a, sid));
+    const row = a.stmts.get(.Continue, sid);
+    try lowerContinueCommon(self, ctx, a, env, f, blk, row.label, row.value, LowerTir.optLoc(a, sid));
 }
 
-pub fn lowerContinueCommon(self: *LowerTir, ctx: *LowerTir.LowerContext, a: *ast.Ast, env: *Env, f: *tir.Builder.FunctionFrame, blk: *tir.Builder.BlockFrame, label: ast.OptStrId, loc: tir.OptLocId) !void {
+pub fn lowerContinueCommon(
+    self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
+    a: *ast.Ast,
+    env: *Env,
+    f: *tir.Builder.FunctionFrame,
+    blk: *tir.Builder.BlockFrame,
+    label: ast.OptStrId,
+    value: ast.OptExprId,
+    loc: tir.OptLocId,
+) !void {
     const lc = loopCtxForLabel(self, ctx, label) orelse return error.LoweringBug;
     try runDefersForLoopExit(self, ctx, a, env, f, blk, lc.*);
     switch (lc.continue_info) {
         .none => try f.builder.br(blk, lc.continue_block, &.{}, loc),
         .range => |info| try f.builder.br(blk, info.update_block, &.{info.idx_value}, loc),
+        .match => |info| {
+            const v = if (!value.isNone())
+                try self.lowerExpr(ctx, a, env, f, blk, value.unwrap(), info.scrut_ty, .rvalue)
+            else
+                self.safeUndef(blk, info.scrut_ty, loc);
+            try f.builder.br(blk, info.header_block, &.{v}, loc);
+        },
     }
 }
 
@@ -456,6 +478,7 @@ fn typeIdForName(ts: *types.TypeStore, name: ast.StrId) ?types.TypeId {
             if (std.mem.eql(u8, s, "u64")) return ts.tU64();
             if (std.mem.eql(u8, s, "f32")) return ts.tF32();
             if (std.mem.eql(u8, s, "f64")) return ts.tF64();
+            if (std.mem.eql(u8, s, "f128")) return ts.tF128();
             if (std.mem.eql(u8, s, "any")) return ts.tAny();
         },
         4 => {
@@ -767,7 +790,9 @@ pub fn lowerErrUnwrap(
     if (value_is_void) {
         try f.builder.br(&then_blk, join_blk.id, &.{}, loc);
     } else {
-        const payload_union_ty = ts.mkUnion(&.{ .{ .name = f.builder.intern("Ok"), .ty = es.value_ty }, .{ .name = f.builder.intern("Err"), .ty = es.error_ty } });
+        const ok_name = ts.strs.intern("Ok");
+        const err_name = ts.strs.intern("Err");
+        const payload_union_ty = ts.mkUnion(&.{ .{ .name = ok_name, .ty = es.value_ty }, .{ .name = err_name, .ty = es.error_ty } });
         var ok_val = then_blk.builder.tirValue(.UnionField, &then_blk, es.value_ty, loc, .{ .base = then_blk.builder.extractField(&then_blk, payload_union_ty, es_val, 1, expr_loc), .field_index = 0 });
         if (expected_ty) |want| ok_val = self.emitCoerce(&then_blk, ok_val, es.value_ty, want, loc);
         try f.builder.br(&then_blk, join_blk.id, &.{ok_val}, loc);
@@ -812,7 +837,23 @@ pub fn lowerMatch(
 ) anyerror!tir.ValueId {
     const row = a.exprs.get(.Match, id);
     const loc = LowerTir.optLoc(a, id);
-    const scrut = try self.lowerExpr(ctx, a, env, f, blk, row.expr, null, .rvalue);
+    const labeled = !row.label.isNone();
+    const scrut_ty = self.getExprType(ctx, a, row.expr);
+    var scrut: tir.ValueId = undefined;
+    var header_id: ?tir.BlockId = null;
+
+    if (labeled) {
+        var header = try f.builder.beginBlock(f);
+        const scrut_param = try f.builder.addBlockParam(&header, null, scrut_ty);
+        const init_scrut = try self.lowerExpr(ctx, a, env, f, blk, row.expr, null, .rvalue);
+        try f.builder.br(blk, header.id, &.{init_scrut}, loc);
+        try f.builder.endBlock(f, blk.*);
+        blk.* = header;
+        scrut = scrut_param;
+        header_id = header.id;
+    } else {
+        scrut = try self.lowerExpr(ctx, a, env, f, blk, row.expr, null, .rvalue);
+    }
 
     const out_ty_guess = expected_ty orelse self.getExprType(ctx, a, id);
     const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess) and self.context.type_store.getKind(out_ty_guess) != .Any;
@@ -822,6 +863,23 @@ pub fn lowerMatch(
         var join_blk = try f.builder.beginBlock(f);
         const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
         const arms = a.exprs.arm_pool.slice(row.arms);
+
+        if (labeled) {
+            try ctx.loop_stack.append(self.gpa, .{
+                .label = row.label,
+                .continue_block = header_id.?,
+                .break_block = join_blk.id,
+                .has_result = true,
+                .join_block = join_blk.id,
+                .res_param = .some(res_param),
+                .res_ty = res_ty,
+                .continue_info = .{ .match = .{ .header_block = header_id.?, .scrut_ty = scrut_ty } },
+                .defer_len_at_entry = @intCast(env.defers.items.len),
+            });
+        }
+        defer {
+            if (labeled) _ = ctx.loop_stack.pop();
+        }
 
         if (arms.len == 0) {
             try f.builder.br(blk, join_blk.id, &.{self.safeUndef(blk, res_ty, loc)}, loc);
@@ -866,8 +924,6 @@ pub fn lowerMatch(
         const binding_names = &ctx.pattern_binding_names;
         const saved = &ctx.binding_snapshots;
         var cur = blk.*;
-        const scrut_ty = self.getExprType(ctx, a, row.expr);
-
         for (arms, 0..) |arm_id, j| {
             binding_names.clearRetainingCapacity();
             saved.clearRetainingCapacity();
@@ -918,6 +974,24 @@ pub fn lowerMatch(
         // Statement path
         const exit_blk = try f.builder.beginBlock(f);
         const arms = a.exprs.arm_pool.slice(row.arms);
+
+        if (labeled) {
+            try ctx.loop_stack.append(self.gpa, .{
+                .label = row.label,
+                .continue_block = header_id.?,
+                .break_block = exit_blk.id,
+                .has_result = false,
+                .join_block = exit_blk.id,
+                .res_param = .none(),
+                .res_ty = null,
+                .continue_info = .{ .match = .{ .header_block = header_id.?, .scrut_ty = scrut_ty } },
+                .defer_len_at_entry = @intCast(env.defers.items.len),
+            });
+        }
+        defer {
+            if (labeled) _ = ctx.loop_stack.pop();
+        }
+
         if (arms.len == 0) {
             try f.builder.br(blk, exit_blk.id, &.{}, loc);
             blk.* = exit_blk;
@@ -926,8 +1000,6 @@ pub fn lowerMatch(
 
         const values = try self.gpa.alloc(u64, arms.len);
         defer self.gpa.free(values);
-        const scrut_ty = self.getExprType(ctx, a, row.expr);
-
         if (isAllIntMatch(self, a, arms, values)) {
             var case_dests = try self.gpa.alloc(tir.Builder.SwitchDest, arms.len);
             defer self.gpa.free(case_dests);

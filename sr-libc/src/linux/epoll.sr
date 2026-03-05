@@ -1,0 +1,48 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/epoll.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+err :: import "libc/include/errno"
+alltypes :: import "libc/include/alltypes"
+
+// epoll_create calls epoll_create1(0)
+
+epoll_create :: proc(size: i32) i32 {
+    if size <= 0 {
+        errp := __errno_location()
+        errp.* = err.EINVAL
+        return -1
+    }
+    return epoll_create1(0)
+}
+
+epoll_create1 :: proc(flags: i32) i32 {
+    r := sc.syscall1(nums.SYS_epoll_create1.(i64), flags.(i64))
+    if r == -err.ENOSYS and flags == 0 {
+        r = sc.syscall1(nums.SYS_epoll_create.(i64), 1)
+    }
+    r = sc.__syscall_ret(r)
+    return r.(i32)
+}
+
+epoll_ctl :: proc(fd: i32, op: i32, fd2: i32, ev: *epoll_event) i32 {
+    r := sc.syscall4_ret(nums.SYS_epoll_ctl.(i64), fd.(i64), op.(i64), fd2.(i64), ev.^usize.(i64))
+    return r.(i32)
+}
+
+epoll_pwait :: proc(fd: i32, ev: *epoll_event, cnt: i32, to: i32, sigs: ?*const alltypes.sigset_t) i32 {
+    size := if sigs == null { 0 } else { sizeof(alltypes.sigset_t) }
+    ptr := if sigs == null { 0 } else { sigs.^usize }
+    r := sc.syscall6(nums.SYS_epoll_pwait.(i64), fd.(i64), ev.^usize.(i64), cnt.(i64), to.(i64), ptr.(i64), size.(i64))
+    if r == -err.ENOSYS and sigs == null {
+        r = sc.syscall4(nums.SYS_epoll_wait.(i64), fd.(i64), ev.^usize.(i64), cnt.(i64), to.(i64))
+    }
+    r = sc.__syscall_ret(r)
+    return r.(i32)
+}
+
+epoll_wait :: proc(fd: i32, ev: *epoll_event, cnt: i32, to: i32) i32 {
+    return epoll_pwait(fd, ev, cnt, to, null)
+}

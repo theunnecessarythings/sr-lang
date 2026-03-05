@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/swab.c.
+
+swab :: proc(src: *const void, dest: *void, n: isize) void {
+    if n <= 1 { return }
+    s := src.^*const u8
+    d := dest.^*u8
+    limit := n.(usize)
+    i: usize = 0
+    while i + 1 < limit {
+        d[i] = s[i + 1]
+        d[i + 1] = s[i]
+        i += 2
+    }
+}

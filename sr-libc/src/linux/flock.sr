@@ -1,0 +1,26 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/flock.c
+
+file_h :: import "libc/include/sys/file"
+fcntl_h :: import "libc/include/fcntl"
+fcntl_mod :: import "libc/src/fcntl/fcntl"
+
+flock :: proc(fd: i32, op: i32) i32 {
+    cmd := fcntl_h.F_SETLKW
+    if (op & file_h.LOCK_NB) != 0 { cmd = fcntl_h.F_SETLK }
+
+    l_type: i16 = fcntl_h.F_RDLCK
+    if (op & file_h.LOCK_EX) != 0 { l_type = fcntl_h.F_WRLCK }
+    if (op & file_h.LOCK_UN) != 0 { l_type = fcntl_h.F_UNLCK }
+
+    l: fcntl_h.flock = fcntl_h.flock{
+        l_type: l_type,
+        l_whence: fcntl_h.SEEK_SET,
+        l_start: 0,
+        l_len: 0,
+        l_pid: 0,
+    }
+
+    return fcntl_mod.fcntl(fd, cmd, (&l).^usize)
+}

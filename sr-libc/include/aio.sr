@@ -1,0 +1,49 @@
+package libc
+
+// Derived from musl-1.2.5/include/aio.h (minimal synchronous implementation).
+
+alltypes :: import "libc/include/alltypes"
+
+AIO_CANCELED :: 0
+AIO_NOTCANCELED :: 1
+AIO_ALLDONE :: 2
+
+LIO_NOP :: 0
+LIO_READ :: 1
+LIO_WRITE :: 2
+
+LIO_NOWAIT :: 1
+LIO_WAIT :: 2
+
+sigval :: struct {
+    sival_int: i32,
+    sival_ptr: *void,
+}
+
+sigevent :: struct {
+    sigev_notify: i32,
+    sigev_signo: i32,
+    sigev_value: sigval,
+}
+
+aiocb :: struct {
+    aio_fildes: i32,
+    aio_lio_opcode: i32,
+    aio_reqprio: i32,
+    aio_buf: *void,
+    aio_nbytes: usize,
+    aio_offset: alltypes.off_t,
+    aio_sigevent: sigevent,
+    __ret: isize,
+    __err: i32,
+    __state: i32,
+}
+
+aio_read :: proc(cb: *aiocb) i32
+aio_write :: proc(cb: *aiocb) i32
+aio_fsync :: proc(op: i32, cb: *aiocb) i32
+aio_return :: proc(cb: *aiocb) isize
+aio_error :: proc(cb: *aiocb) i32
+aio_cancel :: proc(fd: i32, cb: *aiocb) i32
+aio_suspend :: proc(cbs: **const aiocb, cnt: i32, timeout: ?*const alltypes.timespec) i32
+lio_listio :: proc(mode: i32, list: **aiocb, cnt: i32, sigev: *sigevent) i32

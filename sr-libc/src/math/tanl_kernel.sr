@@ -1,0 +1,95 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/__tanl.c (113-bit path).
+
+basic :: import "libc/src/math/basic"
+
+T3 :: 0x1.5555555555555555555555555553p-2
+T5 :: 0x1.1111111111111111111111111eb5p-3
+T7 :: 0x1.ba1ba1ba1ba1ba1ba1ba1b694cd6p-5
+T9 :: 0x1.664f4882c10f9f32d6bbe09d8bcdp-6
+T11 :: 0x1.226e355e6c23c8f5b4f5762322eep-7
+T13 :: 0x1.d6d3d0e157ddfb5fed8e84e27b37p-9
+T15 :: 0x1.7da36452b75e2b5fce9ee7c2c92ep-10
+T17 :: 0x1.355824803674477dfcf726649efep-11
+T19 :: 0x1.f57d7734d1656e0aceb716f614c2p-13
+T21 :: 0x1.967e18afcb180ed942dfdc518d6cp-14
+T23 :: 0x1.497d8eea21e95bc7e2aa79b9f2cdp-15
+T25 :: 0x1.0b132d39f055c81be49eff7afd50p-16
+T27 :: 0x1.b0f72d33eff7bfa2fbc1059d90b6p-18
+T29 :: 0x1.5ef2daf21d1113df38d0fbc00267p-19
+T31 :: 0x1.1c77d6eac0234988cdaa04c96626p-20
+T33 :: 0x1.cd2a5a292b180e0bdd701057dfe3p-22
+T35 :: 0x1.75c7357d0298c01a31d0a6f7d518p-23
+T37 :: 0x1.2f3190f4718a9a520f98f50081fcp-24
+T39 :: 0.000000028443389121318352
+T41 :: 0.000000011981013102001973
+T43 :: 0.0000000038303578044958070
+T45 :: 0.0000000034664378216909893
+T47 :: -0.0000000015090641701997785
+T49 :: 0.0000000029449552300483952
+T51 :: -0.0000000022006995706097711
+T53 :: 0.0000000015468200913196612
+T55 :: -0.00000000061311613386849674
+T57 :: 1.4912469681508012e-10
+
+pio4 :: 0x1.921fb54442d18469898cc51701b8p-1
+pio4lo :: 0x1.cd129024e088a67cc74020bbea60p-116
+
+rpoly :: fn(w: f128) f128 {
+    return T5 + w * (T9 + w * (T13 + w * (T17 + w * (T21 + w * (T25 + w *
+        (T29 + w * (T33 + w * (T37 + w * (T41 + w * (T45 + w * (T49 +
+        w * (T53 + w * T57))))))))))))
+}
+
+vpoly :: fn(w: f128) f128 {
+    return T7 + w * (T11 + w * (T15 + w * (T19 + w * (T23 + w * (T27 + w *
+        (T31 + w * (T35 + w * (T39 + w * (T43 + w * (T47 + w * (T51 +
+        w * T55))))))))))))
+}
+
+__tanl :: proc(x: f128, y: f128, odd: i32) f128 {
+    z: f128
+    r: f128
+    v: f128
+    w: f128
+    s: f128
+    a: f128
+    t: f128
+    big := basic.fabsl(x) >= 0.67434
+    sign := false
+
+    if big {
+        if x < 0.0 {
+            sign = true
+            x = -x
+            y = -y
+        }
+        x = (pio4 - x) + (pio4lo - y)
+        y = 0.0
+    }
+
+    z = x * x
+    w = z * z
+    r = rpoly(w)
+    v = z * vpoly(w)
+    s = z * x
+    r = y + z * (s * (r + v) + y) + T3 * s
+    w = x + r
+
+    if big {
+        s = 1.0 - 2.0 * odd.(f128)
+        v = s - 2.0 * (x + (r - w * w / (w + s)))
+        return if sign { -v } else { v }
+    }
+
+    if odd == 0 { return w }
+
+    z = w
+    z = z + 0x1p32 - 0x1p32
+    v = r - (z - x)
+    t = a = -1.0 / w
+    t = t + 0x1p32 - 0x1p32
+    s = 1.0 + t * z
+    return t + a * (s + t * v)
+}

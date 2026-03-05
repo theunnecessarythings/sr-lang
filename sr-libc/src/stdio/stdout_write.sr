@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/__stdout_write.c.
+
+ioctl_mod :: import "libc/src/misc/ioctl"
+impl :: import "libc/src/stdio/stdio_impl"
+ioctl_consts :: import "libc/include/sys/ioctl"
+
+__stdout_write :: proc(f: *alltypes.FILE, buf: *const u8, len: usize) usize {
+    wsz: winsize
+    f.write = __stdio_write
+    if (f.flags & impl.F_SVB.(u32)) == 0 {
+        if ioctl_mod.ioctl(f.fd, ioctl_consts.TIOCGWINSZ, (&wsz).^*void) != 0 {
+            f.lbf = -1
+        }
+    }
+    return __stdio_write(f, buf, len)
+}

@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_cond_signal.c
+
+cond_int :: import "libc/src/thread/pthread_cond_internal"
+atomic :: import "libc/src/internal/atomic"
+lock_mod :: import "libc/src/internal/lock"
+timedwait_mod :: import "libc/src/thread/pthread_cond_timedwait"
+
+pthread_cond_signal :: proc(c: *pthread_cond_t) i32 {
+    if cond_int.c_shared(c).* == null {
+        return timedwait_mod.__private_cond_signal(c, 1)
+    }
+    if cond_int.c_waiters(c).* == 0 { return 0 }
+    atomic.a_inc(cond_int.c_seq(c))
+    lock_mod.__wake(cond_int.c_seq(c).^*void, 1, 0)
+    return 0
+}

@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/sigismember.c
+
+sigismember :: proc(set: *const alltypes.sigset_t, sig: i32) i32 {
+    if set == null || sig <= 0 || sig > 1024 { return 0 }
+    idx := (sig - 1) / 64
+    bit := (sig - 1) % 64
+    return if (set.__bits[idx.(usize)] & (1.(u64) << bit.(u32))) != 0 { 1 } else { 0 }
+}

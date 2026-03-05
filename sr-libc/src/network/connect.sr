@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/connect.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <syscall.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+connect :: proc(fd: i32, addr: *const sockaddr, len: socklen_t) i32 {
+    r := sc.syscall3_ret(nums.SYS_connect.(i64), fd.(i64), addr.^usize.(i64), len.(i64))
+    return r.(i32)
+}

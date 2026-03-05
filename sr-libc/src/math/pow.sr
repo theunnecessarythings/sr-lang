@@ -1,0 +1,231 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/pow.c.
+
+libm :: import "libc/src/math/libm_internal"
+basic :: import "libc/src/math/basic"
+expdata :: import "libc/src/math/exp_data"
+powdata :: import "libc/src/math/pow_data"
+
+OFF :: 0x3fe6955500000000
+SIGN_BIAS :: (0x800 << expdata.EXP_TABLE_BITS)
+
+// Top 12 bits of a double (sign and exponent bits).
+top12 :: fn(x: f64) u32 {
+    return (libm.asuint64(x) >> 52).(u32)
+}
+
+log_inline :: fn(ix: u64, tail: *f64) f64 {
+    z: f64
+    r: f64
+    y: f64
+    invc: f64
+    logc: f64
+    logctail: f64
+    kd: f64
+    hi: f64
+    t1: f64
+    t2: f64
+    lo: f64
+    lo1: f64
+    lo2: f64
+    p: f64
+    iz: u64
+    tmp: u64
+    k: i64
+    i: u64
+
+    tmp = ix - OFF
+    i = (tmp >> (52 - powdata.POW_LOG_TABLE_BITS)) % (1 << powdata.POW_LOG_TABLE_BITS)
+    k = (tmp.(i64) >> 52)
+    iz = ix - (tmp & (0xfff.(u64) << 52))
+    z = libm.asdouble(iz)
+    kd = k.(f64)
+
+    invc = powdata.__pow_log_data.tab[i.(usize)].invc
+    logc = powdata.__pow_log_data.tab[i.(usize)].logc
+    logctail = powdata.__pow_log_data.tab[i.(usize)].logctail
+
+    zhi := libm.asdouble((iz + (1u64 << 31)) & ((~0u64) << 32))
+    zlo := z - zhi
+    rhi := zhi * invc - 1.0
+    rlo := zlo * invc
+    r = rhi + rlo
+
+    t1 = kd * powdata.__pow_log_data.ln2hi + logc
+    t2 = t1 + r
+    lo1 = kd * powdata.__pow_log_data.ln2lo + logctail
+    lo2 = t1 - t2 + r
+
+    ar := powdata.__pow_log_data.poly[0] * r
+    ar2 := r * ar
+    ar3 := r * ar2
+    arhi := powdata.__pow_log_data.poly[0] * rhi
+    arhi2 := rhi * arhi
+    hi = t2 + arhi2
+    lo3 := rlo * (ar + arhi)
+    lo4 := t2 - hi + arhi2
+
+    p = ar3 * (powdata.__pow_log_data.poly[1] + r * powdata.__pow_log_data.poly[2]
+        + ar2 * (powdata.__pow_log_data.poly[3] + r * powdata.__pow_log_data.poly[4]
+        + ar2 * (powdata.__pow_log_data.poly[5] + r * powdata.__pow_log_data.poly[6]))))
+
+    lo = lo1 + lo2 + lo3 + lo4 + p
+    y = hi + lo
+    tail.* = hi - y + lo
+    return y
+}
+
+specialcase :: fn(tmp: f64, sbits: u64, ki: u64) f64 {
+    scale: f64
+    y: f64
+
+    if (ki & 0x80000000) == 0 {
+        sbits -= 1009u64 << 52
+        scale = libm.asdouble(sbits)
+        y = 0x1p1009 * (scale + scale * tmp)
+        return libm.eval_as_double(y)
+    }
+    sbits += 1022u64 << 52
+    scale = libm.asdouble(sbits)
+    y = scale + scale * tmp
+    if basic.fabs(y) < 1.0 {
+        hi: f64
+        lo: f64
+        one: f64 = 1.0
+        if y < 0.0 { one = -1.0 }
+        lo = scale - y + scale * tmp
+        hi = one + y
+        lo = one - hi + y + lo
+        y = libm.eval_as_double(hi + lo) - one
+        if y == 0.0 { y = libm.asdouble(sbits & 0x8000000000000000) }
+        libm.fp_force_eval(libm.fp_barrier(0x1p-1022) * 0x1p-1022)
+    }
+    y = 0x1p-1022 * y
+    return libm.eval_as_double(y)
+}
+
+exp_inline :: fn(x: f64, xtail: f64, sign_bias: u32) f64 {
+    abstop: u32
+    ki: u64
+    idx: u64
+    top: u64
+    sbits: u64
+    kd: f64
+    z: f64
+    r: f64
+    r2: f64
+    scale: f64
+    tail: f64
+    tmp: f64
+
+    abstop = top12(x) & 0x7ff
+    if libm.predict_false((abstop - top12(0x1p-54)) >= (top12(512.0) - top12(0x1p-54))) {
+        if (abstop - top12(0x1p-54)) >= 0x80000000 {
+            one := if libm.WANT_ROUNDING != 0 { 1.0 + x } else { 1.0 }
+            return if sign_bias != 0 { -one } else { one }
+        }
+        if abstop >= top12(1024.0) {
+            if (libm.asuint64(x) >> 63) != 0 { return libm.__math_uflow(sign_bias) }
+            return libm.__math_oflow(sign_bias)
+        }
+        abstop = 0
+    }
+
+    z = expdata.__exp_data.invln2N * x
+    kd = libm.eval_as_double(z + expdata.__exp_data.shift)
+    ki = libm.asuint64(kd)
+    kd -= expdata.__exp_data.shift
+
+    r = x + kd * expdata.__exp_data.negln2hiN + kd * expdata.__exp_data.negln2loN
+    r += xtail
+
+    idx = 2 * (ki % (1 << expdata.EXP_TABLE_BITS))
+    top = (ki + sign_bias.(u64)) << (52 - expdata.EXP_TABLE_BITS)
+    tail = libm.asdouble(expdata.__exp_data.tab[idx.(usize)])
+    sbits = expdata.__exp_data.tab[(idx + 1).(usize)] + top
+
+    r2 = r * r
+    tmp = tail + r + r2 * (expdata.__exp_data.poly[0] + r * expdata.__exp_data.poly[1])
+    tmp += r2 * r2 * (expdata.__exp_data.poly[2] + r * expdata.__exp_data.poly[3])
+
+    if libm.predict_false(abstop == 0) { return specialcase(tmp, sbits, ki) }
+    scale = libm.asdouble(sbits)
+    return libm.eval_as_double(scale + scale * tmp)
+}
+
+checkint :: fn(iy: u64) i32 {
+    e := ((iy >> 52) & 0x7ff).(i32)
+    if e < 0x3ff { return 0 }
+    if e > 0x3ff + 52 { return 2 }
+    if (iy & ((1u64 << (0x3ff + 52 - e)) - 1)) != 0 { return 0 }
+    if (iy & (1u64 << (0x3ff + 52 - e))) != 0 { return 1 }
+    return 2
+}
+
+zeroinfnan :: fn(i: u64) bool {
+    inf := libm.asuint64(1.0 / 0.0)
+    return (2 * i - 1) >= (2 * inf - 1)
+}
+
+pow :: proc(x: f64, y: f64) f64 {
+    sign_bias: u32 = 0
+    ix := libm.asuint64(x)
+    iy := libm.asuint64(y)
+    topx := top12(x)
+    topy := top12(y)
+
+    if libm.predict_false((topx - 0x001) >= (0x7ff - 0x001) or ((topy & 0x7ff) - 0x3be) >= (0x43e - 0x3be)) {
+        if libm.predict_false(zeroinfnan(iy)) {
+            if 2 * iy == 0 {
+                return if libm.issignaling_inline(x) { x + y } else { 1.0 }
+            }
+            if ix == libm.asuint64(1.0) {
+                return if libm.issignaling_inline(y) { x + y } else { 1.0 }
+            }
+            if 2 * ix > 2 * libm.asuint64(1.0 / 0.0) or 2 * iy > 2 * libm.asuint64(1.0 / 0.0) { return x + y }
+            if 2 * ix == 2 * libm.asuint64(1.0) { return 1.0 }
+            if ((2 * ix < 2 * libm.asuint64(1.0)) == ((iy >> 63) == 0)) { return 0.0 }
+            return y * y
+        }
+        if libm.predict_false(zeroinfnan(ix)) {
+            x2 := x * x
+            if (ix >> 63) != 0 and checkint(iy) == 1 { x2 = -x2 }
+            return if (iy >> 63) != 0 { libm.fp_barrier(1.0 / x2) } else { x2 }
+        }
+        if (ix >> 63) != 0 {
+            yint := checkint(iy)
+            if yint == 0 { return libm.__math_invalid(x) }
+            if yint == 1 { sign_bias = SIGN_BIAS }
+            ix &= 0x7fffffffffffffff
+            topx &= 0x7ff
+        }
+        if ((topy & 0x7ff) - 0x3be) >= (0x43e - 0x3be) {
+            if ix == libm.asuint64(1.0) { return 1.0 }
+            if (topy & 0x7ff) < 0x3be {
+                if libm.WANT_ROUNDING != 0 {
+                    return if ix > libm.asuint64(1.0) { 1.0 + y } else { 1.0 - y }
+                }
+                return 1.0
+            }
+            return if (ix > libm.asuint64(1.0)) == (topy < 0x800) { libm.__math_oflow(0) } else { libm.__math_uflow(0) }
+        }
+        if topx == 0 {
+            ix = libm.asuint64(x * 0x1p52)
+            ix &= 0x7fffffffffffffff
+            ix -= 52u64 << 52
+        }
+    }
+
+    lo: f64
+    hi := log_inline(ix, &lo)
+    ehi: f64
+    elo: f64
+    yhi := libm.asdouble(iy & ((~0u64) << 27))
+    ylo := y - yhi
+    lhi := libm.asdouble(libm.asuint64(hi) & ((~0u64) << 27))
+    llo := hi - lhi + lo
+    ehi = yhi * lhi
+    elo = ylo * lhi + y * llo
+    return exp_inline(ehi, elo, sign_bias)
+}

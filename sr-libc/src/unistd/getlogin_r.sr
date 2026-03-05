@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/getlogin_r.c
+
+login_mod :: import "libc/src/unistd/getlogin"
+strlen_mod :: import "libc/src/string/strlen"
+strcpy_mod :: import "libc/src/string/strcpy"
+errno_mod :: import "libc/include/errno"
+
+getlogin_r :: proc(name: *u8, size: usize) i32 {
+    logname := login_mod.getlogin()
+    if logname == null { return errno_mod.ENXIO }
+    if strlen_mod.strlen(logname?) >= size { return errno_mod.ERANGE }
+    _ = strcpy_mod.strcpy(name, logname?)
+    return 0
+}

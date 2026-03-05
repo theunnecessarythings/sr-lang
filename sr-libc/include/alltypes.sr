@@ -1,0 +1,183 @@
+package libc
+
+// Derived from musl-1.2.5/include/h.in and arch/x86_64/bits/h.in
+// x86_64-only for now.
+
+// Byte order / ABI constants (x86_64)
+__LITTLE_ENDIAN :: 1234
+__BIG_ENDIAN :: 4321
+__USE_TIME_BITS64 :: 1
+__BYTE_ORDER :: __LITTLE_ENDIAN
+__LONG_MAX :: 0x7fffffffffffffff
+
+// Fundamental size/ptr types
+size_t :: usize
+uintptr_t :: usize
+ptrdiff_t :: isize
+ssize_t :: isize
+intptr_t :: isize
+regoff_t :: isize
+register_t :: isize
+
+// Alignment helper (musl uses long long + long double)
+@[align=16]
+max_align_t :: struct { __opaque: [16]u8 }
+
+time_t :: i64
+suseconds_t :: i64
+
+// Fixed-width integer types
+int8_t :: i8
+int16_t :: i16
+int32_t :: i32
+int64_t :: i64
+intmax_t :: i64
+
+uint8_t :: u8
+uint16_t :: u16
+uint32_t :: u32
+uint64_t :: u64
+u_int64_t :: u64
+uintmax_t :: u64
+
+// Filesystem and device types
+mode_t :: u32
+nlink_t :: u64
+off_t :: i64
+ino_t :: u64
+dev_t :: u64
+blksize_t :: i64
+blkcnt_t :: i64
+fsblkcnt_t :: u64
+fsfilcnt_t :: u64
+
+// Wide char / locale types
+wchar_t :: i32
+wint_t :: u32
+wctype_t :: u64
+
+// Floating evaluation types
+float_t :: f32
+double_t :: f64
+long_double_t :: f128
+
+// Time types
+clock_t :: i64
+clockid_t :: i32
+timer_t :: *void
+
+// Process and user types
+pid_t :: i32
+id_t :: u32
+uid_t :: u32
+gid_t :: u32
+key_t :: i32
+useconds_t :: u32
+
+// Threading types (opaque, size/alignment only)
+// TODO: Confirm sizes against musl for x86_64 at each stage of translation.
+pthread_t :: *void
+pthread_once_t :: i32
+pthread_key_t :: u32
+pthread_spinlock_t :: i32
+
+pthread_mutexattr_t :: struct { __attr: u32 }
+pthread_condattr_t :: struct { __attr: u32 }
+pthread_barrierattr_t :: struct { __attr: u32 }
+pthread_rwlockattr_t :: struct { __attr: [2]u32 }
+
+@[align=8]
+pthread_attr_t :: struct { __opaque: [56]u8 }
+@[align=8]
+pthread_mutex_t :: struct { __opaque: [40]u8 }
+@[align=8]
+mtx_t :: struct { __opaque: [40]u8 }
+@[align=8]
+pthread_cond_t :: struct { __opaque: [48]u8 }
+@[align=8]
+cnd_t :: struct { __opaque: [48]u8 }
+
+sem_t :: struct { @[volatile] __val: [8]i32 }
+@[align=8]
+pthread_rwlock_t :: struct { __opaque: [56]u8 }
+@[align=8]
+pthread_barrier_t :: struct { __opaque: [32]u8 }
+
+// stdio
+__locale_struct :: struct { __opaque: i32 }
+
+FILE :: struct {
+    flags: u32,
+    rpos: *u8,
+    rend: *u8,
+    close: fn(*FILE) i32,
+    wend: *u8,
+    wpos: *u8,
+    mustbezero_1: *u8,
+    wbase: *u8,
+    read: fn(*FILE, *u8, usize) usize,
+    write: fn(*FILE, *const u8, usize) usize,
+    seek: fn(*FILE, off_t, i32) off_t,
+    buf: *u8,
+    buf_size: usize,
+    prev: *FILE,
+    next: *FILE,
+    fd: i32,
+    pipe_pid: i32,
+    lockcount: i64,
+    mode: i32,
+    lock: i32,
+    lbf: i32,
+    cookie: *void,
+    off: off_t,
+    getln_buf: *u8,
+    mustbezero_2: *void,
+    shend: *u8,
+    shlim: off_t,
+    shcnt: off_t,
+    prev_locked: *FILE,
+    next_locked: *FILE,
+    locale: *__locale_struct,
+}
+
+_IO_FILE :: FILE
+
+// varargs
+// NOTE: sr-lang does not expose builtin va_list; use opaque buffer for now.
+@[align=16]
+va_list :: struct { data: [4096]u8 }
+__isoc_va_list :: va_list
+
+// locale, multibyte, signals
+mbstate_t :: struct { __opaque1: u32, __opaque2: u32 }
+locale_t :: *void
+sigset_t :: struct { __bits: [16]u64 }
+
+// i/o vector and terminal sizes
+
+iovec :: struct {
+    iov_base: *void,
+    iov_len: size_t,
+}
+
+winsize :: struct {
+    ws_row: u16,
+    ws_col: u16,
+    ws_xpixel: u16,
+    ws_ypixel: u16,
+}
+
+socklen_t :: u32
+sa_family_t :: u16
+
+// time structs
+
+timeval :: struct {
+    tv_sec: time_t,
+    tv_usec: suseconds_t,
+}
+
+timespec :: struct {
+    tv_sec: time_t,
+    tv_nsec: i64,
+}

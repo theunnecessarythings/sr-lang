@@ -1,0 +1,20 @@
+package libc
+
+// Derived from musl-1.2.5/src/termios/tcsetattr.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <termios.h>
+// #include <sys/ioctl.h>
+// #include <errno.h>
+
+ioctl_mod :: import "libc/src/misc/ioctl"
+ioctl_consts :: import "libc/include/sys/ioctl"
+errno_mod :: import "libc/include/errno"
+
+tcsetattr :: proc(fd: i32, act: i32, tio: *const struct termios) i32 {
+    if act < 0 || act > 2 {
+        errno_mod.errno().* = errno_mod.EINVAL
+        return -1
+    }
+    return ioctl_mod.ioctl(fd, (ioctl_consts.TCSETS + act).(i32), tio.^*void)
+}

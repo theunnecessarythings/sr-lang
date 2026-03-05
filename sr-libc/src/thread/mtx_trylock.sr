@@ -1,0 +1,29 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/mtx_trylock.c
+
+mutex_int :: import "libc/src/thread/pthread_mutex_internal"
+atomic :: import "libc/src/internal/atomic"
+errno_mod :: import "libc/include/errno"
+trylock_mod :: import "libc/src/thread/pthread_mutex_trylock"
+
+thrd_success :: 0
+thrd_busy :: 1
+thrd_error :: 2
+
+mtx_trylock :: proc(m: *mtx_t) i32 {
+    if mutex_int.m_type(m.^*alltypes.pthread_mutex_t).* == mutex_int.PTHREAD_MUTEX_NORMAL {
+        return if (atomic.a_cas(mutex_int.m_lock(m.^*alltypes.pthread_mutex_t), 0, errno_mod.EBUSY) & errno_mod.EBUSY) != 0 {
+            thrd_busy
+        } else {
+            thrd_success
+        }
+    }
+
+    ret := trylock_mod.__pthread_mutex_trylock(m.^*alltypes.pthread_mutex_t)
+    switch ret {
+        0 => { return thrd_success }
+        errno_mod.EBUSY => { return thrd_busy }
+        else => { return thrd_error }
+    }
+}

@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/dirent/alphasort.c
+
+strcoll_mod :: import "libc/src/locale/strcoll"
+
+alphasort :: proc(a: *const *const dirent, b: *const *const dirent) i32 {
+    if a == null || b == null { return 0 }
+    lhs := (&a.*.d_name[0]).^*const u8
+    rhs := (&b.*.d_name[0]).^*const u8
+    return strcoll_mod.strcoll(lhs, rhs)
+}

@@ -1,0 +1,53 @@
+package libc
+
+// Derived from musl-1.2.5/src/internal/libc.h
+
+// Global libc state
+__hwcap: usize = 0
+__progname: ?*u8 = null
+__progname_full: ?*u8 = null
+__sysinfo: usize = 0
+
+// Aliases
+program_invocation_short_name :: __progname
+program_invocation_name :: __progname_full
+
+tls_module :: struct {
+    next: *tls_module,
+    image: *void,
+    len: usize,
+    size: usize,
+    align_val: usize,
+    offset: usize,
+}
+
+__locale_map :: struct {} // Opaque for now
+
+__locale_struct :: struct {
+    cat: [6]*const __locale_map,
+}
+
+__libc_struct :: struct {
+    can_do_threads: u8, // char
+    threaded: u8,       // char
+    secure: u8,         // char
+    @[volatile] need_locks: i8, // signed char
+    threads_minus_1: i32,
+    auxv: *usize,
+    tls_head: *tls_module,
+    tls_size: usize,
+    tls_align: usize,
+    tls_cnt: usize,
+    page_size: usize,
+    global_locale: __locale_struct,
+}
+
+__libc: __libc_struct
+
+libc_need_locks_get :: proc() i8 {
+    return __libc.need_locks
+}
+
+libc_need_locks_set :: proc(v: i8) void {
+    __libc.need_locks = v
+}

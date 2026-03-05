@@ -1,0 +1,21 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/stdin.c.
+
+impl :: import "libc/src/stdio/stdio_impl"
+
+stdin_buf: [BUFSIZ + impl.UNGET]u8
+
+__stdin_FILE: alltypes.FILE = alltypes.FILE{
+    buf: (&stdin_buf[0]) + impl.UNGET,
+    buf_size: BUFSIZ,
+    fd: 0,
+    flags: (impl.F_PERM | impl.F_NOWR).(u32),
+    read: __stdio_read,
+    seek: __stdio_seek,
+    close: __stdio_close,
+    lock: -1,
+}
+
+stdin: *alltypes.FILE = &__stdin_FILE
+__stdin_used: *alltypes.FILE = &__stdin_FILE

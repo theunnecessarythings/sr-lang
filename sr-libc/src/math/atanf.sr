@@ -1,0 +1,78 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/atanf.c.
+
+libm :: import "libc/src/math/libm_internal"
+basic :: import "libc/src/math/basic"
+
+atanhi: [4]f32 = [
+    4.6364760399e-01,
+    7.8539812565e-01,
+    9.8279368877e-01,
+    1.5707962513e+00,
+]
+atanlo: [4]f32 = [
+    5.0121582440e-09,
+    3.7748947079e-08,
+    3.4473217170e-08,
+    7.5497894159e-08,
+]
+aT: [5]f32 = [
+    3.3333328366e-01,
+    -1.9999158382e-01,
+    1.4253635705e-01,
+    -1.0648017377e-01,
+    6.1687607318e-02,
+]
+
+atanf :: proc(x: f32) f32 {
+    w: f32
+    s1: f32
+    s2: f32
+    z: f32
+    ix: u32
+    sign: u32
+    id: i32
+
+    ix = libm.get_float_word(x)
+    sign = ix >> 31
+    ix &= 0x7fffffff
+    if ix >= 0x4c800000 {
+        if basic.isnanf(x) != 0 { return x }
+        z = atanhi[3] + 0x1p-120f
+        return if sign != 0 { -z } else { z }
+    }
+    if ix < 0x3ee00000 {
+        if ix < 0x39800000 {
+            if ix < 0x00800000 { libm.fp_force_eval(x * x) }
+            return x
+        }
+        id = -1
+    } else {
+        x = basic.fabsf(x)
+        if ix < 0x3f980000 {
+            if ix < 0x3f300000 {
+                id = 0
+                x = (2.0f * x - 1.0f) / (2.0f + x)
+            } else {
+                id = 1
+                x = (x - 1.0f) / (x + 1.0f)
+            }
+        } else {
+            if ix < 0x401c0000 {
+                id = 2
+                x = (x - 1.5f) / (1.0f + 1.5f * x)
+            } else {
+                id = 3
+                x = -1.0f / x
+            }
+        }
+    }
+    z = x * x
+    w = z * z
+    s1 = z * (aT[0] + w * (aT[2] + w * aT[4]))
+    s2 = w * (aT[1] + w * aT[3])
+    if id < 0 { return x - x * (s1 + s2) }
+    z = atanhi[id.(usize)] - ((x * (s1 + s2) - atanlo[id.(usize)]) - x)
+    return if sign != 0 { -z } else { z }
+}

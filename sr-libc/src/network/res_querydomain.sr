@@ -1,0 +1,21 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/res_querydomain.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <resolv.h>
+// #include <string.h>
+
+memcpy_mod :: import "libc/src/string/memcpy"
+strnlen_mod :: import "libc/src/string/strnlen"
+
+res_querydomain :: proc(name: *const u8, domain: *const u8, class: i32, type: i32, dest: *u8, len: i32) i32 {
+    tmp: [255]u8
+    nl := strnlen_mod.strnlen(name, 255)
+    dl := strnlen_mod.strnlen(domain, 255)
+    if nl + dl + 1 > 254 { return -1 }
+    _ = memcpy_mod.memcpy(&tmp[0], name.^*const void, nl)
+    tmp[nl] = '.'.(u8)
+    _ = memcpy_mod.memcpy((&tmp[nl + 1]).^*void, domain.^*const void, dl + 1)
+    return res_query(&tmp[0], class, type, dest, len)
+}

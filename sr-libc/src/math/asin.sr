@@ -1,0 +1,60 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/asin.c.
+
+libm :: import "libc/src/math/libm_internal"
+basic :: import "libc/src/math/basic"
+
+pio2_hi :: 1.57079632679489655800e+00
+pio2_lo :: 6.12323399573676603587e-17
+pS0 ::  1.66666666666666657415e-01
+pS1 :: -3.25565818622400915405e-01
+pS2 ::  2.01212532134862925881e-01
+pS3 :: -4.00555345006794114027e-02
+pS4 ::  7.91534994289814532176e-04
+pS5 ::  3.47933107596021167570e-05
+qS1 :: -2.40339491173441421878e+00
+qS2 ::  2.02094576023350569471e+00
+qS3 :: -6.88283971605453293030e-01
+qS4 ::  7.70381505559019352791e-02
+
+R :: fn(z: f64) f64 {
+    p := z * (pS0 + z * (pS1 + z * (pS2 + z * (pS3 + z * (pS4 + z * pS5)))))
+    q := 1.0 + z * (qS1 + z * (qS2 + z * (qS3 + z * qS4)))
+    return p / q
+}
+
+asin :: proc(x: f64) f64 {
+    z: f64
+    r: f64
+    s: f64
+    hx: u32
+    ix: u32
+    lx: u32
+
+    hx = libm.get_high_word(x)
+    ix = hx & 0x7fffffff
+    if ix >= 0x3ff00000 {
+        lx = libm.get_low_word(x)
+        if ((ix - 0x3ff00000) | lx) == 0 {
+            return x * pio2_hi + 0x1p-120f
+        }
+        return 0.0 / (x - x)
+    }
+    if ix < 0x3fe00000 {
+        if ix < 0x3e500000 and ix >= 0x00100000 { return x }
+        return x + x * R(x * x)
+    }
+    z = (1.0 - basic.fabs(x)) * 0.5
+    s = sqrt(z)
+    r = R(z)
+    if ix >= 0x3fef3333 {
+        x = pio2_hi - (2.0 * (s + s * r) - pio2_lo)
+    } else {
+        f := s
+        f = libm.set_low_word(f, 0)
+        c := (z - f * f) / (s + f)
+        x = 0.5 * pio2_hi - (2.0 * s * r - (pio2_lo - 2.0 * c) - (0.5 * pio2_hi - 2.0 * f))
+    }
+    return if (hx >> 31) != 0 { -x } else { x }
+}

@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/psiginfo.c
+
+fprintf_mod :: import "libc/src/stdio/fprintf"
+stderr_mod :: import "libc/src/stdio/stderr"
+
+psiginfo :: proc(si: *const siginfo_t, msg: *const u8) void {
+    if si == null { return }
+    if msg != null {
+        _ = fprintf_mod.fprintf(stderr_mod.stderr, "%s: signal %d\n", msg, si.si_signo)
+    } else {
+        _ = fprintf_mod.fprintf(stderr_mod.stderr, "signal %d\n", si.si_signo)
+    }
+}

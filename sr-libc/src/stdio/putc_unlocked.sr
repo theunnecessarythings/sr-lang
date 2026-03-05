@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/putc_unlocked.c and macros
+
+putc_unlocked :: proc(c: i32, f: *alltypes.FILE) i32 {
+    if f.wpos != f.wend {
+        f.wpos.* = c.(u8)
+        f.wpos = f.wpos + 1
+        return c.(u8).(i32)
+    }
+    return __overflow(f, c)
+}
+
+fputc_unlocked :: putc_unlocked
+_IO_putc_unlocked :: putc_unlocked

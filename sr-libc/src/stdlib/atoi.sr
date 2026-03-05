@@ -1,0 +1,20 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdlib/atoi.c.
+
+ctype :: import "libc/src/ctype/ctype"
+
+atoi :: proc(s: *const u8) i32 {
+    n: i32 = 0
+    neg: i32 = 0
+    p := s
+    while ctype.isspace(p[0].(i32)) != 0 { p = (&p[1]).^*u8 }
+    if p[0] == 45 { neg = 1; p = (&p[1]).^*u8 }
+    else if p[0] == 43 { p = (&p[1]).^*u8 }
+    while ctype.isdigit(p[0].(i32)) != 0 {
+        n = 10 * n - (p[0].(i32) - 48)
+        p = (&p[1]).^*u8
+    }
+    if neg != 0 { return n }
+    return -n
+}

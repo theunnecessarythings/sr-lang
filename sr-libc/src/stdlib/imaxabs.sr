@@ -1,0 +1,8 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdlib/imaxabs.c.
+
+imaxabs :: proc(a: intmax_t) intmax_t {
+    if a > 0 { return a }
+    return -a
+}

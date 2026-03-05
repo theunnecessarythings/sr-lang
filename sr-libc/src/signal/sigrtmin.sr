@@ -1,0 +1,5 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/sigrtmin.c
+
+__libc_current_sigrtmin :: proc() i32 { return 34 }

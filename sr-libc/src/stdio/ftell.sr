@@ -1,0 +1,36 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/ftell.c.
+
+errno_mod :: import "libc/include/errno"
+impl :: import "libc/src/stdio/stdio_impl"
+
+__ftello_unlocked :: proc(f: *alltypes.FILE) alltypes.off_t {
+    pos := f.seek(f, 0, if (f.flags & impl.F_APP.(u32)) != 0 and f.wpos != f.wbase { SEEK_END } else { SEEK_CUR })
+    if pos < 0 { return pos }
+
+    if f.rend != null {
+        pos += (f.rpos.^isize - f.rend.^isize).(alltypes.off_t)
+    } else if f.wbase != null {
+        pos += (f.wpos.^isize - f.wbase.^isize).(alltypes.off_t)
+    }
+    return pos
+}
+
+__ftello :: proc(f: *alltypes.FILE) alltypes.off_t {
+    _ = __lockfile(f)
+    pos := __ftello_unlocked(f)
+    _ = __unlockfile(f)
+    return pos
+}
+
+ftell :: proc(f: *alltypes.FILE) i64 {
+    pos := __ftello(f)
+    if pos > 0x7fff_ffff_ffff_ffff.(i64) {
+        errno_mod.__errno_location().* = errno_mod.EOVERFLOW
+        return -1
+    }
+    return pos
+}
+
+ftello :: proc(f: *alltypes.FILE) alltypes.off_t { return __ftello(f) }

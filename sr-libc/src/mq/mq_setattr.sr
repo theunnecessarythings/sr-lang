@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/mq/mq_setattr.c
+
+mq_h :: import "libc/include/mqueue"
+nums :: import "libc/include/syscall"
+sc :: import "libc/src/syscall/syscall"
+
+mq_setattr :: proc(mqd: mq_h.mqd_t, new: *const mq_h.mq_attr, old: *mq_h.mq_attr) i32 {
+    r := sc.syscall3_ret(
+        nums.SYS_mq_getsetattr.(i64),
+        mqd.(i64),
+        new.^usize.(i64),
+        old.^usize.(i64),
+    )
+    return r.(i32)
+}

@@ -1,10 +1,10 @@
 package io
 
-// Minimal std I/O wrappers built on C printf and runtime helpers.
+// Minimal std I/O wrappers. In browser/wasm builds these are mapped to JS.
 
 // C stdio printf (varargs enabled by trailing `any`).
 printf :: extern proc(*const u8, any) i32
-fflush :: extern proc(*void) i32
+fflush :: extern proc(?*void) i32
 
 sprintf :: extern proc(buf: ?*u8, fmt: *const u8, arg: any) i32
 
@@ -13,6 +13,7 @@ rt_print :: extern proc(*const u8, usize) void
 rt_eprint :: extern proc(*const u8, usize) void
 rt_panic :: extern proc(*const u8, usize) noreturn
 rt_strlen :: extern proc(*const u8) usize
+rt_has_percent :: extern proc(*const u8, usize) bool
 
 // Writer interface
 Writer :: struct {ctx: ?*void, write: proc(?*void, *u8, usize) usize}
@@ -46,13 +47,19 @@ stderr :: proc() Writer {
 
 // Print with one argument. Example: print("%d", 42)
 print :: proc(fmt: string, arg: any) void {
-    printf(fmt.ptr, ..arg)
+    // Fast path: if fmt has no '%' treat it as a plain string.
+    if !rt_has_percent(fmt.ptr, fmt.len) {
+        rt_print(fmt.ptr, fmt.len)
+        return
+    }
+    _ = printf(fmt.ptr, arg)
+    _ = fflush(null)
 }
 
 // Print line with one argument (appends newline)
 println :: proc(fmt: string, arg: any) void {
-    printf(fmt.ptr, ..arg)
-    printf("\n".ptr)
+    print(fmt, arg)
+    rt_print("\n".ptr, 1)
 }
 
 // Panic with message (noreturn)

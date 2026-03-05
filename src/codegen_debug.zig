@@ -284,8 +284,10 @@ pub fn ensureDIType(self: *Codegen, ty: types.TypeId) !mlir.Attribute {
         .U32 => diBasic(self, "u32", 32, .Unsigned),
         .U64 => diBasic(self, "u64", 64, .Unsigned),
         .Usize => diBasic(self, "usize", POINTER_SIZE_BITS, .Unsigned),
+        .Isize => diBasic(self, "isize", POINTER_SIZE_BITS, .Signed),
         .F32 => diBasic(self, "f32", 32, .FloatT),
         .F64 => diBasic(self, "f64", 64, .FloatT),
+        .F128 => diBasic(self, "f128", 128, .FloatT),
         .Undef, .MlirModule, .MlirAttribute, .MlirType, .TypeType, .Future, .Ast, .TypeError, .Code => try ensureDINullTypeAttr(self),
 
         .Ptr => blk: {
@@ -538,11 +540,12 @@ pub fn ensureDIType(self: *Codegen, ty: types.TypeId) !mlir.Attribute {
             const t = self.context.type_store.get(.Tensor, ty);
             var len: u64 = 1;
             for (t.dims) |d| len *= d;
+            const len_u = std.math.cast(usize, len) orelse return error.TypeTooLarge;
             const scratch = self.debug_arena.allocator();
             const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(try std.fmt.allocPrint(scratch, "tensor_{d}", .{nextDistinctId(self)})));
             const elem_di = try ensureDIType(self, t.elem);
             var elems = std.ArrayListUnmanaged(u8){};
-            for (0..len) |i| {
+            for (0..len_u) |i| {
                 if (i > 0) try elems.appendSlice(scratch, ", ");
                 try elems.appendSlice(scratch, try diDerived(self, "DW_TAG_member", try std.fmt.allocPrint(scratch, "{d}", .{i}), elem_di, 64, 64, i * 64));
             }

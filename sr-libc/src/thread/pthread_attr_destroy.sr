@@ -1,0 +1,8 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_attr_destroy.c
+
+pthread_attr_destroy :: proc(a: *alltypes.pthread_attr_t) i32 {
+    _ = a
+    return 0
+}

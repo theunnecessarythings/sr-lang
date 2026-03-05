@@ -1,0 +1,43 @@
+package libc
+
+// Derived from musl-1.2.5/include/net/if.h (minimal subset).
+
+IF_NAMESIZE :: 16
+IFNAMSIZ :: IF_NAMESIZE
+
+if_nameindex :: struct {
+    if_index: u32,
+    if_name: *u8,
+}
+
+ifmap :: struct {
+    mem_start: usize,
+    mem_end: usize,
+    base_addr: u16,
+    irq: u8,
+    dma: u8,
+    port: u8,
+}
+
+ifreq :: struct {
+    ifr_ifrn: union { ifrn_name: [IFNAMSIZ]u8 },
+    ifr_ifru: union {
+        ifru_addr: sockaddr,
+        ifru_dstaddr: sockaddr,
+        ifru_broadaddr: sockaddr,
+        ifru_netmask: sockaddr,
+        ifru_hwaddr: sockaddr,
+        ifru_flags: i16,
+        ifru_ivalue: i32,
+        ifru_mtu: i32,
+        ifru_map: ifmap,
+        ifru_slave: [IFNAMSIZ]u8,
+        ifru_newname: [IFNAMSIZ]u8,
+        ifru_data: *void,
+    },
+}
+
+if_nametoindex :: proc(name: *const u8) u32
+if_indextoname :: proc(index: u32, name: *u8) *u8
+if_nameindex :: proc() *if_nameindex
+if_freenameindex :: proc(ptr: *if_nameindex) void

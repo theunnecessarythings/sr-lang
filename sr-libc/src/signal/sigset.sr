@@ -1,0 +1,33 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/sigset.c
+
+sig_h :: import "libc/include/signal"
+sigaction_mod :: import "libc/src/signal/sigaction"
+sigprocmask_mod :: import "libc/src/signal/sigprocmask"
+sigempty_mod :: import "libc/src/signal/sigemptyset"
+sigaddset_mod :: import "libc/src/signal/sigaddset"
+
+sigset :: proc(sig: i32, handler: sig_h.sigaction_handler) sig_h.sigaction_handler {
+    sa: sig_h.sigaction
+    sa_old: sig_h.sigaction
+    mask: alltypes.sigset_t
+    mask_old: alltypes.sigset_t
+
+    _ = sigempty_mod.sigemptyset(&mask)
+    if sigaddset_mod.sigaddset(&mask, sig) < 0 { return sig_h.SIG_ERR }
+
+    if handler == sig_h.SIG_HOLD {
+        if sigaction_mod.__sigaction(sig, null, &sa_old) < 0 { return sig_h.SIG_ERR }
+        if sigprocmask_mod.sigprocmask(sig_h.SIG_BLOCK, &mask, &mask_old) < 0 { return sig_h.SIG_ERR }
+    } else {
+        sa.sa_handler = handler
+        sa.sa_flags = 0
+        sa.sa_restorer = null
+        _ = sigempty_mod.sigemptyset(&sa.sa_mask)
+        if sigaction_mod.__sigaction(sig, &sa, &sa_old) < 0 { return sig_h.SIG_ERR }
+        _ = sigprocmask_mod.sigprocmask(sig_h.SIG_UNBLOCK, &mask, &mask_old)
+    }
+
+    return sa_old.sa_handler
+}

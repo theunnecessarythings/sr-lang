@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/sem_getvalue.c
+
+SEM_VALUE_MAX :: 0x7fffffff
+
+sem_getvalue :: proc(sem: *sem_t, valp: *i32) i32 {
+    val := sem.__val[0]
+    valp.* = val & SEM_VALUE_MAX
+    return 0
+}

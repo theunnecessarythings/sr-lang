@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/read.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+read :: proc(fd: i32, buf: *void, count: usize) isize {
+    r := sc.syscall3_ret(nums.SYS_read.(i64), fd.(i64), buf.^usize.(i64), count.(i64))
+    return r.(isize)
+}

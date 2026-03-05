@@ -1,0 +1,22 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/stderr.c.
+
+impl :: import "libc/src/stdio/stdio_impl"
+
+stderr_buf: [impl.UNGET]u8
+
+__stderr_FILE: alltypes.FILE = alltypes.FILE{
+    buf: (&stderr_buf[0]) + impl.UNGET,
+    buf_size: 0,
+    fd: 2,
+    flags: (impl.F_PERM | impl.F_NORD).(u32),
+    lbf: -1,
+    write: __stdio_write,
+    seek: __stdio_seek,
+    close: __stdio_close,
+    lock: -1,
+}
+
+stderr: *alltypes.FILE = &__stderr_FILE
+__stderr_used: *alltypes.FILE = &__stderr_FILE

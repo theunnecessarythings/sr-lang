@@ -1,0 +1,20 @@
+package libc
+
+// Derived from musl-1.2.5/src/process/posix_spawn_file_actions_destroy.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <spawn.h>
+// #include <stdlib.h>
+// #include <fdop.h>
+
+free_mod :: import "libc/src/malloc/free"
+
+posix_spawn_file_actions_destroy :: proc(fa: *posix_spawn_file_actions_t) i32 {
+    op := fa.__actions
+    while op != null {
+        next := op.next
+        free_mod.free(op.^*void)
+        op = next
+    }
+    return 0
+}

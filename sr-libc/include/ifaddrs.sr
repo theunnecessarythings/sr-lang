@@ -1,0 +1,19 @@
+package libc
+
+// Derived from musl-1.2.5/include/ifaddrs.h
+
+ifaddrs :: struct {
+    ifa_next: *ifaddrs,
+    ifa_name: *u8,
+    ifa_flags: u32,
+    ifa_addr: *sockaddr,
+    ifa_netmask: *sockaddr,
+    ifa_ifu: union {
+        ifu_broadaddr: *sockaddr,
+        ifu_dstaddr: *sockaddr,
+    },
+    ifa_data: *void,
+}
+
+freeifaddrs :: proc(ifp: *ifaddrs) void
+getifaddrs :: proc(ifap: **ifaddrs) i32

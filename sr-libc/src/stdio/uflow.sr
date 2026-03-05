@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/__uflow.c.
+
+alltypes :: import "libc/include/alltypes"
+stdio_h :: import "libc/include/stdio"
+toread_mod :: import "libc/src/stdio/toread"
+
+__uflow :: proc(f: *alltypes.FILE) i32 {
+    c: u8 = 0
+    if toread_mod.__toread(f) == 0 and f.read(f, &c, 1) == 1 { return c.(i32) }
+    return stdio_h.EOF
+}

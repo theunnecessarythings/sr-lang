@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/recv.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+
+recv :: proc(fd: i32, buf: *void, len: usize, flags: i32) isize {
+    return recvfrom(fd, buf, len, flags, null, null)
+}

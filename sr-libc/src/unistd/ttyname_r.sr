@@ -1,0 +1,32 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/ttyname_r.c
+
+isatty_mod :: import "libc/src/unistd/isatty"
+readlink_mod :: import "libc/src/unistd/readlink"
+stat_mod :: import "libc/src/stat/stat"
+fstat_mod :: import "libc/src/stat/fstat"
+procfd_mod :: import "libc/src/misc/procfdname"
+errno_mod :: import "libc/include/errno"
+
+ttyname_r :: proc(fd: i32, name: *u8, size: usize) i32 {
+    if isatty_mod.isatty(fd) == 0 { return errno_mod.__errno_location().* }
+
+    procname: [64]u8
+    procfd_mod.procfdname((&procname[0]).^*u8, fd.(u32))
+
+    l := readlink_mod.readlink((&procname[0]).^*const u8, name, size)
+    if l < 0 { return errno_mod.__errno_location().* }
+    if l == size.(isize) { return errno_mod.ERANGE }
+    name[l.(usize)] = 0
+
+    st1: stat
+    st2: stat
+    if stat_mod.stat(name.^*const u8, &st1) != 0 or fstat_mod.fstat(fd, &st2) != 0 {
+        return errno_mod.__errno_location().*
+    }
+    if st1.st_dev != st2.st_dev or st1.st_ino != st2.st_ino {
+        return errno_mod.ENODEV
+    }
+    return 0
+}

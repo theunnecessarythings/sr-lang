@@ -1,0 +1,80 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/exp2.c.
+
+libm :: import "libc/src/math/libm_internal"
+expdata :: import "libc/src/math/exp_data"
+
+N :: (1 << expdata.EXP_TABLE_BITS)
+
+specialcase :: fn(tmp: f64, sbits: u64, ki: u64) f64 {
+    scale: f64
+    y: f64
+    if (ki & 0x80000000) == 0 {
+        sbits = sbits - (1u64 << 52)
+        scale = libm.asdouble(sbits)
+        y = 2.0 * (scale + scale * tmp)
+        return libm.eval_as_double(y)
+    }
+    sbits = sbits + (1022u64 << 52)
+    scale = libm.asdouble(sbits)
+    y = scale + scale * tmp
+    if y < 1.0 {
+        hi: f64
+        lo: f64
+        lo = scale - y + scale * tmp
+        hi = 1.0 + y
+        lo = 1.0 - hi + y + lo
+        y = libm.eval_as_double(hi + lo) - 1.0
+        if libm.WANT_ROUNDING != 0 and y == 0.0 { y = 0.0 }
+        libm.fp_force_eval(libm.fp_barrier(0x1p-1022) * 0x1p-1022)
+    }
+    y = 0x1p-1022 * y
+    return libm.eval_as_double(y)
+}
+
+top12 :: fn(x: f64) u32 { return (libm.asuint64(x) >> 52).(u32) }
+
+exp2 :: proc(x: f64) f64 {
+    abstop: u32
+    ki: u64
+    idx: u64
+    top: u64
+    sbits: u64
+    kd: f64
+    r: f64
+    r2: f64
+    scale: f64
+    tail: f64
+    tmp: f64
+
+    abstop = top12(x) & 0x7ff
+    if (abstop - top12(0x1p-54)) >= (top12(512.0) - top12(0x1p-54)) {
+        if (abstop - top12(0x1p-54)) >= 0x80000000 {
+            return if libm.WANT_ROUNDING != 0 { 1.0 + x } else { 1.0 }
+        }
+        if abstop >= top12(1024.0) {
+            if libm.asuint64(x) == libm.asuint64(-1.0 / 0.0) { return 0.0 }
+            if abstop >= top12(1.0 / 0.0) { return 1.0 + x }
+            if (libm.asuint64(x) >> 63) == 0 { return libm.__math_oflow(0) }
+            if libm.asuint64(x) >= libm.asuint64(-1075.0) { return libm.__math_uflow(0) }
+        }
+        if (2u64 * libm.asuint64(x)) > (2u64 * libm.asuint64(928.0)) { abstop = 0 }
+    }
+
+    kd = libm.eval_as_double(x + expdata.__exp_data.exp2_shift)
+    ki = libm.asuint64(kd)
+    kd = kd - expdata.__exp_data.exp2_shift
+    r = x - kd
+    idx = 2 * (ki % N.(u64))
+    top = ki << (52 - expdata.EXP_TABLE_BITS)
+    tail = libm.asdouble(expdata.__exp_data.tab[idx])
+    sbits = expdata.__exp_data.tab[idx + 1] + top
+    r2 = r * r
+    tmp = tail + r * expdata.__exp_data.exp2_poly[0] +
+        r2 * (expdata.__exp_data.exp2_poly[1] + r * expdata.__exp_data.exp2_poly[2]) +
+        r2 * r2 * (expdata.__exp_data.exp2_poly[3] + r * expdata.__exp_data.exp2_poly[4])
+    if abstop == 0 { return specialcase(tmp, sbits, ki) }
+    scale = libm.asdouble(sbits)
+    return libm.eval_as_double(scale + scale * tmp)
+}

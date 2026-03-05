@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/include/sys/eventfd.h
+
+fcntl :: import "libc/include/fcntl"
+
+eventfd_t :: u64
+
+EFD_SEMAPHORE :: 1
+EFD_CLOEXEC :: fcntl.O_CLOEXEC
+EFD_NONBLOCK :: fcntl.O_NONBLOCK
+
+// Prototypes
+
+eventfd :: proc(count: u32, flags: i32) i32
+eventfd_read :: proc(fd: i32, value: *eventfd_t) i32
+eventfd_write :: proc(fd: i32, value: eventfd_t) i32

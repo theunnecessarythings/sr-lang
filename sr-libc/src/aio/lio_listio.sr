@@ -1,0 +1,39 @@
+package libc
+
+// Derived from musl-1.2.5/src/aio/lio_listio.c
+
+errno_h :: import "libc/include/errno"
+aio_h :: import "libc/include/aio"
+
+lio_listio :: proc(mode: i32, cbs: **aio_h.aiocb, cnt: i32, sev: *aio_h.sigevent) i32 {
+    _ = sev
+    if cnt < 0 {
+        errno_h.errno().* = errno_h.EINVAL
+        return -1
+    }
+    if mode != aio_h.LIO_WAIT && mode != aio_h.LIO_NOWAIT {
+        errno_h.errno().* = errno_h.EINVAL
+        return -1
+    }
+
+    i: i32 = 0
+    while i < cnt {
+        cb := cbs[i]
+        if cb != null {
+            if cb.aio_lio_opcode == aio_h.LIO_READ {
+                _ = aio_read(cb)
+            } else if cb.aio_lio_opcode == aio_h.LIO_WRITE {
+                _ = aio_write(cb)
+            } else if cb.aio_lio_opcode == aio_h.LIO_NOP {
+                // no-op
+            } else {
+                errno_h.errno().* = errno_h.EINVAL
+                return -1
+            }
+        }
+        i += 1
+    }
+
+    // For synchronous implementation, work is done immediately.
+    return 0
+}

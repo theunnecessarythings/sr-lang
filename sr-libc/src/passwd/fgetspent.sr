@@ -1,0 +1,43 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/fgetspent.c
+
+shadow_h :: import "libc/include/shadow"
+pwf :: import "libc/src/passwd/pwf"
+fgets_mod :: import "libc/src/stdio/fgets"
+ferror_mod :: import "libc/src/stdio/ferror"
+
+__sp_line: [1024]u8
+__sp_res: shadow_h.spwd
+
+__parsespent_line :: fn(line: ?*u8, sp: ?*shadow_h.spwd) void {
+    p := line
+    (sp?).sp_namp = p
+    p = pwf.split_field(p)
+    (sp?).sp_pwdp = p
+    p = pwf.split_field(p)
+    (sp?).sp_lstchg = pwf.atol64(p)
+    p = pwf.split_field(p)
+    (sp?).sp_min = pwf.atol64(p)
+    p = pwf.split_field(p)
+    (sp?).sp_max = pwf.atol64(p)
+    p = pwf.split_field(p)
+    (sp?).sp_warn = pwf.atol64(p)
+    p = pwf.split_field(p)
+    (sp?).sp_inact = pwf.atol64(p)
+    p = pwf.split_field(p)
+    (sp?).sp_expire = pwf.atol64(p)
+    p = pwf.split_field(p)
+    (sp?).sp_flag = pwf.atou(p).(u64)
+    pwf.strip_newline(p)
+}
+
+fgetspent :: proc(f: ?*alltypes.FILE) ?*shadow_h.spwd {
+    s := fgets_mod.fgets((&__sp_line[0]).^*u8, 1024, f)
+    if s == null {
+        _ = ferror_mod.ferror(f)
+        return null
+    }
+    __parsespent_line((&__sp_line[0]).^*u8, &__sp_res)
+    return &__sp_res
+}

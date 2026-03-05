@@ -1,0 +1,35 @@
+package libc
+
+// Derived from musl-1.2.5/include/sys/signalfd.h
+
+alltypes :: import "libc/include/alltypes"
+
+signalfd_siginfo :: struct {
+    ssi_signo: u32,
+    ssi_errno: i32,
+    ssi_code: i32,
+    ssi_pid: u32,
+    ssi_uid: u32,
+    ssi_fd: i32,
+    ssi_tid: u32,
+    ssi_band: u32,
+    ssi_overrun: u32,
+    ssi_trapno: u32,
+    ssi_status: i32,
+    ssi_int: i32,
+    ssi_ptr: u64,
+    ssi_utime: u64,
+    ssi_stime: u64,
+    ssi_addr: u64,
+    ssi_addr_lsb: u16,
+    __pad2: u16,
+    ssi_syscall: i32,
+    ssi_call_addr: u64,
+    ssi_arch: u32,
+    __pad: [28]u8,
+}
+
+SFD_CLOEXEC :: 0o2000000
+SFD_NONBLOCK :: 0o4000
+
+signalfd :: proc(fd: i32, sigs: *const alltypes.sigset_t, flags: i32) i32

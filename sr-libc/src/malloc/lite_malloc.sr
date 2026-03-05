@@ -1,0 +1,23 @@
+package libc
+
+// Derived from musl-1.2.5/src/malloc/lite_malloc.c
+
+malloc_mod :: import "libc/src/malloc/mallocng/malloc"
+
+traverses_stack_p :: proc(old: usize, new: usize) i32 {
+    _ = old
+    _ = new
+    return 0
+}
+
+__simple_malloc :: proc(n: usize) ?*void {
+    return malloc_mod.malloc(n)
+}
+
+__libc_malloc :: proc(n: usize) ?*void {
+    return malloc_mod.malloc(n)
+}
+
+default_malloc :: proc(n: usize) ?*void {
+    return malloc_mod.malloc(n)
+}

@@ -1,0 +1,32 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/vsscanf.c.
+
+memchr_mod :: import "libc/src/string/memchr"
+memcpy_mod :: import "libc/src/string/memcpy"
+stdarg_mod :: import "libc/include/stdarg"
+
+string_read :: proc(f: *alltypes.FILE, buf: *u8, len: usize) usize {
+    src := f.cookie.^*u8
+    k: usize = len + 256
+    end := memchr_mod.memchr(src.^*const u8, 0, k)
+    if end != null {
+        k = (end?.^usize - src.^usize).(usize)
+    }
+    if k < len { len = k }
+    _ = memcpy_mod.memcpy(buf.^*void, src.^*const void, len)
+    f.rpos = src + len
+    f.rend = src + k
+    f.cookie = (src + k).^*void
+    return len
+}
+
+vsscanf :: proc(s: *const u8, fmt: *const u8, ap: stdarg_mod.va_list) i32 {
+    f: alltypes.FILE = alltypes.FILE{
+        buf: s.^*u8,
+        cookie: s.^*void,
+        read: string_read,
+        lock: -1,
+    }
+    return vfscanf(&f, fmt, ap)
+}

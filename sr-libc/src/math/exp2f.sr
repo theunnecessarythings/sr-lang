@@ -1,0 +1,47 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/exp2f.c.
+
+libm :: import "libc/src/math/libm_internal"
+exp2fdata :: import "libc/src/math/exp2f_data"
+
+N :: (1 << exp2fdata.EXP2F_TABLE_BITS)
+
+top12 :: fn(x: f32) u32 { return (libm.asuint(x) >> 20) }
+
+exp2f :: proc(x: f32) f32 {
+    abstop: u32
+    ki: u64
+    t: u64
+    kd: f64
+    xd: f64
+    z: f64
+    r: f64
+    r2: f64
+    y: f64
+    s: f64
+
+    xd = x.(f64)
+    abstop = top12(x) & 0x7ff
+    if abstop >= top12(128.0f) {
+        if libm.asuint(x) == libm.asuint(-1.0f / 0.0f) { return 0.0f }
+        if abstop >= top12(1.0f / 0.0f) { return x + x }
+        if x > 0.0f { return libm.__math_oflowf(0) }
+        if x <= -150.0f { return libm.__math_uflowf(0) }
+    }
+
+    kd = libm.eval_as_double(xd + exp2fdata.__exp2f_data.shift_scaled)
+    ki = libm.asuint64(kd)
+    kd = kd - exp2fdata.__exp2f_data.shift_scaled
+    r = xd - kd
+
+    t = exp2fdata.__exp2f_data.tab[ki % N.(u64)]
+    t += ki << (52 - exp2fdata.EXP2F_TABLE_BITS)
+    s = libm.asdouble(t)
+    z = exp2fdata.__exp2f_data.poly[0] * r + exp2fdata.__exp2f_data.poly[1]
+    r2 = r * r
+    y = exp2fdata.__exp2f_data.poly[2] * r + 1.0
+    y = z * r2 + y
+    y = y * s
+    return libm.eval_as_float(y).(f32)
+}

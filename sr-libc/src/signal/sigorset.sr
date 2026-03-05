@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/sigorset.c
+
+sigorset :: proc(dest: *alltypes.sigset_t, left: *const alltypes.sigset_t, right: *const alltypes.sigset_t) i32 {
+    if dest == null || left == null || right == null { return -1 }
+    i: usize = 0
+    while i < 16 {
+        dest.__bits[i] = left.__bits[i] | right.__bits[i]
+        i += 1
+    }
+    return 0
+}

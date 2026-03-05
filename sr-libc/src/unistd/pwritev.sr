@@ -1,0 +1,19 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/pwritev.c (x86_64 uses SYS_pwritev).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+pwritev :: proc(fd: i32, iov: *const iovec, count: i32, ofs: alltypes.off_t) isize {
+    off := ofs.(i64)
+    r := sc.syscall5_ret(
+        nums.SYS_pwritev.(i64),
+        fd.(i64),
+        iov.^usize.(i64),
+        count.(i64),
+        off,
+        (off >> 32),
+    )
+    return r.(isize)
+}

@@ -1,0 +1,39 @@
+package libc
+
+// Derived from musl-1.2.5/src/search/insque.c
+
+// Queue manipulation - insert and remove elements from a doubly-linked list
+
+node :: struct {
+    next: *node,
+    prev: *node,
+}
+
+insque :: proc(element: *void, pred: *void) {
+    e := element.(*node)
+    p := pred.(*node)
+    
+    if p == 0 {
+        e.next = 0
+        e.prev = 0
+        return
+    }
+    
+    e.next = p.next
+    e.prev = p
+    p.next = e
+    if e.next != 0 {
+        e.next.prev = e
+    }
+}
+
+remque :: proc(element: *void) {
+    e := element.(*node)
+    
+    if e.next != 0 {
+        e.next.prev = e.prev
+    }
+    if e.prev != 0 {
+        e.prev.next = e.next
+    }
+}

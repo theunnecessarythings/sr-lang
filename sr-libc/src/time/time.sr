@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/time/time.c
+
+alltypes :: import "libc/include/alltypes"
+
+__clock_gettime :: extern proc(i32, *alltypes.timespec) i32
+CLOCK_REALTIME :: 0
+
+time :: proc(t: *i64) i64 {
+    ts: alltypes.timespec
+    __clock_gettime(CLOCK_REALTIME, &ts)
+    if t != 0 {
+        t.* = ts.tv_sec
+    }
+    return ts.tv_sec
+}

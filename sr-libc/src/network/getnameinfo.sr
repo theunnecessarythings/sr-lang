@@ -1,0 +1,226 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/getnameinfo.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <netdb.h>
+// #include <limits.h>
+// #include <string.h>
+// #include <stdio.h>
+// #include <stdlib.h>
+// #include <sys/socket.h>
+// #include <netinet/in.h>
+// #include <arpa/inet.h>
+// #include <net/if.h>
+// #include <ctype.h>
+// #include <resolv.h>
+// #include <lookup.h>
+// #include <stdio_impl.h>
+
+netdb_h :: import "libc/include/netdb"
+lookup_h :: import "libc/include/lookup"
+ctype_mod :: import "libc/src/ctype/ctype"
+string_h :: import "libc/src/string"
+strtoul_mod :: import "libc/src/stdlib/strtol"
+fopen_mod :: import "libc/src/stdio/fopen"
+fgets_mod :: import "libc/src/stdio/fgets"
+fclose_mod :: import "libc/src/stdio/fclose"
+inet_ntop_mod :: import "libc/src/network/inet_ntop"
+lookup_iplit :: import "libc/src/network/lookup_ipliteral"
+if_mod :: import "libc/src/network/if_indextoname"
+netif_h :: import "libc/include/net/if"
+
+PTR_MAX :: 80
+RR_PTR :: 12
+
+sprintf :: extern proc(*u8, *const u8, ...) i32
+
+itoa :: proc(p: *u8, x: u32) *u8 {
+    q := (p.^usize + 3 * sizeof(i32)).(usize).^*u8
+    q = (q.^usize - 1).(usize).^*u8
+    q[0] = 0
+    while true {
+        q = (q.^usize - 1).(usize).^*u8
+        q[0] = ('0'.(u32) + (x % 10)).(u8)
+        x /= 10
+        if x == 0 { break }
+    }
+    return q
+}
+
+mkptr4 :: proc(s: *u8, ip: *const u8) void {
+    _ = sprintf(s, "%d.%d.%d.%d.in-addr.arpa", ip[3], ip[2], ip[1], ip[0])
+}
+
+mkptr6 :: proc(s: *u8, ip: *const u8) void {
+    xdigits :: "0123456789abcdef"
+    i: i32 = 15
+    p := s
+    while i >= 0 {
+        p[0] = xdigits[(ip[i.(usize)] & 15).(usize)]
+        p = (&p[1]).^*u8
+        p[0] = '.'.(u8)
+        p = (&p[1]).^*u8
+        p[0] = xdigits[(ip[i.(usize)] >> 4).(usize)]
+        p = (&p[1]).^*u8
+        p[0] = '.'.(u8)
+        p = (&p[1]).^*u8
+        i -= 1
+    }
+    _ = string_h.strcpy(p, "ip6.arpa")
+}
+
+reverse_hosts :: proc(buf: *u8, a: *const u8, scopeid: u32, family: i32) void {
+    line: [512]u8
+    atmp: [16]u8
+    iplit: lookup_h.address
+    f := fopen_mod.fopen("/etc/hosts", "r")
+    if f == null { return }
+    if family == AF_INET {
+        _ = string_h.memcpy((&atmp[12]).^*void, a.^*const void, 4)
+        _ = string_h.memcpy(&atmp[0], "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff", 12)
+        a = &atmp[0]
+    }
+    while fgets_mod.fgets(&line[0], 512, f) != null {
+        p := string_h.strchr(&line[0], '#')
+        if p != null { p[0] = '\n'.(u8); p = (&p[1]).^*u8; p[0] = 0 }
+
+        p = &line[0]
+        while p[0] != 0 && ctype_mod.isspace(p[0].(i32)) == 0 { p = (&p[1]).^*u8 }
+        if p[0] == 0 { continue }
+        p[0] = 0
+        p = (&p[1]).^*u8
+        if lookup_iplit.__lookup_ipliteral(&iplit, &line[0], AF_UNSPEC) <= 0 { continue }
+
+        if iplit.family == AF_INET {
+            _ = string_h.memcpy((&iplit.addr[12]).^*void, (&iplit.addr[0]).^*const void, 4)
+            _ = string_h.memcpy((&iplit.addr[0]).^*void, "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff", 12)
+            iplit.scopeid = 0
+        }
+
+        if string_h.memcmp(a.^*const void, (&iplit.addr[0]).^*const void, 16) != 0 || iplit.scopeid != scopeid { continue }
+
+        while p[0] != 0 && ctype_mod.isspace(p[0].(i32)) != 0 { p = (&p[1]).^*u8 }
+        z := p
+        while z[0] != 0 && ctype_mod.isspace(z[0].(i32)) == 0 { z = (&z[1]).^*u8 }
+        z[0] = 0
+        if (z.^usize - p.^usize) < 256 {
+            _ = string_h.memcpy(buf.^*void, p.^*const void, (z.^usize - p.^usize + 1))
+            break
+        }
+    }
+    _ = fclose_mod.fclose(f)
+}
+
+reverse_services :: proc(buf: *u8, port: i32, dgram: i32) void {
+    line: [128]u8
+    f := fopen_mod.fopen("/etc/services", "r")
+    if f == null { return }
+    while fgets_mod.fgets(&line[0], 128, f) != null {
+        p := string_h.strchr(&line[0], '#')
+        if p != null { p[0] = '\n'.(u8); p = (&p[1]).^*u8; p[0] = 0 }
+
+        p = &line[0]
+        while p[0] != 0 && ctype_mod.isspace(p[0].(i32)) == 0 { p = (&p[1]).^*u8 }
+        if p[0] == 0 { continue }
+        p[0] = 0
+        p = (&p[1]).^*u8
+        z: *u8 = null
+        svport := strtoul_mod.strtoul(p, &z, 10)
+        if svport != port.(u64) || z == p { continue }
+        if dgram != 0 && string_h.strncmp(z, "/udp", 4) != 0 { continue }
+        if dgram == 0 && string_h.strncmp(z, "/tcp", 4) != 0 { continue }
+        if (p.^usize - (&line[0]).^usize) > 32 { continue }
+        _ = string_h.memcpy(buf.^*void, &line[0], (p.^usize - (&line[0]).^usize))
+        break
+    }
+    _ = fclose_mod.fclose(f)
+}
+
+dns_parse_callback :: proc(c: *void, rr: i32, data: *const void, len: i32, packet: *const void, plen: i32) i32 {
+    if rr != RR_PTR { return 0 }
+    if __dn_expand(packet.^*const u8, ((packet.^usize) + plen.(usize)).(usize).^*u8, data.^*const u8, c.^*u8, 256) <= 0 {
+        (c.^*u8)[0] = 0
+    }
+    return 0
+}
+
+getnameinfo :: proc(sa: *const sockaddr restrict, sl: socklen_t, node: *u8 restrict, nodelen: socklen_t, serv: *u8 restrict, servlen: socklen_t, flags: i32) i32 {
+    ptr: [PTR_MAX]u8
+    buf: [256]u8
+    num: [3 * sizeof(i32) + 1]u8
+    af := sa.sa_family.(i32)
+    a: *u8
+    scopeid: u32
+
+    switch af {
+        AF_INET => {
+            if sl < sizeof(sockaddr_in).(u32) { return netdb_h.EAI_FAMILY }
+            a = (&(sa.^*sockaddr_in).sin_addr).^*u8
+            mkptr4(&ptr[0], a)
+            scopeid = 0
+        }
+        AF_INET6 => {
+            if sl < sizeof(sockaddr_in6).(u32) { return netdb_h.EAI_FAMILY }
+            a = (&(sa.^*sockaddr_in6).sin6_addr).^*u8
+            if string_h.memcmp(a.^*const void, "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff", 12) != 0 {
+                mkptr6(&ptr[0], a)
+            } else {
+                mkptr4(&ptr[0], (&a[12]).^*u8)
+            }
+            scopeid = (sa.^*sockaddr_in6).sin6_scope_id
+        }
+        else => { return netdb_h.EAI_FAMILY }
+    }
+
+    if node != null && nodelen != 0 {
+        buf[0] = 0
+        if (flags & netdb_h.NI_NUMERICHOST) == 0 {
+            reverse_hosts(&buf[0], a, scopeid, af)
+        }
+        if buf[0] == 0 && (flags & netdb_h.NI_NUMERICHOST) == 0 {
+            query: [18 + PTR_MAX]u8
+            reply: [512]u8
+            qlen := __res_mkquery(0, &ptr[0], 1, RR_PTR, null, 0, null, &query[0], (18 + PTR_MAX).(i32))
+            query[3] = 0
+            rlen := __res_send(&query[0], qlen, &reply[0], 512)
+            buf[0] = 0
+            if rlen > 0 {
+                if rlen > 512 { rlen = 512 }
+                _ = __dns_parse(&reply[0], rlen, dns_parse_callback, &buf[0])
+            }
+        }
+        if buf[0] == 0 {
+            if (flags & netdb_h.NI_NAMEREQD) != 0 { return netdb_h.EAI_NONAME }
+            _ = inet_ntop_mod.inet_ntop(af, a.^*const void, &buf[0], 256)
+            if scopeid != 0 {
+                p: *u8 = null
+                tmp: [netif_h.IF_NAMESIZE + 1]u8
+                if (flags & netdb_h.NI_NUMERICSCOPE) == 0 &&
+                   (IN6_IS_ADDR_LINKLOCAL(a.^*const in6_addr) != 0 || IN6_IS_ADDR_MC_LINKLOCAL(a.^*const in6_addr) != 0) {
+                    p = if_mod.if_indextoname(scopeid, (&tmp[1]).^*u8)
+                }
+                if p == null { p = itoa(&num[0], scopeid) }
+                p = (p.^usize - 1).(usize).^*u8
+                p[0] = '%'.(u8)
+                _ = string_h.strcat(&buf[0], p)
+            }
+        }
+        if string_h.strlen(&buf[0]) >= nodelen.(usize) { return netdb_h.EAI_OVERFLOW }
+        _ = string_h.strcpy(node, &buf[0])
+    }
+
+    if serv != null && servlen != 0 {
+        p := &buf[0]
+        port := ntohs((sa.^*sockaddr_in).sin_port).(i32)
+        buf[0] = 0
+        if (flags & netdb_h.NI_NUMERICSERV) == 0 {
+            reverse_services(&buf[0], port, if (flags & netdb_h.NI_DGRAM) != 0 { 1 } else { 0 })
+        }
+        if p[0] == 0 { p = itoa(&num[0], port.(u32)) }
+        if string_h.strlen(p) >= servlen.(usize) { return netdb_h.EAI_OVERFLOW }
+        _ = string_h.strcpy(serv, p)
+    }
+
+    return 0
+}

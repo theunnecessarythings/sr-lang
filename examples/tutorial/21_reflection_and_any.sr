@@ -1,0 +1,16 @@
+package main
+
+io :: import "std/io"
+
+main :: proc() {
+    // Question: What is `any`?
+    // Answer: A parameter-only placeholder for "accept any type".
+    v := 123
+    // We can inspect a value's type at compile time using `typeof`.
+    msg := match typeof(v) {
+        i32 => "value is i32",
+        string => "value is string",
+        _ => "value is something else",
+    }
+    io.println("%s", msg)
+}

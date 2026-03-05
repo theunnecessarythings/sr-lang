@@ -1,0 +1,21 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/splice.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+splice :: proc(fd_in: i32, off_in: ?*alltypes.off_t, fd_out: i32, off_out: ?*alltypes.off_t, len: usize, flags: u32) isize {
+    in_ptr := if off_in == null { 0 } else { off_in.^usize }
+    out_ptr := if off_out == null { 0 } else { off_out.^usize }
+    r := sc.syscall6_ret(
+        nums.SYS_splice.(i64),
+        fd_in.(i64),
+        in_ptr.(i64),
+        fd_out.(i64),
+        out_ptr.(i64),
+        len.(i64),
+        flags.(i64),
+    )
+    return r.(isize)
+}

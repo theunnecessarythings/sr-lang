@@ -1,0 +1,76 @@
+package libc
+
+// Minimal signal definitions (x86_64 Linux).
+
+SIG_HUP :: 1
+SIG_INT :: 2
+SIG_QUIT :: 3
+SIG_ILL :: 4
+SIG_TRAP :: 5
+SIG_ABRT :: 6
+SIG_BUS :: 7
+SIG_FPE :: 8
+SIG_KILL :: 9
+SIG_USR1 :: 10
+SIG_SEGV :: 11
+SIG_USR2 :: 12
+SIG_PIPE :: 13
+SIG_ALRM :: 14
+SIG_TERM :: 15
+SIG_CHLD :: 17
+SIG_CONT :: 18
+SIG_STOP :: 19
+SIG_TSTP :: 20
+SIG_TTIN :: 21
+SIG_TTOU :: 22
+
+alltypes :: import "libc/include/alltypes"
+
+SIG_ERR :: (-1).(usize).^*fn(i32) void
+SIG_DFL :: 0.(usize).^*fn(i32) void
+SIG_IGN :: 1.(usize).^*fn(i32) void
+SIG_HOLD :: 2.(usize).^*fn(i32) void
+
+SA_RESTORER :: 0x04000000
+
+SIG_BLOCK :: 0
+SIG_UNBLOCK :: 1
+SIG_SETMASK :: 2
+
+SA_NOCLDSTOP :: 1
+SA_NOCLDWAIT :: 2
+SA_SIGINFO :: 4
+SA_ONSTACK :: 0x08000000
+SA_RESTART :: 0x10000000
+
+sigaction_handler :: fn(i32) void
+
+sigval :: struct {
+    sival_int: i32,
+    sival_ptr: ?*void,
+}
+
+siginfo_t :: struct {
+    si_signo: i32,
+    si_errno: i32,
+    si_code: i32,
+    _pad: [128 - 12]u8,
+}
+
+stack_t :: struct {
+    ss_sp: ?*void,
+    ss_flags: i32,
+    ss_size: usize,
+}
+
+sigaction :: struct {
+    sa_handler: ?*fn(i32) void,
+    sa_flags: u64,
+    sa_restorer: ?*void,
+    sa_mask: alltypes.sigset_t,
+}
+
+sigprocmask :: proc(how: i32, set: ?*const alltypes.sigset_t, old: ?*alltypes.sigset_t) i32
+sigaction :: proc(sig: i32, sa: ?*const sigaction, old: ?*sigaction) i32
+raise :: proc(sig: i32) i32
+kill :: proc(pid: alltypes.pid_t, sig: i32) i32

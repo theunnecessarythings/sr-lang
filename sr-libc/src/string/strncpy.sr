@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/strncpy.c (portable loop).
+
+strncpy :: proc(dest: *u8, src: *const u8, n: usize) *u8 {
+    i: usize = 0
+    while i < n and src[i] != 0 {
+        dest[i] = src[i]
+        i += 1
+    }
+    while i < n {
+        dest[i] = 0
+        i += 1
+    }
+    return dest
+}

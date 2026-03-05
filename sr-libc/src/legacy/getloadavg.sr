@@ -1,0 +1,20 @@
+package libc
+
+// Derived from musl-1.2.5/src/legacy/getloadavg.c
+
+sysinfo_h :: import "libc/include/sys/sysinfo"
+sysinfo_mod :: import "libc/src/linux/sysinfo"
+
+getloadavg :: proc(a: *f64, n: i32) i32 {
+    if n <= 0 { return 0 }
+    info: sysinfo_h.sysinfo
+    if sysinfo_mod.sysinfo(&info) != 0 { return -1 }
+
+    count := if n > 3 { 3 } else { n }
+    i: i32 = 0
+    while i < count {
+        a[i] = info.loads[i.(usize)].(f64) / (1 << sysinfo_h.SI_LOAD_SHIFT).(f64)
+        i += 1
+    }
+    return count
+}

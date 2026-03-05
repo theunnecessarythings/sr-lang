@@ -1,0 +1,7 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/ccoshl.c
+
+ccoshl :: proc(z: complex(f128)) complex(f128) {
+    return ccosh(z.(complex(f64))).(complex(f128))
+}

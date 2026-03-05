@@ -1,0 +1,32 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/coshl.c (f128 path).
+
+basic :: import "libc/src/math/basic"
+libm :: import "libc/src/math/libm_internal"
+
+LOG_MAX :: 1.1356523406294143949492e4
+LOG2 :: 0.693147180559945309417232121458176568
+
+coshl :: proc(x: f128) f128 {
+    bits := x.^u128
+    exp := ((bits >> 112) & 0x7fff).(i32)
+    x = basic.fabsl(x)
+
+    if x < LOG2 {
+        if exp < 0x3fff - 32 {
+            libm.fp_force_evall(x + 0x1p120)
+            return 1.0
+        }
+        t := expm1l(x)
+        return 1.0 + t * t / (2.0 * (1.0 + t))
+    }
+
+    if x < LOG_MAX {
+        t := expl(x)
+        return 0.5 * (t + 1.0 / t)
+    }
+
+    t := expl(0.5 * x)
+    return 0.5 * t * t
+}

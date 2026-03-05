@@ -1,0 +1,21 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/__fmodeflags.c.
+
+fcntl_mod :: import "libc/include/fcntl"
+str :: import "libc/src/string/strchr"
+
+__fmodeflags :: proc(mode: *const u8) i32 {
+    flags: i32 = 0
+    if str.strchr(mode, 43) != null { flags = fcntl_mod.O_RDWR }
+    else if mode[0] == 114 { flags = fcntl_mod.O_RDONLY }
+    else { flags = fcntl_mod.O_WRONLY }
+
+    if str.strchr(mode, 120) != null { flags = flags | fcntl_mod.O_EXCL }
+    if str.strchr(mode, 101) != null { flags = flags | fcntl_mod.O_CLOEXEC }
+    if mode[0] != 114 { flags = flags | fcntl_mod.O_CREAT }
+    if mode[0] == 119 { flags = flags | fcntl_mod.O_TRUNC }
+    if mode[0] == 97 { flags = flags | fcntl_mod.O_APPEND }
+
+    return flags
+}

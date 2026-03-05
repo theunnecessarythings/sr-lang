@@ -1,0 +1,118 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/inet_pton.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <arpa/inet.h>
+// #include <ctype.h>
+// #include <errno.h>
+// #include <string.h>
+
+ctype_mod :: import "libc/src/ctype/ctype"
+errno_mod :: import "libc/include/errno"
+memmove_mod :: import "libc/src/string/memmove"
+
+hexval :: proc(c: u32) i32 {
+    if (c - '0'.(u32)) < 10 { return (c - '0'.(u32)).(i32) }
+    c |= 32
+    if (c - 'a'.(u32)) < 6 { return (c - 'a'.(u32) + 10).(i32) }
+    return -1
+}
+
+inet_pton :: proc(af: i32, s: *const char restrict, a0: *void restrict) i32 {
+    ip: [8]u16
+    a := anull
+    i: i32
+    j: i32
+    v: i32
+    d: i32
+    brk: i32 = -1
+    need_v4: i32 = 0
+
+    p := s.^*u8
+
+    if af == AF_INET {
+        i = 0
+        while i < 4 {
+            v = 0
+            j = 0
+            while j < 3 && ctype_mod.isdigit(p[j.(usize)].(i32)) != 0 {
+                v = 10 * v + p[j.(usize)].(i32) - '0'.(i32)
+                j += 1
+            }
+            if j == 0 || (j > 1 && p[0] == '0'.(u8)) || v > 255 { return 0 }
+            a[i.(usize)] = v.(u8)
+            if p[j.(usize)] == 0 && i == 3 { return 1 }
+            if p[j.(usize)] != '.'.(u8) { return 0 }
+            p = (&p[(j + 1).(usize)]).^*u8
+            i += 1
+        }
+        return 0
+    } else if af != AF_INET6 {
+        errno_mod.errno().* = errno_mod.EAFNOSUPPORT
+        return -1
+    }
+
+    if p[0] == ':'.(u8) {
+        p = (&p[1]).^*u8
+        if p[0] != ':'.(u8) { return 0 }
+    }
+
+    i = 0
+    while true {
+        if p[0] == ':'.(u8) && brk < 0 {
+            brk = i
+            ip[(i & 7).(usize)] = 0
+            p = (&p[1]).^*u8
+            if p[0] == 0 { break }
+            if i == 7 { return 0 }
+            i += 1
+            continue
+        }
+        v = 0
+        j = 0
+        while j < 4 && (d = hexval(p[j.(usize)].(u32))) >= 0 {
+            v = 16 * v + d
+            j += 1
+        }
+        if j == 0 { return 0 }
+        ip[(i & 7).(usize)] = v.(u16)
+        if p[j.(usize)] == 0 && (brk >= 0 || i == 7) { break }
+        if i == 7 { return 0 }
+        if p[j.(usize)] != ':'.(u8) {
+            if p[j.(usize)] != '.'.(u8) || (i < 6 && brk < 0) { return 0 }
+            need_v4 = 1
+            i += 1
+            ip[(i & 7).(usize)] = 0
+            break
+        }
+        p = (&p[(j + 1).(usize)]).^*u8
+        i += 1
+    }
+
+    if brk >= 0 {
+        src := &ip[brk.(usize)]
+        dst := &ip[(brk + 7 - i).(usize)]
+        count := (i + 1 - brk).(usize)
+        _ = memmove_mod.memmove(dst.^*void, src.^*const void, count * 2)
+        j = 0
+        while j < (7 - i) {
+            ip[(brk + j).(usize)] = 0
+            j += 1
+        }
+    }
+
+    j = 0
+    while j < 8 {
+        a[(j * 2).(usize)] = (ip[j.(usize)] >> 8).(u8)
+        a[(j * 2 + 1).(usize)] = ip[j.(usize)].(u8)
+        j += 1
+    }
+
+    if need_v4 != 0 {
+        a_v4 := ((a.^usize) + 12).(usize).^*void
+        if inet_pton(AF_INET, p.^*const char, a_v4) <= 0 { return 0 }
+    }
+    return 1
+}

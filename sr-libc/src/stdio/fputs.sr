@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/fputs.c.
+
+strlen_mod :: import "libc/src/string/strlen"
+
+fputs :: proc(s: *const u8, f: *alltypes.FILE) i32 {
+    len := strlen_mod.strlen(s)
+    n := fwrite(s.^*const void, 1, len, f)
+    if n != len { return EOF }
+    return 0
+}

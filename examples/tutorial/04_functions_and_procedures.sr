@@ -1,0 +1,61 @@
+package main
+
+io :: import "std/io"
+
+// Question: What is a function?
+// Answer: `fn` returns a value.
+add :: fn(a: i32, b: i32) i32 {
+    return a + b
+}
+
+// Question: What is a procedure?
+// Answer: `proc` is for side effects; it can return void.
+log_sum :: proc(a: i32, b: i32) {
+    io.println("sum=%d", add(a, b))
+}
+
+// Question: Can parameters have defaults?
+// Answer: Yes.
+pow2 :: fn(base: i32, exp: i32 = 2) i32 {
+    result: i32 = 1
+    for _ in 0 .. exp {
+        result *= base
+    }
+    return result
+}
+
+// Question: How do variadic parameters work?
+// Answer: The trailing `any` captures extra arguments as a tuple.
+print_variadic :: proc(prefix: string, args: any) {
+    // The trailing `any` is a tuple of the extra arguments.
+    io.println("%s count=%d", prefix, args.len)
+}
+
+// Question: Can functions be values?
+// Answer: Yes, you can assign and pass them.
+apply :: fn(f: fn(i32) i32, x: i32) i32 {
+    return f(x)
+}
+
+inc :: fn(x: i32) i32 {
+    return x + 1
+}
+
+main :: proc() {
+    log_sum(3, 4)
+
+    v1 := pow2(3)
+    v2 := pow2(3, 3)
+    io.println("%d %d", v1, v2)
+
+    print_variadic("mixed:", 1, 2.5, "ok")
+
+    op := add
+    io.println("op=%d", op(10, 20))
+
+    io.println("apply=%d", apply(inc, 5))
+
+    // Note: Closure syntax is parsed but not fully implemented yet.
+    // add_one := |x: i32| x + 1
+    // io.println("%d", add_one(10))
+}

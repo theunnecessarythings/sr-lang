@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/locale/strcoll.c
+
+strcmp_mod :: import "libc/src/string/strcmp"
+
+__strcoll_l :: proc(l: *const u8, r: *const u8, loc: locale_t) i32 {
+    _ = loc
+    return strcmp_mod.strcmp(l, r)
+}
+
+strcoll :: proc(l: *const u8, r: *const u8) i32 {
+    return strcmp_mod.strcmp(l, r)
+}

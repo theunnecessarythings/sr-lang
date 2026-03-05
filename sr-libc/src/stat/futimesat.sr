@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/stat/futimesat.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+alltypes :: import "libc/include/alltypes"
+
+futimesat :: proc(fd: i32, path: *const u8, times: ?*alltypes.timeval) i32 {
+    times_ptr := if times == null { 0 } else { times?.^usize }
+    r := sc.syscall3_ret(
+        nums.SYS_futimesat.(i64),
+        fd.(i64),
+        path.^usize.(i64),
+        times_ptr.(i64),
+    )
+    return r.(i32)
+}

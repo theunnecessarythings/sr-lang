@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/fchownat.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+fchownat :: proc(dirfd: i32, path: *const u8, uid: uid_t, gid: gid_t, flags: i32) i32 {
+    r := sc.syscall5_ret(
+        nums.SYS_fchownat.(i64),
+        dirfd.(i64),
+        path.^usize.(i64),
+        uid.(i64),
+        gid.(i64),
+        flags.(i64),
+    )
+    return r.(i32)
+}

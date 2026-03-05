@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/scanf.c.
+
+stdarg_mod :: import "libc/include/stdarg"
+
+scanf :: proc(fmt: *const u8, args: any) i32 {
+    ap: stdarg_mod.va_list
+    stdarg_mod.va_start(&ap)
+    ret := vfscanf(stdin, fmt, ap)
+    stdarg_mod.va_end(&ap)
+    return ret
+}

@@ -1,0 +1,107 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/resolvconf.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <lookup.h>
+// #include <stdio_impl.h>
+// #include <ctype.h>
+// #include <errno.h>
+// #include <string.h>
+// #include <stdlib.h>
+// #include <netinet/in.h>
+
+ctype_mod :: import "libc/src/ctype/ctype"
+errno_mod :: import "libc/include/errno"
+string_h :: import "libc/src/string"
+strtoul_mod :: import "libc/src/stdlib/strtol"
+fopen_mod :: import "libc/src/stdio/fopen"
+fgets_mod :: import "libc/src/stdio/fgets"
+fclose_mod :: import "libc/src/stdio/fclose"
+getc_mod :: import "libc/src/stdio/getc"
+feof_mod :: import "libc/src/stdio/feof"
+lookup_h :: import "libc/include/lookup"
+lookup_iplit :: import "libc/src/network/lookup_ipliteral"
+
+__get_resolv_conf :: proc(conf: *lookup_h.resolvconf, search: *u8, search_sz: usize) i32 {
+    line: [256]u8
+    nns: i32 = 0
+
+    conf.ndots = 1
+    conf.timeout = 5
+    conf.attempts = 2
+    if search != null { search[0] = 0 }
+
+    f := fopen_mod.fopen("/etc/resolv.conf", "r")
+    if f == null {
+        switch errno_mod.errno().* {
+            errno_mod.ENOENT, errno_mod.ENOTDIR, errno_mod.EACCES => { /* fallthrough */ }
+            else => { return -1 }
+        }
+    } else {
+        while fgets_mod.fgets(&line[0], 256, f) != null {
+        p: *u8
+        z: *u8
+        if string_h.strchr(&line[0], '\n') == null && feof_mod.feof(f) == 0 {
+            c: i32
+            while true {
+                c = getc_mod.getc(f)
+                if c == '\n'.(i32) || c == (-1) { break }
+            }
+            continue
+        }
+
+        if string_h.strncmp(&line[0], "options", 7) == 0 && ctype_mod.isspace(line[7].(i32)) != 0 {
+            p = string_h.strstr(&line[0], "ndots:")
+            if p != null && ctype_mod.isdigit(p[6].(i32)) != 0 {
+                p = (&p[6]).^*u8
+                x := strtoul_mod.strtoul(p, &z, 10)
+                if z != p { conf.ndots = if x > 15 { 15 } else { x.(u32) } }
+            }
+            p = string_h.strstr(&line[0], "attempts:")
+            if p != null && ctype_mod.isdigit(p[9].(i32)) != 0 {
+                p = (&p[9]).^*u8
+                x := strtoul_mod.strtoul(p, &z, 10)
+                if z != p { conf.attempts = if x > 10 { 10 } else { x.(u32) } }
+            }
+            p = string_h.strstr(&line[0], "timeout:")
+            if p != null && (ctype_mod.isdigit(p[8].(i32)) != 0 || p[8] == '.'.(u8)) {
+                p = (&p[8]).^*u8
+                x := strtoul_mod.strtoul(p, &z, 10)
+                if z != p { conf.timeout = if x > 60 { 60 } else { x.(u32) } }
+            }
+            continue
+        }
+
+        if string_h.strncmp(&line[0], "nameserver", 10) == 0 && ctype_mod.isspace(line[10].(i32)) != 0 {
+            if nns >= lookup_h.MAXNS.(i32) { continue }
+            p = (&line[11]).^*u8
+            while ctype_mod.isspace(p[0].(i32)) != 0 { p = (&p[1]).^*u8 }
+            z = p
+            while z[0] != 0 && ctype_mod.isspace(z[0].(i32)) == 0 { z = (&z[1]).^*u8 }
+            z[0] = 0
+            if lookup_iplit.__lookup_ipliteral((&conf.ns[0] + nns).^*lookup_h.address, p, AF_UNSPEC) > 0 { nns += 1 }
+            continue
+        }
+
+        if search == null { continue }
+        if (string_h.strncmp(&line[0], "domain", 6) != 0 && string_h.strncmp(&line[0], "search", 6) != 0) || ctype_mod.isspace(line[6].(i32)) == 0 {
+            continue
+        }
+        p = (&line[7]).^*u8
+        while ctype_mod.isspace(p[0].(i32)) != 0 { p = (&p[1]).^*u8 }
+        l := string_h.strlen(p)
+        if l >= search_sz { continue }
+        _ = string_h.memcpy(search.^*void, p.^*const void, l + 1)
+    }
+
+        }
+        _ = fclose_mod.fclose(f)
+    }
+    if nns == 0 {
+        _ = lookup_iplit.__lookup_ipliteral(&conf.ns[0], "127.0.0.1", AF_UNSPEC)
+        nns = 1
+    }
+    conf.nns = nns.(u32)
+    return 0
+}

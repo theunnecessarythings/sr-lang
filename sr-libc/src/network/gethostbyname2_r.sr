@@ -1,0 +1,78 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/gethostbyname2_r.c
+
+lookup_h :: import "libc/include/lookup"
+netdb_h :: import "libc/include/netdb"
+string_h :: import "libc/src/string"
+errno_mod :: import "libc/include/errno"
+
+ALIGN :: (sizeof(struct { a: u8, b: *u8 }) - sizeof(*u8))
+
+gethostbyname2_r :: proc(name: *const u8, af: i32, h: *hostent, buf: *u8, buflen: usize, res: **hostent, err: *i32) i32 {
+    addrs: [lookup_h.MAXADDRS]lookup_h.address
+    canon: [256]u8
+    cnt: i32
+    align: usize
+    need: usize
+    i: i32
+
+    res.* = null
+    cnt = __lookup_name(&addrs[0], &canon[0], name, af, netdb_h.AI_CANONNAME)
+    if cnt < 0 {
+        switch cnt {
+            netdb_h.EAI_NONAME => { err.* = netdb_h.HOST_NOT_FOUND; return 0 }
+            netdb_h.EAI_NODATA => { err.* = netdb_h.NO_DATA; return 0 }
+            netdb_h.EAI_AGAIN => { err.* = netdb_h.TRY_AGAIN; return errno_mod.EAGAIN }
+            netdb_h.EAI_FAIL => { err.* = netdb_h.NO_RECOVERY; return errno_mod.EBADMSG }
+            netdb_h.EAI_SYSTEM => { err.* = netdb_h.NO_RECOVERY; return errno_mod.errno().* }
+            else => { err.* = netdb_h.NO_RECOVERY; return errno_mod.EBADMSG }
+        }
+    }
+
+    h.h_addrtype = af
+    h.h_length = if af == AF_INET6 { 16 } else { 4 }
+
+    align = (0usize - buf.^usize) & (ALIGN - 1)
+
+    need = 4 * sizeof(*u8)
+    need += (cnt + 1).(usize) * (sizeof(*u8) + h.h_length.(usize))
+    need += string_h.strlen(name) + 1
+    need += string_h.strlen(&canon[0]) + 1
+    need += align
+
+    if need > buflen { return errno_mod.ERANGE }
+
+    buf = (buf.^usize + align).(usize).^*u8
+    h.h_aliases = buf.^**u8
+    buf = (buf.^usize + 3 * sizeof(*u8)).(usize).^*u8
+    h.h_addr_list = buf.^**u8
+    buf = (buf.^usize + (cnt + 1).(usize) * sizeof(*u8)).(usize).^*u8
+
+    i = 0
+    while i < cnt {
+        h.h_addr_list[i.(usize)] = buf
+        buf = (buf.^usize + h.h_length.(usize)).(usize).^*u8
+        _ = string_h.memcpy(h.h_addr_list[i.(usize)].^*void, &addrs[i.(usize)].addr[0].^*const void, h.h_length.(usize))
+        i += 1
+    }
+    h.h_addr_list[i.(usize)] = null
+
+    h.h_name = buf
+    h.h_aliases[0] = buf
+    _ = string_h.strcpy(h.h_name, &canon[0])
+    buf = (buf.^usize + string_h.strlen(h.h_name) + 1).(usize).^*u8
+
+    if string_h.strcmp(h.h_name, name) != 0 {
+        h.h_aliases[1] = buf
+        _ = string_h.strcpy(h.h_aliases[1], name)
+        buf = (buf.^usize + string_h.strlen(h.h_aliases[1]) + 1).(usize).^*u8
+    } else {
+        h.h_aliases[1] = null
+    }
+
+    h.h_aliases[2] = null
+
+    res.* = h
+    return 0
+}

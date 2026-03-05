@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/sendto.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <syscall.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+sendto :: proc(fd: i32, buf: *const void, len: usize, flags: i32, addr: *const sockaddr, alen: socklen_t) isize {
+    r := sc.syscall6_ret(nums.SYS_sendto.(i64), fd.(i64), buf.^usize.(i64), len.(i64), flags.(i64), addr.^usize.(i64), alen.(i64))
+    return r.(isize)
+}

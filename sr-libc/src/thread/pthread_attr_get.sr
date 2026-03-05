@@ -1,0 +1,89 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_attr_get.c
+
+attr_int :: import "libc/src/thread/pthread_attr_internal"
+errno_mod :: import "libc/include/errno"
+
+pthread_attr_getdetachstate :: proc(a: *const alltypes.pthread_attr_t, state: *i32) i32 {
+    state.* = attr_int.attr_detach(a.^*alltypes.pthread_attr_t).* 
+    return 0
+}
+
+pthread_attr_getguardsize :: proc(a: *const alltypes.pthread_attr_t, size: *usize) i32 {
+    size.* = attr_int.attr_guardsize(a.^*alltypes.pthread_attr_t).* 
+    return 0
+}
+
+pthread_attr_getinheritsched :: proc(a: *const alltypes.pthread_attr_t, inherit: *i32) i32 {
+    inherit.* = attr_int.attr_sched(a.^*alltypes.pthread_attr_t).* 
+    return 0
+}
+
+pthread_attr_getschedparam :: proc(a: *const alltypes.pthread_attr_t, param: *struct sched_param) i32 {
+    param.sched_priority = attr_int.attr_prio(a.^*alltypes.pthread_attr_t).* 
+    return 0
+}
+
+pthread_attr_getschedpolicy :: proc(a: *const alltypes.pthread_attr_t, policy: *i32) i32 {
+    policy.* = attr_int.attr_policy(a.^*alltypes.pthread_attr_t).* 
+    return 0
+}
+
+pthread_attr_getscope :: proc(a: *const alltypes.pthread_attr_t, scope: *i32) i32 {
+    _ = a
+    scope.* = attr_int.PTHREAD_SCOPE_SYSTEM
+    return 0
+}
+
+pthread_attr_getstack :: proc(a: *const alltypes.pthread_attr_t, addr: **void, size: *usize) i32 {
+    if attr_int.attr_stackaddr(a.^*alltypes.pthread_attr_t).* == 0 { return errno_mod.EINVAL }
+    size.* = attr_int.attr_stacksize(a.^*alltypes.pthread_attr_t).* 
+    addr.* = (attr_int.attr_stackaddr(a.^*alltypes.pthread_attr_t).* - size.*).(usize).^*void
+    return 0
+}
+
+pthread_attr_getstacksize :: proc(a: *const alltypes.pthread_attr_t, size: *usize) i32 {
+    size.* = attr_int.attr_stacksize(a.^*alltypes.pthread_attr_t).* 
+    return 0
+}
+
+pthread_barrierattr_getpshared :: proc(a: *const pthread_barrierattr_t, pshared: *i32) i32 {
+    pshared.* = if a.__attr != 0 { 1 } else { 0 }
+    return 0
+}
+
+pthread_condattr_getclock :: proc(a: *const pthread_condattr_t, clk: *clockid_t) i32 {
+    clk.* = (a.__attr & 0x7fffffff).(clockid_t)
+    return 0
+}
+
+pthread_condattr_getpshared :: proc(a: *const pthread_condattr_t, pshared: *i32) i32 {
+    pshared.* = (a.__attr >> 31).(i32)
+    return 0
+}
+
+pthread_mutexattr_getprotocol :: proc(a: *const pthread_mutexattr_t, protocol: *i32) i32 {
+    protocol.* = ((a.__attr / 8) % 2).(i32)
+    return 0
+}
+
+pthread_mutexattr_getpshared :: proc(a: *const pthread_mutexattr_t, pshared: *i32) i32 {
+    pshared.* = ((a.__attr / 128) % 2).(i32)
+    return 0
+}
+
+pthread_mutexattr_getrobust :: proc(a: *const pthread_mutexattr_t, robust: *i32) i32 {
+    robust.* = ((a.__attr / 4) % 2).(i32)
+    return 0
+}
+
+pthread_mutexattr_gettype :: proc(a: *const pthread_mutexattr_t, typ: *i32) i32 {
+    typ.* = (a.__attr & 3).(i32)
+    return 0
+}
+
+pthread_rwlockattr_getpshared :: proc(a: *const pthread_rwlockattr_t, pshared: *i32) i32 {
+    pshared.* = a.__attr[0].(i32)
+    return 0
+}

@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/clogf.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+clogf :: proc(z: complex(f32)) complex(f32) {
+    r := cabsf(z)
+    phi := cargf(z)
+    return impl.cmplxf(logf(r), phi)
+}

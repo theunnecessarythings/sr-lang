@@ -1,0 +1,59 @@
+package libc
+
+// Derived from musl-1.2.5/include/sys/resource.h (partial).
+
+alltypes :: import "libc/include/alltypes"
+
+rlim_t :: u64
+RLIM_INFINITY :: 0xffff_ffff_ffff_ffffu64
+SYSCALL_RLIM_INFINITY :: 0xffff_ffff_ffff_ffffu64
+
+struct rlimit {
+    rlim_cur: rlim_t,
+    rlim_max: rlim_t,
+}
+
+rusage :: struct {
+    ru_utime: alltypes.timeval,
+    ru_stime: alltypes.timeval,
+    ru_maxrss: isize,
+    ru_ixrss: isize,
+    ru_idrss: isize,
+    ru_isrss: isize,
+    ru_minflt: isize,
+    ru_majflt: isize,
+    ru_nswap: isize,
+    ru_inblock: isize,
+    ru_oublock: isize,
+    ru_msgsnd: isize,
+    ru_msgrcv: isize,
+    ru_nsignals: isize,
+    ru_nvcsw: isize,
+    ru_nivcsw: isize,
+    __reserved: [16]isize,
+}
+
+RLIMIT_CPU :: 0
+RLIMIT_FSIZE :: 1
+RLIMIT_DATA :: 2
+RLIMIT_STACK :: 3
+RLIMIT_CORE :: 4
+RLIMIT_RSS :: 5
+RLIMIT_NPROC :: 6
+RLIMIT_NOFILE :: 7
+RLIMIT_MEMLOCK :: 8
+RLIMIT_AS :: 9
+RLIMIT_LOCKS :: 10
+RLIMIT_SIGPENDING :: 11
+RLIMIT_MSGQUEUE :: 12
+RLIMIT_NICE :: 13
+RLIMIT_RTPRIO :: 14
+RLIMIT_RTTIME :: 15
+
+PRIO_PROCESS :: 0
+NZERO :: 20
+
+getrlimit :: proc(resource: i32, rlim: *rlimit) i32
+
+getpriority :: proc(which: i32, who: id_t) i32
+setpriority :: proc(which: i32, who: id_t, prio: i32) i32

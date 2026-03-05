@@ -4,11 +4,12 @@ io  :: import "std/io"
 env :: import "std/env"
 
 main :: proc() {
-    if (env.get("HOME")?) {
-        io.print0("HOME=\n")
-        io.printf("%s\n".^*void, p.^*void)
+    maybe_home := env.get("HOME")
+    if maybe_home != null {
+        home := maybe_home?
+        io.print("HOME=", 0)
+        io.print("%s\n", home)
     } else {
-        io.println0("HOME not set")
+        io.print("HOME not set\n", 0)
     }
 }
-

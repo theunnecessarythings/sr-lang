@@ -1,0 +1,41 @@
+package libc
+
+// Derived from musl-1.2.5/include/sys/statvfs.h
+
+alltypes :: import "libc/include/alltypes"
+
+statvfs :: struct {
+    f_bsize: usize,
+    f_frsize: usize,
+    f_blocks: alltypes.fsblkcnt_t,
+    f_bfree: alltypes.fsblkcnt_t,
+    f_bavail: alltypes.fsblkcnt_t,
+    f_files: alltypes.fsfilcnt_t,
+    f_ffree: alltypes.fsfilcnt_t,
+    f_favail: alltypes.fsfilcnt_t,
+    f_fsid: usize,
+    __pad: [1]usize,
+    f_flag: usize,
+    f_namemax: usize,
+    f_type: u32,
+    __reserved: [5]i32,
+}
+
+statvfs_fn :: proc(path: *const u8, buf: *statvfs) i32
+fstatvfs_fn :: proc(fd: i32, buf: *statvfs) i32
+
+statvfs :: statvfs_fn
+fstatvfs :: fstatvfs_fn
+
+ST_RDONLY :: 1
+ST_NOSUID :: 2
+ST_NODEV :: 4
+ST_NOEXEC :: 8
+ST_SYNCHRONOUS :: 16
+ST_MANDLOCK :: 64
+ST_WRITE :: 128
+ST_APPEND :: 256
+ST_IMMUTABLE :: 512
+ST_NOATIME :: 1024
+ST_NODIRATIME :: 2048
+ST_RELATIME :: 4096

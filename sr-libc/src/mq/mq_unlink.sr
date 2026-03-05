@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/mq/mq_unlink.c (syscall wrapper).
+
+nums :: import "libc/include/syscall"
+sc :: import "libc/src/syscall/syscall"
+
+mq_unlink :: proc(name: *const u8) i32 {
+    r := sc.syscall1_ret(nums.SYS_mq_unlink.(i64), name.^usize.(i64))
+    return r.(i32)
+}

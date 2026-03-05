@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/ldso/dlopen.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <dlfcn.h>
+// #include <dynlink.h>
+
+stub_dlopen :: proc(file: u8, mode: i32) void {
+    // TODO: Translate function body
+    unreachable
+}
+

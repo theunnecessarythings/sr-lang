@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/sigemptyset.c
+
+sigemptyset :: proc(set: *alltypes.sigset_t) i32 {
+    if set == null { return -1 }
+    i: usize = 0
+    while i < 16 {
+        set.__bits[i] = 0
+        i += 1
+    }
+    return 0
+}

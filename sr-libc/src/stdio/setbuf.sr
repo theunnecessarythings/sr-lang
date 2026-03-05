@@ -1,0 +1,8 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/setbuf.c.
+
+setbuf :: proc(f: *alltypes.FILE, buf: ?*u8) void {
+    if buf == null { _ = setvbuf(f, null, _IONBF, 0) }
+    else { _ = setvbuf(f, buf, _IOFBF, BUFSIZ) }
+}

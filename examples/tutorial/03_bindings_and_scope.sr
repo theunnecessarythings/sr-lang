@@ -1,0 +1,36 @@
+package main
+
+io :: import "std/io"
+
+main :: proc() {
+    // Question: How do we declare a variable with inferred type?
+    // Answer: Use :=
+    x := 10
+
+    // Question: How do we declare with an explicit type?
+    // Answer: Use `name: type = value`.
+    y: i32 = 20
+
+    // Question: How do we declare a constant?
+    // Answer: Use `::`.
+    Pi :: 3.14159
+
+    // Question: Can we assign multiple values?
+    // Answer: Yes.
+    (a, b) := (1, 2)
+    (a, b) = (b, a)
+
+    // Question: What about scope and shadowing?
+    // Answer: Inner blocks can shadow names.
+    io.println("x=%d y=%d", x, y)
+    {
+        x := 99
+        io.println("inner x=%d", x)
+        _ = Pi
+    }
+
+    io.println("outer x=%d", x)
+
+    _ = a
+    _ = b
+}

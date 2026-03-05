@@ -1,0 +1,7 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/mtx_destroy.c
+
+mtx_destroy :: proc(mtx: *mtx_t) void {
+    // No-op for C11 mutexes.
+}

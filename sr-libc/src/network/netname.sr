@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/netname.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <netdb.h>
+
+getnetbyaddr :: proc(net: u32, type: i32) *netent {
+    _ = net
+    _ = type
+    return null
+}
+
+getnetbyname :: proc(name: *const u8) *netent {
+    _ = name
+    return null
+}

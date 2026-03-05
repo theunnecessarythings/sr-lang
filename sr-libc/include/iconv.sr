@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/include/iconv.h (minimal).
+
+iconv_t :: *void
+
+iconv_open :: proc(tocode: *const u8, fromcode: *const u8) iconv_t
+iconv :: proc(cd: iconv_t, inbuf: **u8, inbytesleft: *usize, outbuf: **u8, outbytesleft: *usize) usize
+iconv_close :: proc(cd: iconv_t) i32

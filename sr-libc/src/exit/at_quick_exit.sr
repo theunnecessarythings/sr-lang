@@ -1,0 +1,26 @@
+package libc
+
+// Derived from musl-1.2.5/src/exit/at_quick_exit.c
+
+quick_exit_func :: fn() void
+
+__quick_funcs: [32]quick_exit_func
+__quick_count: usize = 0
+
+at_quick_exit :: proc(func: quick_exit_func) i32 {
+    if __quick_count >= 32 { return -1 }
+    __quick_funcs[__quick_count] = func
+    __quick_count += 1
+    return 0
+}
+
+__funcs_on_quick_exit :: proc() void {}
+
+__run_quick_exit :: proc() void {
+    i := __quick_count
+    while i > 0 {
+        i -= 1
+        __quick_funcs[i]()
+    }
+    __quick_count = 0
+}

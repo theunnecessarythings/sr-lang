@@ -1,0 +1,10 @@
+package main
+
+@[export_name=my_add]
+add :: fn(a: i32, b: i32) i32 {
+    return a + b
+}
+
+main :: proc() {
+    _ = add(1, 2)
+}

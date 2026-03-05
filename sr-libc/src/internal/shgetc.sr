@@ -1,0 +1,65 @@
+package libc
+
+// Derived from musl-1.2.5/src/internal/shgetc.c and shgetc.h.
+
+alltypes :: import "libc/include/alltypes"
+uflow_mod :: import "libc/src/stdio/uflow"
+
+__shlim :: proc(f: *alltypes.FILE, lim: alltypes.off_t) void {
+    f.shlim = lim
+    f.shcnt = (f.buf.^isize - f.rpos.^isize).(alltypes.off_t)
+    if lim != 0 and (f.rend.^isize - f.rpos.^isize).(alltypes.off_t) > lim {
+        f.shend = (f.rpos.^usize + lim.(usize)).(usize).^*u8
+    } else {
+        f.shend = f.rend
+    }
+}
+
+__shgetc :: proc(f: *alltypes.FILE) i32 {
+    cnt := shcnt(f)
+    if f.shlim != 0 and cnt >= f.shlim {
+        f.shcnt = (f.buf.^isize - f.rpos.^isize).(alltypes.off_t) + cnt
+        f.shend = f.rpos
+        f.shlim = -1
+        return -1
+    }
+    c := uflow_mod.__uflow(f)
+    if c < 0 {
+        f.shcnt = (f.buf.^isize - f.rpos.^isize).(alltypes.off_t) + cnt
+        f.shend = f.rpos
+        f.shlim = -1
+        return -1
+    }
+    cnt += 1
+    if f.shlim != 0 and (f.rend.^isize - f.rpos.^isize).(alltypes.off_t) > (f.shlim - cnt) {
+        f.shend = (f.rpos.^usize + (f.shlim - cnt).(usize)).(usize).^*u8
+    } else {
+        f.shend = f.rend
+    }
+    f.shcnt = (f.buf.^isize - f.rpos.^isize).(alltypes.off_t) + cnt
+    if f.rpos.^usize <= f.buf.^usize {
+        prev_addr := (f.rpos.^usize - 1).(usize)
+        prev_ptr := prev_addr.^*u8
+        prev_ptr.* = c.(u8)
+    }
+    return c
+}
+
+shcnt :: proc(f: *alltypes.FILE) alltypes.off_t {
+    return f.shcnt + (f.rpos.^isize - f.buf.^isize).(alltypes.off_t)
+}
+
+shlim :: proc(f: *alltypes.FILE, lim: alltypes.off_t) void { __shlim(f, lim) }
+
+shgetc :: proc(f: *alltypes.FILE) i32 {
+    if f.rpos.^usize != f.shend.^usize {
+        c := f.rpos.*
+        f.rpos = (f.rpos.^usize + 1).(usize).^*u8
+        return c.(i32)
+    }
+    return __shgetc(f)
+}
+
+shunget :: proc(f: *alltypes.FILE) void {
+    if f.shlim >= 0 { f.rpos = (f.rpos.^usize - 1).(usize).^*u8 }
+}

@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/catanhl.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+catanhl :: proc(z: complex(f128)) complex(f128) {
+    z = catanl(impl.cmplxl(-z.imag, z.real))
+    return impl.cmplxl(z.imag, -z.real)
+}

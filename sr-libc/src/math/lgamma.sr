@@ -1,0 +1,7 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/lgamma.c.
+
+lgamma :: proc(x: f64) f64 {
+    return __lgamma_r(x, &__signgam)
+}

@@ -1,0 +1,42 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/cexpf.c
+
+impl :: import "libc/src/complex/complex_impl"
+ldexp_mod :: import "libc/src/complex/__cexpf"
+
+exp_ovfl :: u32 = 0x42b17218
+cexp_ovfl :: u32 = 0x43400074
+
+cexpf :: proc(z: complex(f32)) complex(f32) {
+    x := z.real
+    y := z.imag
+    hy := y.^u32
+    hy &= 0x7fffffff
+
+    if hy == 0 {
+        return impl.cmplxf(expf(x), y)
+    }
+
+    hx := x.^u32
+    if (hx & 0x7fffffff) == 0 {
+        return impl.cmplxf(cosf(y), sinf(y))
+    }
+
+    if hy >= 0x7f800000 {
+        if (hx & 0x7fffffff) != 0x7f800000 {
+            return impl.cmplxf(y - y, y - y)
+        } else if (hx & 0x80000000) != 0 {
+            return impl.cmplxf(0.0f, 0.0f)
+        } else {
+            return impl.cmplxf(x, y - y)
+        }
+    }
+
+    if hx >= exp_ovfl and hx <= cexp_ovfl {
+        return ldexp_mod.__ldexp_cexpf(z, 0)
+    }
+
+    exp_x := expf(x)
+    return impl.cmplxf(exp_x * cosf(y), exp_x * sinf(y))
+}

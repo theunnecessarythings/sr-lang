@@ -1,0 +1,41 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/fflush.c (simplified, no thread locking).
+
+fflush :: proc(f: ?*alltypes.FILE) i32 {
+    if f == null {
+        r: i32 = 0
+        if __stdout_used != null { r |= fflush(__stdout_used) }
+        if __stderr_used != null { r |= fflush(__stderr_used) }
+
+        cur := __ofl_lock().*
+        while cur != null {
+            if cur.wpos != cur.wbase { r |= fflush(cur) }
+            cur = cur.next
+        }
+        __ofl_unlock()
+        return r
+    }
+
+    fp := f?
+    _ = __lockfile(fp)
+
+    if fp.wpos != fp.wbase {
+        _ = fp.write(fp, null, 0)
+        if fp.wpos == null {
+            _ = __unlockfile(fp)
+            return EOF
+        }
+    }
+
+    if fp.rpos != fp.rend { _ = fp.seek(fp, (fp.rpos.^isize - fp.rend.^isize).(alltypes.off_t), SEEK_CUR) }
+
+    fp.wpos = null
+    fp.wbase = null
+    fp.wend = null
+    fp.rpos = null
+    fp.rend = null
+
+    _ = __unlockfile(fp)
+    return 0
+}

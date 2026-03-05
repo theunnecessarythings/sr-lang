@@ -1,0 +1,33 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/strpbrk.c (portable loop).
+
+strpbrk :: proc(s: *const u8, accept: *const u8) ?*const u8 {
+    i: usize = 0
+    while s[i] != 0 {
+        j: usize = 0
+        while accept[j] != 0 {
+            if s[i] == accept[j] {
+                return &s[i]
+            }
+            j += 1
+        }
+        i += 1
+    }
+    return null
+}
+
+strpbrk_mut :: proc(s: *u8, accept: *const u8) ?*u8 {
+    i: usize = 0
+    while s[i] != 0 {
+        j: usize = 0
+        while accept[j] != 0 {
+            if s[i] == accept[j] {
+                return &s[i]
+            }
+            j += 1
+        }
+        i += 1
+    }
+    return null
+}

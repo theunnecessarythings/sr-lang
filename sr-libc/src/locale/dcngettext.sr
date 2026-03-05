@@ -1,0 +1,66 @@
+package libc
+
+// Minimal gettext implementation (no catalogs), derived from musl behavior.
+
+string_h :: import "libc/src/string"
+strdup_mod :: import "libc/src/string/strdup"
+free :: extern proc(p: *void) void
+
+__gettext_dir: *u8 = ""
+__gettext_dir_alloced: i32 = 0
+
+gettextdir :: proc(domainname: *const u8, dirlen: *usize) *u8 {
+    _ = domainname
+    if dirlen != null {
+        dirlen.* = string_h.strlen(__gettext_dir)
+    }
+    return __gettext_dir
+}
+
+bindtextdomain :: proc(domainname: *const u8, dirname: *const u8) *u8 {
+    _ = domainname
+    if dirname == null {
+        return __gettext_dir
+    }
+    if dirname[0] == 0 {
+        if __gettext_dir_alloced != 0 {
+            free(__gettext_dir.^*void)
+            __gettext_dir_alloced = 0
+        }
+        __gettext_dir = ""
+        return __gettext_dir
+    }
+    dup := strdup_mod.strdup(dirname)
+    if dup == null { return null }
+    if __gettext_dir_alloced != 0 {
+        free(__gettext_dir.^*void)
+    }
+    __gettext_dir = dup
+    __gettext_dir_alloced = 1
+    return __gettext_dir
+}
+
+dummy_gettextdomain :: proc() *u8 {
+    return __gettextdomain()
+}
+
+dcngettext :: proc(domainname: *const u8, msgid1: *const u8, msgid2: *const u8, n: u64, category: i32) *u8 {
+    _ = domainname
+    _ = category
+    if n == 1 {
+        return msgid1.^*u8
+    }
+    return msgid2.^*u8
+}
+
+dcgettext :: proc(domainname: *const u8, msgid: *const u8, category: i32) *u8 {
+    return dcngettext(domainname, msgid, msgid, 1, category)
+}
+
+dngettext :: proc(domainname: *const u8, msgid1: *const u8, msgid2: *const u8, n: u64) *u8 {
+    return dcngettext(domainname, msgid1, msgid2, n, 0)
+}
+
+dgettext :: proc(domainname: *const u8, msgid: *const u8) *u8 {
+    return dcgettext(domainname, msgid, 0)
+}

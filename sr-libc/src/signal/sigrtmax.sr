@@ -1,0 +1,5 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/sigrtmax.c
+
+__libc_current_sigrtmax :: proc() i32 { return 64 }

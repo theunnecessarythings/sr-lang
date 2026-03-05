@@ -1,0 +1,35 @@
+package libc
+
+// Derived from musl-1.2.5/src/legacy/daemon.c
+
+fcntl_h :: import "libc/include/fcntl"
+fork_mod :: import "libc/src/process/fork"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+setsid_mod :: import "libc/src/process/setsid"
+chdir_mod :: import "libc/src/unistd/chdir"
+open_mod :: import "libc/src/unistd/open"
+dup2_mod :: import "libc/src/unistd/dup2"
+close_mod :: import "libc/src/unistd/close"
+
+daemon :: proc(nochdir: i32, noclose: i32) i32 {
+    pid := fork_mod.fork()
+    if pid < 0 { return -1 }
+    if pid > 0 {
+        _ = sc.syscall1(nums.SYS_exit.(i64), 0)
+    }
+    if setsid_mod.setsid() < 0 { return -1 }
+    if nochdir == 0 {
+        _ = chdir_mod.chdir("/")
+    }
+    if noclose == 0 {
+        fd := open_mod.open("/dev/null", fcntl_h.O_RDWR, 0)
+        if fd >= 0 {
+            _ = dup2_mod.dup2(fd, 0)
+            _ = dup2_mod.dup2(fd, 1)
+            _ = dup2_mod.dup2(fd, 2)
+            if fd > 2 { _ = close_mod.close(fd) }
+        }
+    }
+    return 0
+}

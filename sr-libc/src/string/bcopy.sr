@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/bcopy.c.
+
+memmove_mod :: import "libc/src/string/memmove"
+
+bcopy :: proc(src: *const void, dest: *void, n: usize) void {
+    _ = memmove_mod.memmove(dest, src, n)
+}

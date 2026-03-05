@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/if_freenameindex.c
+
+free_mod :: import "libc/src/stdlib/free"
+netif_h :: import "libc/include/net/if"
+
+if_freenameindex :: proc(idx: *netif_h.if_nameindex) void {
+    free_mod.free(idx.^*void)
+}

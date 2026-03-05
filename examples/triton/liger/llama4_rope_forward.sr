@@ -1,0 +1,168 @@
+package main
+
+liger_llama4_rope :: import "vendor/liger_llama4_rope"
+triton :: import "vendor/triton"
+cuda :: import "vendor/cuda"
+io :: import "std/io"
+alloc :: import "std/alloc"
+
+PtrF32 :: triton.Ptr(f32)
+
+main :: proc() {
+    res := cuda.cuInit(0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to init CUDA: %d", res)
+        return
+    }
+
+    dev: cuda.CUdevice = undefined
+    res = cuda.cuDeviceGet(&dev, 0)
+    if res != cuda.SUCCESS {
+        io.println("Failed to get device", ())
+        return
+    }
+
+    ctx: cuda.CUcontext = null
+    res = cuda.cuCtxCreate(&ctx, 0, dev)
+    if res != cuda.SUCCESS {
+        io.println("Failed to create context", ())
+        return
+    }
+
+    bs: i32 = 1
+    sl: i32 = 2
+    n_qh: i32 = 1
+    n_kh: i32 = 1
+    head_dim_half: i32 = 2
+    hd: i32 = head_dim_half * 2
+
+    rows := bs * sl
+    q_row_stride := n_qh * hd
+    k_row_stride := n_kh * hd
+    q_head_stride := hd
+    k_head_stride := hd
+
+    q_size := rows.(usize) * q_row_stride.(usize) * 4
+    k_size := rows.(usize) * k_row_stride.(usize) * 4
+    freqs_size := sl.(usize) * head_dim_half.(usize) * 4
+
+    q_h_ptr := alloc.alloc(q_size) orelse return
+    q_h := q_h_ptr.^*f32
+    k_h_ptr := alloc.alloc(k_size) orelse return
+    k_h := k_h_ptr.^*f32
+    fr_h_ptr := alloc.alloc(freqs_size) orelse return
+    fr_h := fr_h_ptr.^*f32
+    fi_h_ptr := alloc.alloc(freqs_size) orelse return
+    fi_h := fi_h_ptr.^*f32
+
+    i: i32 = 0
+    while i < rows * q_row_stride {
+        q_h[i] = (i + 1).(f32) * 0.01
+        k_h[i] = (i + 1).(f32) * 0.02
+        i = i + 1
+    }
+    i = 0
+    while i < sl * head_dim_half {
+        fr_h[i] = 1.0
+        fi_h[i] = 0.0
+        i = i + 1
+    }
+
+    q_ref_ptr := alloc.alloc(q_size) orelse return
+    q_ref := q_ref_ptr.^*f32
+    k_ref_ptr := alloc.alloc(k_size) orelse return
+    k_ref := k_ref_ptr.^*f32
+    i = 0
+    while i < rows * q_row_stride {
+        q_ref[i] = q_h[i]
+        k_ref[i] = k_h[i]
+        i = i + 1
+    }
+
+    r: i32 = 0
+    while r < rows {
+        d: i32 = 0
+        while d < head_dim_half {
+            freq_real := fr_h[(r % sl) * head_dim_half + d]
+            freq_imag := fi_h[(r % sl) * head_dim_half + d]
+            off := r * q_row_stride + d * 2
+            q_real := q_ref[off]
+            q_imag := q_ref[off + 1]
+            q_ref[off] = q_real * freq_real - q_imag * freq_imag
+            q_ref[off + 1] = q_real * freq_imag + q_imag * freq_real
+            k_real := k_ref[off]
+            k_imag := k_ref[off + 1]
+            k_ref[off] = k_real * freq_real - k_imag * freq_imag
+            k_ref[off + 1] = k_real * freq_imag + k_imag * freq_real
+            d = d + 1
+        }
+        r = r + 1
+    }
+
+    q_d: cuda.CUdeviceptr = 0
+    k_d: cuda.CUdeviceptr = 0
+    fr_d: cuda.CUdeviceptr = 0
+    fi_d: cuda.CUdeviceptr = 0
+
+    _ = cuda.cuMemAlloc(&q_d, q_size)
+    _ = cuda.cuMemAlloc(&k_d, k_size)
+    _ = cuda.cuMemAlloc(&fr_d, freqs_size)
+    _ = cuda.cuMemAlloc(&fi_d, freqs_size)
+
+    _ = cuda.cuMemcpyHtoD(q_d, q_h.^?*void, q_size)
+    _ = cuda.cuMemcpyHtoD(k_d, k_h.^?*void, k_size)
+    _ = cuda.cuMemcpyHtoD(fr_d, fr_h.^?*void, freqs_size)
+    _ = cuda.cuMemcpyHtoD(fi_d, fi_h.^?*void, freqs_size)
+
+    triton.launch(
+        liger_llama4_rope.llama4_rope_kernel,
+        grid = (rows, 1, 1),
+        block = (128, 1, 1),
+        HEAD_DIM_HALF = head_dim_half,
+        N_Q_HEADS = n_qh,
+        N_K_HEADS = n_kh,
+        BLOCK_SIZE = 128,
+        q_d,
+        k_d,
+        fr_d,
+        fi_d,
+        q_row_stride,
+        k_row_stride,
+        q_head_stride,
+        k_head_stride,
+        head_dim_half,
+        sl,
+        bs,
+        1.0,
+    )
+
+    _ = cuda.cuMemcpyDtoH(q_h.^?*void, q_d, q_size)
+    _ = cuda.cuMemcpyDtoH(k_h.^?*void, k_d, k_size)
+
+    success := true
+    epsilon: f32 = 1.e-4
+    i = 0
+    while i < rows * q_row_stride {
+        diff := q_h[i] - q_ref[i]
+        if diff < 0 { diff = -diff }
+        if diff > epsilon {
+            io.println("llama4 rope q mismatch at %d: expected %f got %f", i, q_ref[i], q_h[i])
+            success = false
+            break
+        }
+        diff = k_h[i] - k_ref[i]
+        if diff < 0 { diff = -diff }
+        if diff > epsilon {
+            io.println("llama4 rope k mismatch at %d: expected %f got %f", i, k_ref[i], k_h[i])
+            success = false
+            break
+        }
+        i = i + 1
+    }
+    if success { io.println("Llama4 RoPE forward verification passed", ()) }
+
+    _ = cuda.cuMemFree(q_d)
+    _ = cuda.cuMemFree(k_d)
+    _ = cuda.cuMemFree(fr_d)
+    _ = cuda.cuMemFree(fi_d)
+}

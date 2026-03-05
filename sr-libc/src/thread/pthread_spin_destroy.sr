@@ -1,0 +1,8 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_spin_destroy.c
+
+pthread_spin_destroy :: proc(s: *pthread_spinlock_t) i32 {
+    _ = s
+    return 0
+}

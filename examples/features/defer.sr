@@ -1,0 +1,39 @@
+package main
+
+// Chapter 11: Defer
+//
+// Guaranteed cleanup.
+
+io :: import "std/io"
+
+Err :: error { Fail }
+
+main :: proc() {
+    io.println("--- Defer ---", 0)
+
+    // `defer` statements are executed when the scope exits (LIFO order).
+    {
+        io.println("Opening resource...", 0)
+        defer io.println("Closing resource...", 0)
+
+        io.println("Using resource...", 0)
+        // Scope ends here, "Closing resource..." is printed.
+    }
+
+    // `errdefer` executes only if the scope exits via an error return.
+    _ = check_status(true) catch false
+    _ = check_status(false) catch false
+}
+
+check_status :: proc(ok: bool) Err ! bool {
+    io.println("Checking status...", 0)
+    
+    // Will run if we return an error
+    errdefer io.println("Log: Operation failed!", 0)
+    
+    if !ok {
+        return Err.Fail
+    }
+    
+    return true
+}

@@ -1,0 +1,24 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/dn_skipname.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <resolv.h>
+
+dn_skipname :: proc(s: *const u8, end: *const u8) i32 {
+    p := s
+    while p.^usize < end.^usize {
+        if p[0] == 0 {
+            return ((p.^usize - s.^usize) + 1).(i32)
+        } else if p[0] >= 192 {
+            if (p.^usize + 1) < end.^usize {
+                return ((p.^usize - s.^usize) + 2).(i32)
+            }
+            break
+        } else {
+            if (end.^usize - p.^usize) < (p[0].(usize) + 1) { break }
+            p = (&p[(p[0] + 1).(usize)]).^*u8
+        }
+    }
+    return -1
+}

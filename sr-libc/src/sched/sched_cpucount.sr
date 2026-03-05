@@ -1,0 +1,22 @@
+package libc
+
+// Derived from musl-1.2.5/src/sched/sched_cpucount.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sched.h>
+
+__sched_cpucount :: proc(size: usize, set: *const cpu_set_t) i32 {
+    cnt: usize = 0
+    p := set.^*const u8
+    i: usize = 0
+    while i < size {
+        b := p[i]
+        j: u8 = 0
+        while j < 8 {
+            if (b & (1.(u8) << j)) != 0 { cnt += 1 }
+            j += 1
+        }
+        i += 1
+    }
+    return cnt.(i32)
+}

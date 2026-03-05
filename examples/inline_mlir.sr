@@ -1,6 +1,6 @@
 package main
 
-printf :: extern proc(*void, any) i32
+printf :: extern proc(string, any) i32
 
 add :: @[mlir_fn] proc(i64, i64) i64 
 sub :: @[mlir_fn] proc(i64, i64) i64
@@ -20,10 +20,10 @@ main :: proc() {
             func.return %sum : i64
         }
     }
-    c := mlir op { arith.constant 42 : i64 }
+    c: i64 = mlir op { "arith.constant"() {value = 42 : i64} : () -> i64 }
     d := add(1728, 1)
     e := sub(1728, 1)
-    printf("The sum is: %d\n".^*void, d)
-    printf("The difference is: %d\n".^*void, e)
-    printf("The constant value is: %d\n".^*void, c)
+    printf("The sum is: %d\n", d)
+    printf("The difference is: %d\n", e)
+    printf("The constant value is: %d\n", c)
 }

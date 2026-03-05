@@ -1,0 +1,29 @@
+package libc
+
+// Derived from musl-1.2.5/src/time/asctime_r.c
+
+alltypes :: import "libc/include/alltypes"
+
+wday_names :: "Sun\x00Mon\x00Tue\x00Wed\x00Thu\x00Fri\x00Sat"
+mon_names :: "Jan\x00Feb\x00Mar\x00Apr\x00May\x00Jun\x00Jul\x00Aug\x00Sep\x00Oct\x00Nov\x00Dec"
+
+asctime_r :: proc(tm: *alltypes.tm, buf: *u8) *u8 {
+    if tm.tm_mon \u003e= 12 || tm.tm_mon \u003c 0 {
+        return 0
+    }
+    if tm.tm_wday \u003e= 7 || tm.tm_wday \u003c 0 {
+        return 0
+    }
+    
+    wday_name := (wday_names.(*u8) + tm.tm_wday.(usize) * 4)
+    mon_name := (mon_names.(*u8) + tm.tm_mon.(usize) * 4)
+    
+    // Format: "Day Mon DD HH:MM:SS YYYY\n"
+    sprintf :: extern proc(*u8, *const u8, ...) i32
+    sprintf(buf, "%s %s %2d %02d:%02d:%02d %d\n",
+        wday_name, mon_name, tm.tm_mday,
+        tm.tm_hour, tm.tm_min, tm.tm_sec,
+        1900 + tm.tm_year)
+    
+    return buf
+}

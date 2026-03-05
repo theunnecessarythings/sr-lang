@@ -1,0 +1,21 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/call_once.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <threads.h>
+// #include <pthread.h>
+
+// TODO: Manual translation needed - no functions detected
+// Original C code:
+/*
+#include <threads.h>
+#include <pthread.h>
+
+void call_once(once_flag *flag, void (*func)(void))
+{
+	__pthread_once(flag, func);
+}
+
+...
+*/

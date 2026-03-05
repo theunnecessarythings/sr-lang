@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/getitimer.c
+
+nums :: import "libc/include/syscall"
+sc :: import "libc/src/syscall/syscall"
+
+getitimer :: proc(which: i32, old: *itimerval) i32 {
+    r := sc.syscall2_ret(nums.SYS_getitimer.(i64), which.(i64), old.^usize.(i64))
+    return r.(i32)
+}

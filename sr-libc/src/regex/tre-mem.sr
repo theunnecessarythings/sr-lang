@@ -1,0 +1,31 @@
+package libc
+
+// Derived from musl-1.2.5/src/regex/tre-mem.c
+
+memset_mod :: import "libc/src/string/memset"
+
+tre_mem_t :: *void
+
+malloc :: extern proc(n: usize) *void
+free :: extern proc(p: *void) void
+
+tre_mem_new_impl :: proc(provided: i32, provided_block: *void) tre_mem_t {
+    _ = provided
+    _ = provided_block
+    return malloc(1)
+}
+
+tre_mem_destroy :: proc(mem: tre_mem_t) void {
+    if mem != null { free(mem) }
+}
+
+tre_mem_alloc_impl :: proc(mem: tre_mem_t, provided: i32, provided_block: *void, zero: i32, size: usize) *void {
+    _ = mem
+    _ = provided
+    _ = provided_block
+    p := malloc(size)
+    if p != null && zero != 0 {
+        _ = memset_mod.memset(p, 0, size)
+    }
+    return p
+}

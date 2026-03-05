@@ -1,0 +1,24 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/getgr_r.c
+
+grp_h :: import "libc/include/grp"
+errno_h :: import "libc/include/errno"
+getgr_a :: import "libc/src/passwd/getgr_a"
+
+getgr_r :: proc(name: *const u8, gid: gid_t, gr: *grp_h.group, buf: *u8, size: usize, res: **grp_h.group) i32 {
+    // use first 25% of buffer for pointer list, rest for line
+    if size < 64 { return errno_h.ERANGE }
+    mem_size := size / 4
+    line := (buf.^usize + mem_size).(usize).^*u8
+    line_size := size - mem_size
+    return getgr_a.__getgr_a(name, gid, gr, line, line_size, buf, mem_size, res)
+}
+
+getgrnam_r :: proc(name: *const u8, gr: *grp_h.group, buf: *u8, size: usize, res: **grp_h.group) i32 {
+    return getgr_r(name, 0xffffffff, gr, buf, size, res)
+}
+
+getgrgid_r :: proc(gid: gid_t, gr: *grp_h.group, buf: *u8, size: usize, res: **grp_h.group) i32 {
+    return getgr_r(null, gid, gr, buf, size, res)
+}

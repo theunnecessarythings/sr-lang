@@ -1,0 +1,142 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/getaddrinfo.c
+
+netdb_h :: import "libc/include/netdb"
+lookup_h :: import "libc/include/lookup"
+string_h :: import "libc/src/string"
+calloc_mod :: import "libc/src/stdlib/calloc"
+errno_mod :: import "libc/include/errno"
+pthread_cancel_mod :: import "libc/src/thread/pthread_setcancelstate"
+socket_mod :: import "libc/src/network/socket"
+connect_mod :: import "libc/src/network/connect"
+close_mod :: import "libc/src/unistd/close"
+htons_mod :: import "libc/src/network/htons"
+
+getaddrinfo :: proc(host: *const u8 restrict, serv: *const u8 restrict, hint: *const addrinfo restrict, res: **addrinfo restrict) i32 {
+    ports: [lookup_h.MAXSERVS]lookup_h.service
+    addrs: [lookup_h.MAXADDRS]lookup_h.address
+    canon: [256]u8
+    outcanon: *u8
+    nservs: i32
+    naddrs: i32
+    nais: i32
+    canon_len: usize
+    i: i32
+    j: i32
+    k: i32
+    family: i32 = AF_UNSPEC
+    flags: i32 = 0
+    proto: i32 = 0
+    socktype: i32 = 0
+    no_family: i32 = 0
+    out: *lookup_h.aibuf
+
+    if host == null && serv == null { return netdb_h.EAI_NONAME }
+
+    if hint != null {
+        family = hint.ai_family
+        flags = hint.ai_flags
+        proto = hint.ai_protocol
+        socktype = hint.ai_socktype
+
+        mask := netdb_h.AI_PASSIVE | netdb_h.AI_CANONNAME | netdb_h.AI_NUMERICHOST |
+            netdb_h.AI_V4MAPPED | netdb_h.AI_ALL | netdb_h.AI_ADDRCONFIG | netdb_h.AI_NUMERICSERV
+        if (flags & mask) != flags { return netdb_h.EAI_BADFLAGS }
+
+        switch family {
+            AF_INET, AF_INET6, AF_UNSPEC => {}
+            else => { return netdb_h.EAI_FAMILY }
+        }
+    }
+
+    if (flags & netdb_h.AI_ADDRCONFIG) != 0 {
+        lo4 := sockaddr_in{ sin_family: AF_INET, sin_port: 65535 }
+        if __BYTE_ORDER == __BIG_ENDIAN { lo4.sin_addr.s_addr = 0x7f000001 } else { lo4.sin_addr.s_addr = 0x0100007f }
+        lo6 := sockaddr_in6{ sin6_family: AF_INET6, sin6_port: 65535, sin6_addr: IN6ADDR_LOOPBACK_INIT }
+        tf: [2]i32 = [2]i32{ AF_INET, AF_INET6 }
+        ta: [2]*const void = [2]*const void{ &lo4.^*const void, &lo6.^*const void }
+        tl: [2]socklen_t = [2]socklen_t{ sizeof(sockaddr_in).(u32), sizeof(sockaddr_in6).(u32) }
+        i = 0
+        while i < 2 {
+            if family == tf[(1 - i).(usize)] { i += 1; continue }
+            s := socket_mod.socket(tf[i.(usize)], SOCK_CLOEXEC | SOCK_DGRAM, IPPROTO_UDP)
+            if s >= 0 {
+                cs: i32
+                _ = pthread_cancel_mod.pthread_setcancelstate(pthread_cancel_mod.PTHREAD_CANCEL_DISABLE, &cs)
+                r := connect_mod.connect(s, ta[i.(usize)].^*sockaddr, tl[i.(usize)])
+                saved_errno := errno_mod.errno().*
+                _ = pthread_cancel_mod.pthread_setcancelstate(cs, null)
+                _ = close_mod.close(s)
+                if r == 0 { i += 1; continue }
+                errno_mod.errno().* = saved_errno
+            }
+            switch errno_mod.errno().* {
+                errno_mod.EADDRNOTAVAIL, errno_mod.EAFNOSUPPORT, errno_mod.EHOSTUNREACH, errno_mod.ENETDOWN, errno_mod.ENETUNREACH => {}
+                else => { return netdb_h.EAI_SYSTEM }
+            }
+            if family == tf[i.(usize)] { no_family = 1 }
+            family = tf[(1 - i).(usize)]
+            i += 1
+        }
+    }
+
+    nservs = lookup_h.__lookup_serv(&ports[0], serv, proto, socktype, flags)
+    if nservs < 0 { return nservs }
+
+    naddrs = __lookup_name(&addrs[0], &canon[0], host, family, flags)
+    if naddrs < 0 { return naddrs }
+
+    if no_family != 0 { return netdb_h.EAI_NODATA }
+
+    nais = nservs * naddrs
+    canon_len = string_h.strlen(&canon[0])
+    out = calloc_mod.calloc(1, nais.(usize) * sizeof(lookup_h.aibuf) + canon_len + 1).^*lookup_h.aibuf
+    if out == null { return netdb_h.EAI_MEMORY }
+
+    if canon_len != 0 {
+        outcanon = (out.^usize + (nais.(usize) * sizeof(lookup_h.aibuf))).(usize).^*u8
+        _ = string_h.memcpy(outcanon.^*void, &canon[0].^*const void, canon_len + 1)
+    } else {
+        outcanon = null
+    }
+
+    k = 0
+    i = 0
+    while i < naddrs {
+        j = 0
+        while j < nservs {
+            out[k.(usize)].slot = k.(i16)
+            out[k.(usize)].ai = addrinfo{
+                ai_family: addrs[i.(usize)].family,
+                ai_socktype: ports[j.(usize)].socktype,
+                ai_protocol: ports[j.(usize)].proto,
+                ai_addrlen: if addrs[i.(usize)].family == AF_INET { sizeof(sockaddr_in).(u32) } else { sizeof(sockaddr_in6).(u32) },
+                ai_addr: &out[k.(usize)].sa.^*sockaddr,
+                ai_canonname: outcanon,
+                ai_next: null,
+            }
+            if k != 0 { out[(k - 1).(usize)].ai.ai_next = &out[k.(usize)].ai }
+            switch addrs[i.(usize)].family {
+                AF_INET => {
+                    out[k.(usize)].sa.sin.sin_family = AF_INET
+                    out[k.(usize)].sa.sin.sin_port = htons_mod.htons(ports[j.(usize)].port)
+                    _ = string_h.memcpy((&out[k.(usize)].sa.sin.sin_addr).^*void, (&addrs[i.(usize)].addr[0]).^*const void, 4)
+                }
+                AF_INET6 => {
+                    out[k.(usize)].sa.sin6.sin6_family = AF_INET6
+                    out[k.(usize)].sa.sin6.sin6_port = htons_mod.htons(ports[j.(usize)].port)
+                    out[k.(usize)].sa.sin6.sin6_scope_id = addrs[i.(usize)].scopeid
+                    _ = string_h.memcpy((&out[k.(usize)].sa.sin6.sin6_addr).^*void, (&addrs[i.(usize)].addr[0]).^*const void, 16)
+                }
+                else => {}
+            }
+            k += 1
+            j += 1
+        }
+        i += 1
+    }
+    out[0].ref = nais.(i16)
+    res.* = &out[0].ai
+    return 0
+}

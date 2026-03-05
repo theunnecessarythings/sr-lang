@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/malloc/memalign.c
+
+aligned_alloc_mod :: import "libc/src/malloc/mallocng/aligned_alloc"
+
+memalign :: proc(align: usize, len: usize) *void {
+    return aligned_alloc_mod.aligned_alloc(align, len)
+}

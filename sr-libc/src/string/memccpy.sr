@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/memccpy.c (portable loop).
+
+memccpy :: proc(dest: *void, src: *const void, c: i32, n: usize) ?*void {
+    d := dest.^*u8
+    s := src.^*u8
+    ch := c.(u8)
+    i: usize = 0
+    while i < n {
+        d[i] = s[i]
+        if s[i] == ch {
+            return (d.^usize + i + 1).(usize).^*void
+        }
+        i += 1
+    }
+    return null
+}

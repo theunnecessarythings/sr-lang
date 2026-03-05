@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/inet_addr.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <netinet/in.h>
+// #include <arpa/inet.h>
+
+inet_aton_mod :: import "libc/src/network/inet_aton"
+
+inet_addr :: proc(p: *const char) in_addr_t {
+    a: in_addr
+    if inet_aton_mod.__inet_aton(p, &a) == 0 { return 0xffffffff.(in_addr_t) }
+    return a.s_addr
+}

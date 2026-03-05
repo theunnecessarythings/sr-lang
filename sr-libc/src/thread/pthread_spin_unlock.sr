@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_spin_unlock.c
+
+atomic :: import "libc/src/internal/atomic"
+
+pthread_spin_unlock :: proc(s: *pthread_spinlock_t) i32 {
+    atomic.a_store(s.^*i32, 0)
+    return 0
+}

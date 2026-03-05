@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/locale/uselocale.c
+
+loc_impl :: import "libc/src/locale/locale_impl"
+
+__uselocale :: proc(new: locale_t) locale_t {
+    old := loc_impl.__current_locale
+    if new != null {
+        loc_impl.__current_locale = new
+    }
+    return old
+}

@@ -1,0 +1,22 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_cond_destroy.c
+
+cond_int :: import "libc/src/thread/pthread_cond_internal"
+atomic :: import "libc/src/internal/atomic"
+lock_mod :: import "libc/src/internal/lock"
+wait_mod :: import "libc/src/thread/__wait"
+
+pthread_cond_destroy :: proc(c: *pthread_cond_t) i32 {
+    if cond_int.c_shared(c).* != null && cond_int.c_waiters(c).* != 0 {
+        atomic.a_or(cond_int.c_waiters(c), 0x80000000.(i32))
+        atomic.a_inc(cond_int.c_seq(c))
+        lock_mod.__wake(cond_int.c_seq(c).^*void, -1, 0)
+        while true {
+            cnt := cond_int.c_waiters(c).*
+            if (cnt & 0x7fffffff) == 0 { break }
+            wait_mod.__wait(cond_int.c_waiters(c), null, cnt, 0)
+        }
+    }
+    return 0
+}

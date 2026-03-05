@@ -1,0 +1,19 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/strcasestr.c (ASCII-only).
+
+strlen_mod :: import "libc/src/string/strlen"
+strncasecmp_mod :: import "libc/src/string/strncasecmp"
+
+strcasestr :: proc(haystack: *const u8, needle: *const u8) ?*const u8 {
+    nlen := strlen_mod.strlen(needle)
+    if nlen == 0 { return haystack }
+    i: usize = 0
+    while haystack[i] != 0 {
+        if strncasecmp_mod.strncasecmp((&haystack[i]).^*const u8, needle, nlen) == 0 {
+            return &haystack[i]
+        }
+        i += 1
+    }
+    return null
+}

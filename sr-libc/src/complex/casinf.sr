@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/casinf.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+casinf :: proc(z: complex(f32)) complex(f32) {
+    x := z.real
+    y := z.imag
+    w := impl.cmplxf(1.0f - (x - y) * (x + y), -2.0f * x * y)
+    r := clogf(impl.cmplxf(-y, x) + csqrtf(w))
+    return impl.cmplxf(r.imag, -r.real)
+}

@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/seteuid.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+seteuid :: proc(euid: uid_t) i32 {
+    r := sc.syscall3_ret(nums.SYS_setresuid.(i64), (-1).(i64), euid.(i64), (-1).(i64))
+    return r.(i32)
+}

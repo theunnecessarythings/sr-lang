@@ -423,7 +423,7 @@ pub const TypeInfo = struct {
     }
 };
 
-pub const TypeKind = enum(u8) { Void, Bool, I8, I16, I32, I64, U8, U16, U32, U64, F32, F64, Usize, Complex, Tensor, Simd, String, Any, Code, Undef, Ptr, Slice, Array, DynArray, Map, Optional, Tuple, Function, Closure, Struct, Union, Enum, Variant, Error, ErrorSet, MlirModule, MlirAttribute, MlirType, TypeType, Future, Noreturn, Ast, TypeError };
+pub const TypeKind = enum(u8) { Void, Bool, I8, I16, I32, I64, U8, U16, U32, U64, F32, F64, F128, Usize, Isize, Complex, Tensor, Simd, String, Any, Code, Undef, Ptr, Slice, Array, DynArray, Map, Optional, Tuple, Function, Closure, Struct, Union, Enum, Variant, Error, ErrorSet, MlirModule, MlirAttribute, MlirType, TypeType, Future, Noreturn, Ast, TypeError };
 
 pub const Rows = struct {
     pub const Void = struct {};
@@ -438,7 +438,9 @@ pub const Rows = struct {
     pub const U64 = struct {};
     pub const F32 = struct {};
     pub const F64 = struct {};
+    pub const F128 = struct {};
     pub const Usize = struct {};
+    pub const Isize = struct {};
     pub const String = struct {};
     pub const Any = struct {};
     pub const Code = struct {};
@@ -507,7 +509,9 @@ pub const TypeStore = struct {
     U64: Table(Rows.U64) = .{},
     F32: Table(Rows.F32) = .{},
     F64: Table(Rows.F64) = .{},
+    F128: Table(Rows.F128) = .{},
     Usize: Table(Rows.Usize) = .{},
+    Isize: Table(Rows.Isize) = .{},
     String: Table(Rows.String) = .{},
     Any: Table(Rows.Any) = .{},
     Code: Table(Rows.Code) = .{},
@@ -561,7 +565,9 @@ pub const TypeStore = struct {
     t_u64: ?TypeId = null,
     t_f32: ?TypeId = null,
     t_f64: ?TypeId = null,
+    t_f128: ?TypeId = null,
     t_usize: ?TypeId = null,
+    t_isize: ?TypeId = null,
     t_string: ?TypeId = null,
     t_any: ?TypeId = null,
     t_code: ?TypeId = null,
@@ -744,8 +750,14 @@ pub const TypeStore = struct {
     pub fn tF64(self: *TypeStore) TypeId {
         return self.mkPrim(.F64, &self.t_f64);
     }
+    pub fn tF128(self: *TypeStore) TypeId {
+        return self.mkPrim(.F128, &self.t_f128);
+    }
     pub fn tUsize(self: *TypeStore) TypeId {
         return self.mkPrim(.Usize, &self.t_usize);
+    }
+    pub fn tIsize(self: *TypeStore) TypeId {
+        return self.mkPrim(.Isize, &self.t_isize);
     }
     pub fn tString(self: *TypeStore) TypeId {
         return self.mkPrim(.String, &self.t_string);
@@ -1046,7 +1058,9 @@ pub const TypeStore = struct {
             .U64 => try w.print("u64", .{}),
             .F32 => try w.print("f32", .{}),
             .F64 => try w.print("f64", .{}),
+            .F128 => try w.print("f128", .{}),
             .Usize => try w.print("usize", .{}),
+            .Isize => try w.print("isize", .{}),
             .String => try w.print("string", .{}),
             .Any => try w.print("any", .{}),
             .Code => try w.print("Code", .{}),
@@ -1222,7 +1236,7 @@ pub const TypeStore = struct {
 
         const kind = self.getKind(type_id);
         switch (kind) {
-            .Void, .Bool, .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .F64, .Usize, .String, .Any, .Code, .Noreturn, .Undef, .MlirModule, .MlirAttribute, .MlirType, .TypeType, .TypeError, .Ast => try self.fmt(type_id, writer),
+            .Void, .Bool, .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .F64, .F128, .Usize, .Isize, .String, .Any, .Code, .Noreturn, .Undef, .MlirModule, .MlirAttribute, .MlirType, .TypeType, .TypeError, .Ast => try self.fmt(type_id, writer),
             .Ptr => {
                 const r = self.get(.Ptr, type_id);
                 try writer.print("{s}", .{if (options.show_const and r.is_const) "*const " else "*"});

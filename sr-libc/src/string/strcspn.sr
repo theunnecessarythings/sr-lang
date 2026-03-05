@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/strcspn.c (portable loop).
+
+strcspn :: proc(s: *const u8, reject: *const u8) usize {
+    i: usize = 0
+    while s[i] != 0 {
+        j: usize = 0
+        while reject[j] != 0 {
+            if s[i] == reject[j] {
+                return i
+            }
+            j += 1
+        }
+        i += 1
+    }
+    return i
+}

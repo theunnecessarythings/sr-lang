@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/include/inttypes.h (partial).
+
+alltypes :: import "libc/include/alltypes"
+
+intmax_t :: alltypes.intmax_t
+
+imaxdiv_t :: struct { quot: intmax_t, rem: intmax_t }

@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/iopl.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+iopl :: proc(level: i32) i32 {
+    r := sc.syscall1_ret(nums.SYS_iopl.(i64), level.(i64))
+    return r.(i32)
+}

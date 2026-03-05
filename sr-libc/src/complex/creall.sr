@@ -1,0 +1,7 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/creall.c
+
+creall :: proc(z: complex(f128)) f128 {
+    return z.real
+}

@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/mtx_unlock.c
+
+unlock_mod :: import "libc/src/thread/pthread_mutex_unlock"
+
+mtx_unlock :: proc(mtx: *mtx_t) i32 {
+    return unlock_mod.__pthread_mutex_unlock(mtx.^*alltypes.pthread_mutex_t)
+}

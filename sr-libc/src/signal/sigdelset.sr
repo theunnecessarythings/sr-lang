@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/sigdelset.c
+
+errno_h :: import "libc/include/errno"
+
+sigdelset :: proc(set: *alltypes.sigset_t, sig: i32) i32 {
+    if set == null || sig <= 0 || sig > 1024 {
+        errno_h.errno().* = errno_h.EINVAL
+        return -1
+    }
+    idx := (sig - 1) / 64
+    bit := (sig - 1) % 64
+    set.__bits[idx.(usize)] &= ~(1.(u64) << bit.(u32))
+    return 0
+}

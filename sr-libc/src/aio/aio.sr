@@ -1,0 +1,127 @@
+package libc
+
+// Derived from musl-1.2.5/src/aio/aio.c
+
+errno_h :: import "libc/include/errno"
+aio_h :: import "libc/include/aio"
+pread_mod :: import "libc/src/unistd/pread"
+pwrite_mod :: import "libc/src/unistd/pwrite"
+fsync_mod :: import "libc/src/unistd/fsync"
+fdatasync_mod :: import "libc/src/unistd/fdatasync"
+fcntl_h :: import "libc/include/fcntl"
+
+// Synchronous AIO implementation (no background threads).
+
+submit :: proc(cb: *aio_h.aiocb, op: i32) i32 {
+    if cb == null {
+        errno_h.errno().* = errno_h.EINVAL
+        return -1
+    }
+
+    cb.__state = 1
+    cb.__err = errno_h.EINPROGRESS
+    cb.__ret = -1
+
+    if op == aio_h.LIO_READ {
+        r := pread_mod.pread(cb.aio_fildes, cb.aio_buf, cb.aio_nbytes, cb.aio_offset)
+        if r < 0 {
+            cb.__err = errno_h.errno().*
+            cb.__ret = -1
+            cb.__state = 2
+            return -1
+        }
+        cb.__ret = r
+        cb.__err = 0
+        cb.__state = 2
+        return 0
+    }
+
+    if op == aio_h.LIO_WRITE {
+        r := pwrite_mod.pwrite(cb.aio_fildes, cb.aio_buf.^*const void, cb.aio_nbytes, cb.aio_offset)
+        if r < 0 {
+            cb.__err = errno_h.errno().*
+            cb.__ret = -1
+            cb.__state = 2
+            return -1
+        }
+        cb.__ret = r
+        cb.__err = 0
+        cb.__state = 2
+        return 0
+    }
+
+    errno_h.errno().* = errno_h.EINVAL
+    cb.__err = errno_h.EINVAL
+    cb.__ret = -1
+    cb.__state = 2
+    return -1
+}
+
+aio_read :: proc(cb: *aio_h.aiocb) i32 {
+    return submit(cb, aio_h.LIO_READ)
+}
+
+aio_write :: proc(cb: *aio_h.aiocb) i32 {
+    return submit(cb, aio_h.LIO_WRITE)
+}
+
+aio_fsync :: proc(op: i32, cb: *aio_h.aiocb) i32 {
+    if cb == null {
+        errno_h.errno().* = errno_h.EINVAL
+        return -1
+    }
+    cb.__state = 1
+    cb.__err = errno_h.EINPROGRESS
+    cb.__ret = -1
+
+    r := if op == fcntl_h.O_DSYNC { fdatasync_mod.fdatasync(cb.aio_fildes) } else { fsync_mod.fsync(cb.aio_fildes) }
+    if r < 0 {
+        cb.__err = errno_h.errno().*
+        cb.__ret = -1
+        cb.__state = 2
+        return -1
+    }
+    cb.__ret = 0
+    cb.__err = 0
+    cb.__state = 2
+    return 0
+}
+
+aio_return :: proc(cb: *aio_h.aiocb) isize {
+    if cb == null {
+        errno_h.errno().* = errno_h.EINVAL
+        return -1
+    }
+    return cb.__ret
+}
+
+aio_error :: proc(cb: *aio_h.aiocb) i32 {
+    if cb == null {
+        errno_h.errno().* = errno_h.EINVAL
+        return errno_h.EINVAL
+    }
+    return cb.__err
+}
+
+aio_cancel :: proc(fd: i32, cb: *aio_h.aiocb) i32 {
+    _ = fd
+    if cb == null {
+        return aio_h.AIO_ALLDONE
+    }
+    if cb.__state == 1 {
+        cb.__err = errno_h.EINTR
+        cb.__ret = -1
+        cb.__state = 2
+        return aio_h.AIO_CANCELED
+    }
+    return aio_h.AIO_ALLDONE
+}
+
+__aio_close :: proc(fd: i32) i32 {
+    _ = fd
+    return 0
+}
+
+__aio_atfork :: proc(who: i32) void {
+    _ = who
+}

@@ -1,0 +1,28 @@
+package libc
+
+// Derived from musl-1.2.5/src/termios/cfsetospeed.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <termios.h>
+// #include <sys/ioctl.h>
+// #include <errno.h>
+
+errno_mod :: import "libc/include/errno"
+
+cfsetospeed :: proc(tio: *struct termios, speed: speed_t) i32 {
+    if (speed & ~CBAUD) != 0 {
+        errno_mod.errno().* = errno_mod.EINVAL
+        return -1
+    }
+    tio.c_cflag &= ~CBAUD
+    tio.c_cflag |= speed.(tcflag_t)
+    return 0
+}
+
+cfsetispeed :: proc(tio: *struct termios, speed: speed_t) i32 {
+    return if speed != 0 { cfsetospeed(tio, speed) } else { 0 }
+}
+
+cfsetspeed :: proc(tio: *struct termios, speed: speed_t) i32 {
+    return cfsetospeed(tio, speed)
+}

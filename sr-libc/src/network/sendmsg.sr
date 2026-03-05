@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/sendmsg.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <limits.h>
+// #include <string.h>
+// #include <errno.h>
+// #include <syscall.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+sendmsg :: proc(fd: i32, msg: *const msghdr, flags: i32) isize {
+    r := sc.syscall3_ret(nums.SYS_sendmsg.(i64), fd.(i64), msg.^usize.(i64), flags.(i64))
+    return r.(isize)
+}

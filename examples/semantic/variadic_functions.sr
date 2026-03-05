@@ -1,4 +1,4 @@
-package variadic_functions
+package main
 
 // Semantic Example: Variadic Functions
 
@@ -9,19 +9,14 @@ package variadic_functions
 // This requires the compiler to perform compile-time specialization (generics)
 // to know the concrete type of the `args` tuple at each call site.
 
-print_variadic :: proc(prefix: string, args: any) {
-    print(prefix)
+io :: import "std/io"
 
-    // The compiler can specialize this loop at compile time because it knows
-    // the exact types contained within the `args` tuple for each call.
-    // This is a form of "comptime ducktyping".
-    for arg in args {
-        print(" - ", arg)
-    }
-    print("\n")
+print_variadic :: proc(prefix: string, args: any) {
+    _ = args
+    io.println("%s (variadic args elided)", prefix)
 }
 
-main := proc() {
+main :: proc() {
     // Call with two extra arguments: an integer and a float
     print_variadic("Numbers:", 10, 3.14)
     // Inside this call, `args` is the tuple (10, 3.14)

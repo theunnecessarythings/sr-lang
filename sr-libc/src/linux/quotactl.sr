@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/quotactl.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+quotactl :: proc(cmd: i32, special: *const u8, id: i32, addr: *void) i32 {
+    r := sc.syscall4_ret(nums.SYS_quotactl.(i64), cmd.(i64), special.^usize.(i64), id.(i64), addr.^usize.(i64))
+    return r.(i32)
+}

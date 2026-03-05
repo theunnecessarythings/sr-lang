@@ -1,0 +1,36 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/pwritev2.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+writev_mod :: import "libc/src/unistd/writev"
+
+pwritev2 :: proc(fd: i32, iov: *const iovec, count: i32, ofs: alltypes.off_t, flags: i32) isize {
+    if flags == 0 {
+        if ofs == -1 {
+            return writev_mod.writev(fd, iov, count)
+        }
+        off := ofs.(i64)
+        r := sc.syscall5_ret(
+            nums.SYS_pwritev.(i64),
+            fd.(i64),
+            iov.^usize.(i64),
+            count.(i64),
+            off,
+            (off >> 32),
+        )
+        return r.(isize)
+    }
+    off2 := ofs.(i64)
+    r2 := sc.syscall6_ret(
+        nums.SYS_pwritev2.(i64),
+        fd.(i64),
+        iov.^usize.(i64),
+        count.(i64),
+        off2,
+        (off2 >> 32),
+        flags.(i64),
+    )
+    return r2.(isize)
+}

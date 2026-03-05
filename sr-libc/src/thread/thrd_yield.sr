@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/thrd_yield.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+thrd_yield :: proc() void {
+    _ = sc.syscall0(nums.SYS_sched_yield.(i64))
+}

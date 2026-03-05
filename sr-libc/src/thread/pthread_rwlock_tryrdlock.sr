@@ -1,0 +1,23 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_rwlock_tryrdlock.c
+
+atomic :: import "libc/src/internal/atomic"
+errno_mod :: import "libc/include/errno"
+rw_int :: import "libc/src/thread/pthread_rwlock_internal"
+
+__pthread_rwlock_tryrdlock :: proc(rw: *alltypes.pthread_rwlock_t) i32 {
+    val: i32
+    cnt: i32
+    while true {
+        val = rw_int.rw_lock(rw).*
+        cnt = val & 0x7fffffff
+        if cnt == 0x7fffffff { return errno_mod.EBUSY }
+        if cnt == 0x7ffffffe { return errno_mod.EAGAIN }
+        if atomic.a_cas(rw_int.rw_lock(rw), val, val + 1) == val { return 0 }
+    }
+}
+
+pthread_rwlock_tryrdlock :: proc(rw: *alltypes.pthread_rwlock_t) i32 {
+    return __pthread_rwlock_tryrdlock(rw)
+}

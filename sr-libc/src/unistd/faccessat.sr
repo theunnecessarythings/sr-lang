@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/faccessat.c (simplified).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+errno_mod :: import "libc/include/errno"
+
+faccessat :: proc(fd: i32, path: *const u8, amode: i32, flags: i32) i32 {
+    if flags != 0 {
+        errno_mod.__errno_location().* = errno_mod.EINVAL
+        return -1
+    }
+    r := sc.syscall4_ret(nums.SYS_faccessat.(i64), fd.(i64), path.^usize.(i64), amode.(i64), 0)
+    return r.(i32)
+}

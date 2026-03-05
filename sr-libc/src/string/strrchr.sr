@@ -1,0 +1,31 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/strrchr.c (portable loop).
+
+strrchr :: proc(s: *const u8, c: i32) ?*const u8 {
+    ch := c.(u8)
+    last: ?*const u8 = null
+    i: usize = 0
+    while true {
+        if s[i] == ch {
+            last = &s[i]
+        }
+        if s[i] == 0 { break }
+        i += 1
+    }
+    return last
+}
+
+strrchr_mut :: proc(s: *u8, c: i32) ?*u8 {
+    ch := c.(u8)
+    last: ?*u8 = null
+    i: usize = 0
+    while true {
+        if s[i] == ch {
+            last = &s[i]
+        }
+        if s[i] == 0 { break }
+        i += 1
+    }
+    return last
+}

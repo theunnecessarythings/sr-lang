@@ -1,0 +1,8 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdlib/gcvt.c.
+
+gcvt :: proc(x: f64, n: i32, b: *u8) *u8 {
+    _ = sprintf(b, "%.*g", n, x)
+    return b
+}

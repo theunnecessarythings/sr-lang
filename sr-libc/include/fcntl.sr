@@ -1,0 +1,102 @@
+package libc
+
+// Derived from musl-1.2.5/include/fcntl.h and arch/generic/bits/fcntl.h
+
+alltypes :: import "libc/include/alltypes"
+
+// Open flags
+O_CREAT :: 0o100
+O_EXCL :: 0o200
+O_NOCTTY :: 0o400
+O_TRUNC :: 0o1000
+O_APPEND :: 0o2000
+O_NONBLOCK :: 0o4000
+O_DSYNC :: 0o10000
+O_SYNC :: 0o4010000
+O_RSYNC :: 0o4010000
+O_DIRECTORY :: 0o200000
+O_NOFOLLOW :: 0o400000
+O_CLOEXEC :: 0o2000000
+
+O_ASYNC :: 0o20000
+O_DIRECT :: 0o40000
+O_LARGEFILE :: 0o100000
+O_NOATIME :: 0o1000000
+O_PATH :: 0o10000000
+O_TMPFILE :: 0o20200000
+O_NDELAY :: O_NONBLOCK
+
+O_ACCMODE :: (0o3 | O_PATH)
+O_RDONLY :: 0
+O_WRONLY :: 1
+O_RDWR :: 2
+
+// fcntl commands
+F_DUPFD :: 0
+F_GETFD :: 1
+F_SETFD :: 2
+F_GETFL :: 3
+F_SETFL :: 4
+
+F_SETOWN :: 8
+F_GETOWN :: 9
+F_SETSIG :: 10
+F_GETSIG :: 11
+
+F_GETLK :: 5
+F_SETLK :: 6
+F_SETLKW :: 7
+
+F_SETOWN_EX :: 15
+F_GETOWN_EX :: 16
+F_GETOWNER_UIDS :: 17
+
+F_DUPFD_CLOEXEC :: 1030
+
+// flock
+flock :: struct {
+    l_type: i16,
+    l_whence: i16,
+    l_start: alltypes.off_t,
+    l_len: alltypes.off_t,
+    l_pid: alltypes.pid_t,
+}
+
+// f_owner_ex (GNU)
+f_owner_ex :: struct {
+    r#type: i32,
+    pid: alltypes.pid_t,
+}
+
+F_OWNER_TID :: 0
+F_OWNER_PID :: 1
+F_OWNER_PGRP :: 2
+
+F_RDLCK :: 0
+F_WRLCK :: 1
+F_UNLCK :: 2
+
+FD_CLOEXEC :: 1
+
+// GNU extensions
+file_handle :: struct {
+    handle_bytes: u32,
+    handle_type: i32,
+    f_handle: [0]u8,
+}
+
+FALLOC_FL_KEEP_SIZE :: 1
+FALLOC_FL_PUNCH_HOLE :: 2
+MAX_HANDLE_SZ :: 128
+SYNC_FILE_RANGE_WAIT_BEFORE :: 1
+SYNC_FILE_RANGE_WRITE :: 2
+SYNC_FILE_RANGE_WAIT_AFTER :: 4
+SPLICE_F_MOVE :: 1
+SPLICE_F_NONBLOCK :: 2
+SPLICE_F_MORE :: 4
+SPLICE_F_GIFT :: 8
+
+// SEEK values
+SEEK_SET :: 0
+SEEK_CUR :: 1
+SEEK_END :: 2

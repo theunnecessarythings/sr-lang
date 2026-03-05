@@ -1,12 +1,17 @@
 pub const c = @cImport({
     @cInclude("mlir-c/IR.h");
+    @cInclude("mlir-c/Dialect/Arith.h");
+    @cInclude("mlir-c/Dialect/ControlFlow.h");
     @cInclude("mlir-c/Dialect/Func.h");
+    @cInclude("mlir-c/Dialect/Math.h");
+    @cInclude("mlir-c/Dialect/MemRef.h");
     @cInclude("mlir-c/RegisterEverything.h");
     @cInclude("mlir-c/ExecutionEngine.h");
     @cInclude("mlir-c/BuiltinAttributes.h");
     @cInclude("mlir-c/BuiltinTypes.h");
     @cInclude("mlir-c/Dialect/LLVM.h");
     @cInclude("mlir-c/Dialect/SCF.h");
+    @cInclude("mlir-c/Dialect/Tensor.h");
     @cInclude("mlir-c/Diagnostics.h");
     @cInclude("mlir-c/Pass.h");
     @cInclude("mlir-c/Target/LLVMIR.h");
@@ -2882,6 +2887,17 @@ pub const Type = struct {
 
     pub fn getFloat64Type(ctx: Context) Type {
         return Type{ .handle = c.mlirF64TypeGet(ctx.handle) };
+    }
+
+    /// Float128 Type (fallback via parsing when C API lacks dedicated entrypoints).
+    pub fn isAFloat128(self: Type) bool {
+        return self.isAFloat() and self.getFloatBitwidth() == 128;
+    }
+
+    pub fn getFloat128Type(ctx: Context) Type {
+        const parsed = Type.parseGet(ctx, StringRef.from("f128"));
+        std.debug.assert(!parsed.isNull());
+        return parsed;
     }
 
     /// TF32 Type

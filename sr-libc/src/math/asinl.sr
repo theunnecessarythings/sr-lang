@@ -1,0 +1,54 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/asinl.c (113-bit path).
+
+basic :: import "libc/src/math/basic"
+inv :: import "libc/src/math/invtrigl"
+libm :: import "libc/src/math/libm_internal"
+
+close_to_one :: fn(bits: u128) bool {
+    top := ((bits >> 96) & 0xffff)
+    return top >= 0xee00
+}
+
+clear_bottom :: fn(bits: u128) u128 {
+    return bits & ~0xffffffffffffffffu128
+}
+
+asinl :: proc(x: f128) f128 {
+    bits := x.^u128
+    exp := ((bits >> 112) & 0x7fff).(u16)
+    sign := (bits >> 127) != 0
+    z: f128
+    r: f128
+    s: f128
+
+    if exp >= 0x3fff {
+        if x == 1.0 or x == -1.0 { return x * inv.pio2_hi + 0x1p-120 }
+        return 0.0 / (x - x)
+    }
+
+    if exp < (0x3fff - 1) {
+        if exp < 0x3fff - (113 + 1) / 2 {
+            libm.fp_force_evall(x + 0x1p120)
+            return x
+        }
+        return x + x * inv.__invtrigl_R(x * x)
+    }
+
+    z = (1.0 - basic.fabsl(x)) * 0.5
+    s = sqrtl(z)
+    r = inv.__invtrigl_R(z)
+
+    if close_to_one(bits) {
+        x = inv.pio2_hi - (2.0 * (s + s * r) - inv.pio2_lo)
+    } else {
+        u := s.^u128
+        u = clear_bottom(u)
+        f := u.^f128
+        c := (z - f * f) / (s + f)
+        x = 0.5 * inv.pio2_hi - (2.0 * s * r - (inv.pio2_lo - 2.0 * c) - (0.5 * inv.pio2_hi - 2.0 * f))
+    }
+
+    return if sign { -x } else { x }
+}

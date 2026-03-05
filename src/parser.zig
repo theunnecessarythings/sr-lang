@@ -482,6 +482,8 @@ fn parseDecl(self: *Parser) anyerror!cst.DeclId {
     if (self.cur.tag == .keyword_test) return self.parseTestDecl();
 
     const loc = self.toLocId(self.cur.loc);
+    const decl_attrs = try self.parseOptionalAttributes();
+    if (!decl_attrs.isNone()) while (self.cur.tag == .eos) self.advance();
     const lhs_or_rhs = try self.parseExpr(0, .expr);
     var flags: cst.Rows.DeclFlags = .{ .is_const = false, .is_assign = false };
     var ty_opt: cst.OptExprId = .none();
@@ -565,6 +567,17 @@ fn parseDecl(self: *Parser) anyerror!cst.DeclId {
 
     if (flags.is_const and !lhs_opt.isNone()) {
         method_path = try self.tryMethodPath(lhs_opt.unwrap());
+    }
+
+    if (!decl_attrs.isNone()) {
+        const row = self.cst_u.exprs.index.rows.items[rhs_id.toRaw()];
+        switch (self.cst_u.kind(rhs_id)) {
+            .Function => self.cst_u.exprs.Function.col("attrs")[row] = decl_attrs,
+            .StructType => self.cst_u.exprs.StructType.col("attrs")[row] = decl_attrs,
+            .EnumType => self.cst_u.exprs.EnumType.col("attrs")[row] = decl_attrs,
+            .UnionType => self.cst_u.exprs.UnionType.col("attrs")[row] = decl_attrs,
+            else => {},
+        }
     }
 
     return self.cst_u.exprs.addDeclRow(.{
@@ -748,9 +761,9 @@ fn nud(self: *Parser, tag: Token.Tag, comptime mode: ParseMode) anyerror!cst.Exp
             self.advance();
             const next = self.nxt.tag;
             // Special case: labeled loop
-            if (self.cur.tag == .colon and (next == .keyword_for or next == .keyword_while)) {
+            if (self.cur.tag == .colon and (next == .keyword_for or next == .keyword_while or next == .keyword_match)) {
                 self.advance();
-                break :blk try self.parseLabeledLoop(.some(name));
+                break :blk try self.parseLabeledControl(.some(name));
             }
             break :blk self.addExpr(.Ident, .{ .name = name, .loc = loc });
         },
@@ -809,7 +822,7 @@ fn nud(self: *Parser, tag: Token.Tag, comptime mode: ParseMode) anyerror!cst.Exp
         },
         .keyword_if => try self.parseIfExpr(),
         .keyword_while => try self.parseWhileExpr(),
-        .keyword_match => try self.parseMatchExpr(),
+        .keyword_match => try self.parseMatchExprWithLabel(.none()),
         .keyword_for => try self.parseForExpr(),
         .keyword_break => blk: {
             const tok = self.cur;
@@ -839,7 +852,11 @@ fn nud(self: *Parser, tag: Token.Tag, comptime mode: ParseMode) anyerror!cst.Exp
                 try self.expect(.identifier);
                 label = .some(self.intern(self.slice(name)));
             }
-            break :blk self.addExpr(.Continue, .{ .label = label, .loc = loc });
+            var value: cst.OptExprId = .none();
+            if (!self.isStmtTerminator()) {
+                value = .some(try self.parseExpr(0, .expr));
+            }
+            break :blk self.addExpr(.Continue, .{ .label = label, .value = value, .loc = loc });
         },
         .keyword_unreachable => blk: {
             const loc = self.toLocId(self.cur.loc);
@@ -1418,7 +1435,7 @@ fn parseWhileExpr(self: *Parser) !cst.ExprId {
 }
 
 /// Parse a `match` expression with multiple arms.
-fn parseMatchExpr(self: *Parser) !cst.ExprId {
+fn parseMatchExprWithLabel(self: *Parser, label: cst.OptStrId) !cst.ExprId {
     const start_loc_tok = self.cur; // "match"
     self.advance();
     const scrutinee = try self.parseExpr(0, .expr_no_struct);
@@ -1461,6 +1478,7 @@ fn parseMatchExpr(self: *Parser) !cst.ExprId {
     return self.addExpr(.Match, .{
         .expr = scrutinee,
         .arms = arms_range,
+        .label = label,
         .loc = self.toLocId(start_loc_tok.loc),
     });
 }
@@ -1488,12 +1506,13 @@ fn parseForExpr(self: *Parser) !cst.ExprId {
     return self.parseForExprWithLabel(.none());
 }
 
-// label: for/while ...
-/// Parse a loop that may carry a label `lbl`.
-fn parseLabeledLoop(self: *Parser, lbl: cst.OptStrId) !cst.ExprId {
+// label: for/while/match ...
+/// Parse a control form that may carry a label `lbl`.
+fn parseLabeledControl(self: *Parser, lbl: cst.OptStrId) !cst.ExprId {
     return switch (self.cur.tag) {
         .keyword_for => self.parseForExprWithLabel(lbl),
         .keyword_while => self.parseWhileExprWithLabel(lbl),
+        .keyword_match => self.parseMatchExprWithLabel(lbl),
         else => {
             const got = self.cur;
             self.errorNote(
@@ -1905,7 +1924,11 @@ fn parseSlicePattern(self: *Parser) anyerror!cst.PatternId {
 //==============================================================
 /// Parse the expression used for the end of a range pattern.
 fn parseConstExprForRangeEnd(self: *Parser) !cst.ExprId {
-    return self.parseExpr(0, .expr_no_struct);
+    // Do not let `|` be consumed as a binary operator inside a range bound,
+    // since `|` separates pattern alternatives.
+    const p = infix_bp_table[@intFromEnum(Token.Tag.b_or)].?;
+    const barrier: u8 = p[1] + 1;
+    return self.parseExpr(barrier, .expr_no_struct);
 }
 
 //==============================================================

@@ -1,0 +1,50 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/fgets.c.
+
+memchr_mod :: import "libc/src/string/memchr"
+memcpy_mod :: import "libc/src/string/memcpy"
+
+min :: fn(a: usize, b: usize) usize { if a < b { return a } return b }
+
+fgets :: proc(s: *u8, n: i32, f: *alltypes.FILE) ?*u8 {
+    p := s
+
+    _ = __lockfile(f)
+
+    if n <= 1 {
+        f.mode = f.mode | (f.mode - 1)
+        _ = __unlockfile(f)
+        if n < 1 { return null }
+        s.* = 0
+        return s
+    }
+    remaining := (n - 1).(usize)
+
+    while remaining != 0 {
+        if f.rpos != f.rend {
+            z := memchr_mod.memchr(f.rpos, 10, f.rend.^usize - f.rpos.^usize)
+            k := if z != null { (z?.^usize - f.rpos.^usize + 1).(usize) } else { (f.rend.^usize - f.rpos.^usize) }
+            k = min(k, remaining)
+            _ = memcpy_mod.memcpy(p.^*void, f.rpos.^*const void, k)
+            f.rpos = f.rpos + k
+            p = p + k
+            remaining -= k
+            if z != null or remaining == 0 { break }
+        }
+        c := fgetc(f)
+        if c < 0 {
+            if p == s or feof(f) == 0 { s = null }
+            break
+        }
+        remaining -= 1
+        p.* = c.(u8)
+        p = p + 1
+        if c == 10 { break }
+    }
+
+    if s != null { p.* = 0 }
+
+    _ = __unlockfile(f)
+    return s
+}

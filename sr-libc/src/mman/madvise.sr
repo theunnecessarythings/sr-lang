@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/mman/madvise.c
+
+syscall :: import "libc/src/syscall"
+
+SYS_madvise :: 28
+
+__madvise :: proc(addr: *void, len: usize, advice: i32) i32 {
+    return syscall.syscall3(SYS_madvise, addr.(u64), len, advice.(u64)).(i32)
+}
+
+madvise :: __madvise

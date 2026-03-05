@@ -1,0 +1,13 @@
+package math
+
+// examples/imports/math_lib.sr
+// A simple "library" file to be imported.
+
+Vector :: struct {
+    x: f64,
+    y: f64,
+}
+
+add :: proc(a: Vector, b: Vector) Vector {
+    return Vector{ x: a.x + b.x, y: a.y + b.y }
+}

@@ -1,0 +1,7 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdlib/div.c.
+
+div :: proc(num: i32, den: i32) div_t {
+    return div_t{ quot: num / den, rem: num % den }
+}

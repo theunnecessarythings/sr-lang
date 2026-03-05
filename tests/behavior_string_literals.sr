@@ -35,10 +35,10 @@ test "literals: string with carriage return escape" {
 test "literals: raw string" {
     s := r"No\nEscapes"
     // Expect literal backslash and n
-    if !testing.expect_equal_str("No\nEscapes", s) { return Error.Fail }
+    if !testing.expect_equal_str("No\\nEscapes", s) { return Error.Fail }
 }
 
 test "literals: hashed raw string" {
     s := r#"Hash \" inside\n"#
-    if !testing.expect_equal_str("Hash \" inside\n", s) { return Error.Fail }
+    if !testing.expect_equal_str("Hash \\\" inside\\n", s) { return Error.Fail }
 }

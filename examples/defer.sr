@@ -2,34 +2,31 @@ package main
 
 // Defer and Errdefer
 
-// A procedure demonstrating defer and errdefer.
-process_resource :: proc() bool!Error {
-    print("Opening resource...")
-    resource := acquire_resource()! // Assume this can fail
+io :: import "std/io"
 
-    // `defer` runs when the procedure exits, for any reason (success or error).
-    // It's useful for cleanup like closing files or releasing locks.
-    defer print("Closing resource...")
+Err :: error { Fail }
 
-    // `errdefer` only runs if the procedure exits because of an error.
-    // It's useful for cleanup that's only needed on failure, like deleting
-    // a partially created file.
-    errdefer print("An error occurred. Rolling back transaction.")
-
-    // Use the resource, which might also produce an error.
-    use_resource(resource)! 
-
-    print("Resource processed successfully.")
-    return true
+errdefer_test :: proc(p: *i32, fail: bool) Err!i32 {
+    errdefer { p.* = 99; }
+    p.* = 1
+    if fail { return Err.Fail }
+    return 0
 }
 
 main := proc() {
-    print("--- Running successful case ---")
-    process_resource() catch {} // Ignore error for this example run
-
-    print("\n--- Running failure case ---")
-    // Assume `acquire_resource` is now rigged to fail
-    process_resource_that_fails() catch |err| {
-       print("Caught expected error: ", err)
+    io.println("--- Defer ---", 0)
+    x := 0
+    {
+        defer { x = 1; }
     }
+    io.println("x=%d", x)
+
+    io.println("\n--- Errdefer ---", 0)
+    val := 0
+    _ = errdefer_test(&val, true) catch 0
+    io.println("val (error)=%d", val)
+
+    val = 0
+    _ = errdefer_test(&val, false) catch 0
+    io.println("val (success)=%d", val)
 }

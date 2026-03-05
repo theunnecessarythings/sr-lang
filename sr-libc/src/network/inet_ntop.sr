@@ -1,0 +1,71 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/inet_ntop.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <arpa/inet.h>
+// #include <errno.h>
+// #include <stdio.h>
+// #include <string.h>
+
+errno_mod :: import "libc/include/errno"
+memcmp_mod :: import "libc/src/string/memcmp"
+memmove_mod :: import "libc/src/string/memmove"
+strspn_mod :: import "libc/src/string/strspn"
+strlen_mod :: import "libc/src/string/strlen"
+strcpy_mod :: import "libc/src/string/strcpy"
+
+inet_ntop :: proc(af: i32, a0: *const void restrict, s: *char restrict, l: socklen_t) *char {
+    a := anull
+    buf: [100]u8
+
+    switch af {
+        AF_INET => {
+            if snprintf(s.^*u8, l.(usize), "%d.%d.%d.%d", a[0], a[1], a[2], a[3]) < l.(i32) {
+                return s
+            }
+        },
+        AF_INET6 => {
+            if memcmp_mod.memcmp(a.^*const void, "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff", 12) != 0 {
+                _ = snprintf(&buf[0], 100, "%x:%x:%x:%x:%x:%x:%x:%x",
+                    256 * a[0].(i32) + a[1].(i32), 256 * a[2].(i32) + a[3].(i32),
+                    256 * a[4].(i32) + a[5].(i32), 256 * a[6].(i32) + a[7].(i32),
+                    256 * a[8].(i32) + a[9].(i32), 256 * a[10].(i32) + a[11].(i32),
+                    256 * a[12].(i32) + a[13].(i32), 256 * a[14].(i32) + a[15].(i32))
+            } else {
+                _ = snprintf(&buf[0], 100, "%x:%x:%x:%x:%x:%x:%d.%d.%d.%d",
+                    256 * a[0].(i32) + a[1].(i32), 256 * a[2].(i32) + a[3].(i32),
+                    256 * a[4].(i32) + a[5].(i32), 256 * a[6].(i32) + a[7].(i32),
+                    256 * a[8].(i32) + a[9].(i32), 256 * a[10].(i32) + a[11].(i32),
+                    a[12], a[13], a[14], a[15])
+            }
+
+            i: usize = 0
+            best: usize = 0
+            max: usize = 2
+            while buf[i] != 0 {
+                if i != 0 && buf[i] != ':'.(u8) { i += 1; continue }
+                j := strspn_mod.strspn((&buf[i]).^*u8, ":0")
+                if j > max { best = i; max = j }
+                i += 1
+            }
+            if max > 3 {
+                buf[best] = ':'.(u8)
+                buf[best + 1] = ':'.(u8)
+                _ = memmove_mod.memmove((&buf[best + 2]).^*void, (&buf[best + max]).^*const void, i - best - max + 1)
+            }
+            if strlen_mod.strlen(&buf[0]) < l.(usize) {
+                _ = strcpy_mod.strcpy(s.^*u8, &buf[0])
+                return s
+            }
+        },
+        else => {
+            errno_mod.errno().* = errno_mod.EAFNOSUPPORT
+            return null
+        },
+    }
+
+    errno_mod.errno().* = errno_mod.ENOSPC
+    return null
+}

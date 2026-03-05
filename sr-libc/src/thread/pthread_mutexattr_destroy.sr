@@ -1,0 +1,8 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_mutexattr_destroy.c
+
+pthread_mutexattr_destroy :: proc(a: *pthread_mutexattr_t) i32 {
+    _ = a
+    return 0
+}

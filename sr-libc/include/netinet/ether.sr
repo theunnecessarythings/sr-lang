@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/include/netinet/ether.h (minimal subset).
+
+ether_addr :: struct { ether_addr_octet: [6]u8 }
+
+ether_aton_r :: proc(x: *const u8, p_a: *ether_addr) *ether_addr
+ether_aton :: proc(x: *const u8) *ether_addr
+ether_ntoa_r :: proc(p_a: *const ether_addr, x: *u8) *u8
+ether_ntoa :: proc(p_a: *const ether_addr) *u8
+ether_line :: proc(l: *const u8, e: *ether_addr, hostname: *u8) i32
+ether_ntohost :: proc(hostname: *u8, e: *const ether_addr) i32
+ether_hostton :: proc(hostname: *const u8, e: *ether_addr) i32

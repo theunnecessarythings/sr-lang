@@ -1,0 +1,7 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/cpowl.c
+
+cpowl :: proc(z: complex(f128), c: complex(f128)) complex(f128) {
+    return cexpl(c * clogl(z))
+}

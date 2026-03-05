@@ -1,4 +1,4 @@
-package error_handling
+package main
 
 // Error Handling
 
@@ -6,41 +6,49 @@ package error_handling
 // The type `SuccessType!ErrorType` means the operation can return
 // either a `SuccessType` or an `ErrorType`.
 
-// An error type can be any type, but structs or enums are common.
-FileSystemError :: variant {
+// Define an error set.
+FileSystemError :: error {
     NotFound,
     PermissionDenied,
-    DiskFull { bytes_needed: u64 },
+    DiskFull,
 }
 
+io :: import "std/io"
+
 // A function that can fail returns an error union.
-read_file :: proc(path: string) string!FileSystemError {
-    if !exists(path) {
-        return FileSystemError.NotFound
+// Error type comes first: `ErrorType!SuccessType`.
+read_file :: proc(path: string) FileSystemError ! string {
+    if path == "my_file.txt" {
+        return "file content"
     }
-    // ... more logic ...
-    return "file content"
+    if path == "another.txt" {
+        return "default file content"
+    }
+    return FileSystemError.NotFound
 }
 
 // The `!` operator propagates an error. If `read_file` returns an
 // error, the current function will immediately return that same error.
-read_and_process :: proc() void!FileSystemError {
+read_and_process :: proc() FileSystemError ! string {
     content := read_file("my_file.txt")!
-    print("File content:", content)
+    io.print("File content: %s", content)
+    return content
 }
 
 // The `catch` expression handles an error.
-main := proc() {
+main :: proc() {
     // `catch` executes a block if an error is returned.
-    read_and_process() catch |err| {
+    status := read_and_process() catch |err| {
         match err {
-            FileSystemError.NotFound => print("Error: File not found!"),
-            FileSystemError.PermissionDenied => print("Error: No permission!"),
-            FileSystemError.DiskFull{bytes} => print("Error: Disk full, need", bytes),
+            FileSystemError.NotFound => io.print("Error: File not found!", 0),
+            FileSystemError.PermissionDenied => io.print("Error: No permission!", 0),
+            FileSystemError.DiskFull => io.print("Error: Disk full!", 0),
         }
+        "error"
     }
+    _ = status
 
     // `orelse` provides a default value in case of an error.
-    content := read_file("another.txt") orelse "[default content]"
-    print("Content is:", content)
+    content := read_file("another.txt") catch "[default content]"
+    io.print("Content is: %s", content)
 }

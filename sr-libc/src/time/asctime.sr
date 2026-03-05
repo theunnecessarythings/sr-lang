@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/time/asctime.c
+
+alltypes :: import "libc/include/alltypes"
+
+asctime_r :: extern proc(*alltypes.tm, *u8) *u8
+
+asctime :: proc(tm: *alltypes.tm) *u8 {
+    buf: [26]u8  // Static buffer
+    return asctime_r(tm, &buf[0])
+}

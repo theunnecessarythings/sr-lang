@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/legacy/lutimes.c
+
+stat_h :: import "libc/include/sys/stat"
+unistd_h :: import "libc/include/unistd"
+
+lutimes :: proc(filename: *const u8, tv: *timeval) i32 {
+    if tv == null {
+        return utimensat(stat_h.AT_FDCWD, filename, null, stat_h.AT_SYMLINK_NOFOLLOW)
+    }
+    ts: [2]timespec
+    ts[0].tv_sec = tv[0].tv_sec
+    ts[0].tv_nsec = tv[0].tv_usec * 1000
+    ts[1].tv_sec = tv[1].tv_sec
+    ts[1].tv_nsec = tv[1].tv_usec * 1000
+    return unistd_h.utimensat(stat_h.AT_FDCWD, filename, &ts[0], stat_h.AT_SYMLINK_NOFOLLOW)
+}

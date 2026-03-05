@@ -1,0 +1,22 @@
+package libc
+
+// Derived from musl-1.2.5/include/grp.h
+
+alltypes :: import "libc/include/alltypes"
+
+group :: struct {
+    gr_name: *u8,
+    gr_passwd: *u8,
+    gr_gid: alltypes.gid_t,
+    gr_mem: **u8,
+}
+
+getgrnam :: proc(name: *const u8) *group
+getgrgid :: proc(gid: alltypes.gid_t) *group
+getgrnam_r :: proc(name: *const u8, gr: *group, buf: *u8, size: usize, res: **group) i32
+getgrgid_r :: proc(gid: alltypes.gid_t, gr: *group, buf: *u8, size: usize, res: **group) i32
+getgrent :: proc() *group
+setgrent :: proc() void
+fgetgrent :: proc(f: *alltypes.FILE) *group
+putgrent :: proc(gr: *group, f: *alltypes.FILE) i32
+getgrouplist :: proc(user: *const u8, gid: alltypes.gid_t, groups: *alltypes.gid_t, ngroups: *i32) i32

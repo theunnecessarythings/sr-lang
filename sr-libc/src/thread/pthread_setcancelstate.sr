@@ -1,0 +1,24 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_setcancelstate.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <pthread_impl.h>
+
+errno_mod :: import "libc/include/errno"
+pthread_impl :: import "libc/src/internal/pthread_impl"
+
+PTHREAD_CANCEL_ENABLE :: 0
+PTHREAD_CANCEL_DISABLE :: 1
+
+__pthread_setcancelstate :: proc(new: i32, old: *i32) i32 {
+    if new > 2 { return errno_mod.EINVAL }
+    self := pthread_impl.__pthread_self()
+    if old != null { old.* = self.canceldisable.(i32) }
+    self.canceldisable = new.(u8)
+    return 0
+}
+
+pthread_setcancelstate :: proc(new: i32, old: *i32) i32 {
+    return __pthread_setcancelstate(new, old)
+}

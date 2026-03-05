@@ -1,0 +1,21 @@
+package libc
+
+// Derived from musl-1.2.5/src/search/tfind.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <search.h>
+// #include <tsearch.h>
+
+impl :: import "libc/src/search/tsearch_impl"
+
+tfind :: proc(key: *const void, rootp: **void, cmp: proc(*const void, *const void) i32) *void {
+    if rootp == null { return null }
+    n := (rootp.(**impl.node)).*
+    while true {
+        if n == null { break }
+        c := cmp(key, n.key)
+        if c == 0 { break }
+        n = n.a[if c > 0 { 1 } else { 0 }]
+    }
+    return n.^*void
+}

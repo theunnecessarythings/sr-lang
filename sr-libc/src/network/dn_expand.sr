@@ -1,0 +1,48 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/dn_expand.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <resolv.h>
+
+__dn_expand :: proc(base: *const u8, end: *const u8, src: *const u8, dest: *u8, space: i32) i32 {
+    p := src
+    dbegin := dest
+    len: i32 = -1
+    if p == end || space <= 0 { return -1 }
+
+    limit := if space > 254 { 254 } else { space }
+    dend := (&dest[limit.(usize)]).^*u8
+
+    end_base := (end.^usize - base.^usize).(i32)
+    i: i32 = 0
+    while i < end_base {
+        if (p[0] & 0xc0) != 0 {
+            if (&p[1]).^*u8 == end { return -1 }
+            j := (((p[0] & 0x3f).(i32) << 8) | p[1].(i32)).(i32)
+            if len < 0 { len = (p.^usize + 2 - src.^usize).(i32) }
+            if j >= end_base { return -1 }
+            p = (&base[j.(usize)]).^*u8
+        } else if p[0] != 0 {
+            if dest != dbegin { dest[0] = '.'.(u8); dest = (&dest[1]).^*u8 }
+            j := p[0].(i32)
+            p = (&p[1]).^*u8
+            if j >= (end.^usize - p.^usize).(i32) || j >= (dend.^usize - dest.^usize).(i32) { return -1 }
+            k: i32 = 0
+            while k < j {
+                dest[0] = p[0]
+                dest = (&dest[1]).^*u8
+                p = (&p[1]).^*u8
+                k += 1
+            }
+        } else {
+            dest[0] = 0
+            if len < 0 { len = (p.^usize + 1 - src.^usize).(i32) }
+            return len
+        }
+        i += 2
+    }
+    return -1
+}
+
+dn_expand :: __dn_expand

@@ -1,0 +1,26 @@
+package libc
+
+// Derived from musl-1.2.5/include/mqueue.h (minimal).
+
+alltypes :: import "libc/include/alltypes"
+
+mqd_t :: i32
+
+mq_attr :: struct {
+    mq_flags: i64,
+    mq_maxmsg: i64,
+    mq_msgsize: i64,
+    mq_curmsgs: i64,
+    __reserved: [4]i64,
+}
+
+mq_open :: proc(name: *const u8, flags: i32, mode: alltypes.mode_t, attr: *const mq_attr) mqd_t
+mq_close :: proc(mqd: mqd_t) i32
+mq_unlink :: proc(name: *const u8) i32
+mq_send :: proc(mqd: mqd_t, msg: *const u8, len: usize, prio: u32) i32
+mq_timedsend :: proc(mqd: mqd_t, msg: *const u8, len: usize, prio: u32, at: *const alltypes.timespec) i32
+mq_receive :: proc(mqd: mqd_t, msg: *u8, len: usize, prio: *u32) isize
+mq_timedreceive :: proc(mqd: mqd_t, msg: *u8, len: usize, prio: *u32, at: *const alltypes.timespec) isize
+mq_getattr :: proc(mqd: mqd_t, attr: *mq_attr) i32
+mq_setattr :: proc(mqd: mqd_t, new: *const mq_attr, old: *mq_attr) i32
+mq_notify :: proc(mqd: mqd_t, sigev: *void) i32

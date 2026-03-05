@@ -1,0 +1,22 @@
+package libc
+
+// Internal layout helpers for pthread condition variable (musl-compatible).
+
+pthread_cond_u :: union {
+    __i: [12]i32,
+    __vi: [12]i32,
+    __p: [6]*void,
+    __opaque: [48]u8,
+}
+
+pthread_cond_internal :: struct { __u: pthread_cond_u }
+
+cond_internal :: fn(c: *pthread_cond_t) *pthread_cond_internal { return c.^*pthread_cond_internal }
+
+c_shared :: fn(c: *pthread_cond_t) **void { return &cond_internal(c).__u.__p[0] }
+c_head :: fn(c: *pthread_cond_t) **void { return &cond_internal(c).__u.__p[1] }
+c_tail :: fn(c: *pthread_cond_t) **void { return &cond_internal(c).__u.__p[5] }
+c_seq :: fn(c: *pthread_cond_t) *i32 { return &cond_internal(c).__u.__vi[2] }
+c_waiters :: fn(c: *pthread_cond_t) *i32 { return &cond_internal(c).__u.__vi[3] }
+c_clock :: fn(c: *pthread_cond_t) *i32 { return &cond_internal(c).__u.__i[4] }
+c_lock :: fn(c: *pthread_cond_t) *i32 { return &cond_internal(c).__u.__vi[8] }

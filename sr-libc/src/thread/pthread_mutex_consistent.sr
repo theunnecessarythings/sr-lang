@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_mutex_consistent.c
+
+mutex_int :: import "libc/src/thread/pthread_mutex_internal"
+atomic :: import "libc/src/internal/atomic"
+errno_mod :: import "libc/include/errno"
+pthread_impl :: import "libc/src/internal/pthread_impl"
+
+pthread_mutex_consistent :: proc(m: *alltypes.pthread_mutex_t) i32 {
+    old := mutex_int.m_lock(m).*
+    own := old & 0x3fffffff
+    if (mutex_int.m_type(m).* & 4) == 0 || own == 0 || (old & 0x40000000) == 0 { return errno_mod.EINVAL }
+    if own != (pthread_impl.__pthread_self().tid) { return errno_mod.EPERM }
+    atomic.a_and(mutex_int.m_lock(m), ~0x40000000)
+    return 0
+}

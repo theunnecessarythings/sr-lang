@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/multibyte/mbstowcs.c
+
+mbsrtowcs_mod :: import "libc/src/multibyte/mbsrtowcs"
+
+mbstowcs :: proc(ws: *wchar_t, s: *const u8, wn: usize) usize {
+    src := s
+    return mbsrtowcs_mod.mbsrtowcs(ws, &src, wn, null)
+}

@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_getspecific.c
+
+pthread_impl :: import "libc/src/internal/pthread_impl"
+
+__pthread_getspecific :: proc(k: alltypes.pthread_key_t) *void {
+    self := pthread_impl.__pthread_self()
+    if self.tsd == null { return null }
+    return self.tsd[k.(usize)]
+}
+
+pthread_getspecific :: proc(k: alltypes.pthread_key_t) *void {
+    return __pthread_getspecific(k)
+}

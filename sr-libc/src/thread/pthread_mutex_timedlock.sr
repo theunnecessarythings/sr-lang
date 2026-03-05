@@ -1,0 +1,100 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_mutex_timedlock.c
+
+mutex_int :: import "libc/src/thread/pthread_mutex_internal"
+atomic :: import "libc/src/internal/atomic"
+errno_mod :: import "libc/include/errno"
+pthread_impl :: import "libc/src/internal/pthread_impl"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+wait_mod :: import "libc/src/thread/__timedwait"
+time_mod :: import "libc/src/time/time"
+alltypes :: import "libc/include/alltypes"
+
+FUTEX_LOCK_PI :: 6
+FUTEX_UNLOCK_PI :: 7
+
+__futex4 :: fn(addr: *void, op: i32, val: i32, to: *const alltypes.timespec) i32 {
+    return sc.syscall4(nums.SYS_futex.(i64), addr.^usize.(i64), op.(i64), val.(i64), to.^usize.(i64)).(i32)
+}
+
+pthread_mutex_timedlock_pi :: proc(m: *alltypes.pthread_mutex_t, at: *const alltypes.timespec) i32 {
+    typ := mutex_int.m_type(m).*
+    priv := (typ & 128) ^ 128
+    self := pthread_impl.__pthread_self()
+    e: i32
+
+    if priv == 0 { self.robust_list.pending = (&mutex_int.m_next(m)).^*void }
+
+    while true {
+        e = (-__futex4(mutex_int.m_lock(m).^*void, (FUTEX_LOCK_PI | priv), 0, at)).(i32)
+        if e != errno_mod.EINTR { break }
+    }
+    if e != 0 { self.robust_list.pending = null }
+
+    switch e {
+        0 => {
+            if (typ & 4) == 0 && ((mutex_int.m_lock(m).* & 0x40000000) != 0 || mutex_int.m_waiters(m).* != 0) {
+                atomic.a_store(mutex_int.m_waiters(m), -1)
+                _ = sc.syscall3(nums.SYS_futex.(i64), mutex_int.m_lock(m).^usize.(i64), (FUTEX_UNLOCK_PI | priv).(i64), 0)
+                self.robust_list.pending = null
+                break
+            }
+            mutex_int.m_count(m).* = -1
+            return __pthread_mutex_trylock(m)
+        }
+        errno_mod.ETIMEDOUT => { return e }
+        errno_mod.EDEADLK => {
+            if (typ & 3) == mutex_int.PTHREAD_MUTEX_ERRORCHECK { return e }
+        }
+        else => {}
+    }
+    zero: i32 = 0
+    while true {
+        e = wait_mod.__timedwait(&zero, 0, time_mod.CLOCK_REALTIME, at, 1)
+        if e == errno_mod.ETIMEDOUT { break }
+    }
+    return e
+}
+
+__pthread_mutex_timedlock :: proc(m: *alltypes.pthread_mutex_t, at: *const alltypes.timespec) i32 {
+    if (mutex_int.m_type(m).* & 15) == mutex_int.PTHREAD_MUTEX_NORMAL &&
+       atomic.a_cas(mutex_int.m_lock(m), 0, errno_mod.EBUSY) == 0 {
+        return 0
+    }
+
+    typ := mutex_int.m_type(m).*
+    priv := (typ & 128) ^ 128
+
+    r := __pthread_mutex_trylock(m)
+    if r != errno_mod.EBUSY { return r }
+
+    if (typ & 8) != 0 { return pthread_mutex_timedlock_pi(m, at) }
+
+    spins: i32 = 100
+    while spins > 0 && mutex_int.m_lock(m).* != 0 && mutex_int.m_waiters(m).* == 0 {
+        atomic.a_spin()
+        spins -= 1
+    }
+
+    while (r = __pthread_mutex_trylock(m)) == errno_mod.EBUSY {
+        r = mutex_int.m_lock(m).*
+        own := r & 0x3fffffff
+        if own == 0 && (r == 0 || (typ & 4) != 0) { continue }
+        if (typ & 3) == mutex_int.PTHREAD_MUTEX_ERRORCHECK && own == pthread_impl.__pthread_self().tid {
+            return errno_mod.EDEADLK
+        }
+        atomic.a_inc(mutex_int.m_waiters(m))
+        t := r | 0x80000000
+        _ = atomic.a_cas(mutex_int.m_lock(m), r, t)
+        r = wait_mod.__timedwait(mutex_int.m_lock(m), t, time_mod.CLOCK_REALTIME, at, priv)
+        atomic.a_dec(mutex_int.m_waiters(m))
+        if r != 0 && r != errno_mod.EINTR { break }
+    }
+    return r
+}
+
+pthread_mutex_timedlock :: proc(m: *alltypes.pthread_mutex_t, at: *const alltypes.timespec) i32 {
+    return __pthread_mutex_timedlock(m, at)
+}

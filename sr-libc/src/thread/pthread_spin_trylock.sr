@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_spin_trylock.c
+
+atomic :: import "libc/src/internal/atomic"
+errno_mod :: import "libc/include/errno"
+
+pthread_spin_trylock :: proc(s: *pthread_spinlock_t) i32 {
+    return atomic.a_cas(s.^*i32, 0, errno_mod.EBUSY)
+}

@@ -1,0 +1,60 @@
+package libc
+
+// Derived from musl-1.2.5/src/search/tdelete.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <stdlib.h>
+// #include <search.h>
+// #include <tsearch.h>
+
+free_mod :: import "libc/src/malloc/free"
+impl :: import "libc/src/search/tsearch_impl"
+balance_mod :: import "libc/src/search/tsearch"
+
+tdelete :: proc(key: *const void, rootp: **void, cmp: proc(*const void, *const void) i32) *void {
+    if rootp == null { return null }
+
+    a: [impl.MAXH + 1]**impl.node
+    n := (rootp.(**impl.node)).*
+    i: usize = 0
+    a[i] = rootp.(**impl.node)
+    i += 1
+    a[i] = rootp.(**impl.node)
+    i += 1
+
+    while true {
+        if n == null { return null }
+        c := cmp(key, n.key)
+        if c == 0 { break }
+        a[i] = &n.a[if c > 0 { 1 } else { 0 }]
+        i += 1
+        n = n.a[if c > 0 { 1 } else { 0 }]
+    }
+
+    parent := a[i - 2].*
+    child: *impl.node
+    if n.a[0] != null {
+        deleted := n
+        a[i] = &n.a[0]
+        i += 1
+        n = n.a[0]
+        while n.a[1] != null {
+            a[i] = &n.a[1]
+            i += 1
+            n = n.a[1]
+        }
+        deleted.key = n.key
+        child = n.a[0]
+    } else {
+        child = n.a[1]
+    }
+
+    free_mod.free(n.^*void)
+    i -= 1
+    a[i].* = child
+    while i > 1 {
+        i -= 1
+        if balance_mod.__tsearch_balance(a[i]) == 0 { break }
+    }
+    return parent.^*void
+}

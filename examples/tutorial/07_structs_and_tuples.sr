@@ -1,0 +1,30 @@
+package main
+
+io :: import "std/io"
+
+Point :: struct { x: i32, y: i32 }
+
+main :: proc() {
+    // Question: How do we create a struct?
+    // Answer: Use `Type{ field: value }`.
+    p1 := Point{ x: 1, y: 2 }
+
+    // Question: How do we update a struct from another?
+    // Answer: Use `..` to copy remaining fields.
+    p2 := Point{ x: 10, ..p1 }
+
+    io.println("p1=(%d,%d)", p1.x, p1.y)
+    io.println("p2=(%d,%d)", p2.x, p2.y)
+
+    // Question: How do tuples work?
+    // Answer: Use `(a, b)` and access with `.0`, `.1`.
+    t := ("name", 42)
+    name := t.0
+    age := t.1
+
+    // Question: Can we destructure a tuple?
+    // Answer: Yes.
+    (a, b) := (10, 20)
+
+    io.println("%s %d %d %d", name, age, a, b)
+}

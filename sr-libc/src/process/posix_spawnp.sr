@@ -1,0 +1,19 @@
+package libc
+
+// Derived from musl-1.2.5/src/process/posix_spawnp.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <spawn.h>
+// #include <unistd.h>
+
+execvp_mod :: import "libc/src/process/execvp"
+
+posix_spawnp :: proc(res: *alltypes.pid_t restrict, file: *const char restrict, fa: *const posix_spawn_file_actions_t, attr: *const posix_spawnattr_t restrict, argv: **u8, envp: **u8) i32 {
+    spawnp_attr: posix_spawnattr_t
+    spawnp_attr = {}
+    if attr != null {
+        spawnp_attr = attr.*
+    }
+    spawnp_attr.__fn = execvp_mod.__execvpe.^*void
+    return posix_spawn(res, file, fa, &spawnp_attr, argv, envp)
+}

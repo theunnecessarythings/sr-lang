@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/readahead.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+readahead :: proc(fd: i32, pos: alltypes.off_t, len: usize) isize {
+    r := sc.syscall3_ret(nums.SYS_readahead.(i64), fd.(i64), pos.(i64), len.(i64))
+    return r.(isize)
+}

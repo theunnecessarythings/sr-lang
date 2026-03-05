@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/fgetpwent.c
+
+pwd_h :: import "libc/include/pwd"
+getpwent_a :: import "libc/src/passwd/getpwent_a"
+
+__pw_line: [1024]u8
+__pw_res: pwd_h.passwd
+
+fgetpwent :: proc(f: *alltypes.FILE) *pwd_h.passwd {
+    res: *pwd_h.passwd = null
+    r := getpwent_a.__getpwent_a(f, &__pw_res, &__pw_line[0], 1024, &res)
+    if r != 0 { return null }
+    return res
+}

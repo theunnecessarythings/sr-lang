@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/getspnam.c
+
+shadow_h :: import "libc/include/shadow"
+getspnam_r_mod :: import "libc/src/passwd/getspnam_r"
+errno_h :: import "libc/include/errno"
+
+__sp_line: [1024]u8
+__sp_res: shadow_h.spwd
+
+getspnam :: proc(name: *const u8) *shadow_h.spwd {
+    res: *shadow_h.spwd = null
+    r := getspnam_r_mod.getspnam_r(name, &__sp_res, &__sp_line[0], 1024, &res)
+    if r != 0 { errno_h.errno().* = r; return null }
+    return res
+}

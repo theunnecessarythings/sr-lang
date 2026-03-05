@@ -1,0 +1,45 @@
+package libc
+
+// Derived from musl-1.2.5/src/sched/affinity.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sched.h>
+// #include <string.h>
+// #include <pthread_impl.h>
+// #include <syscall.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+memset_mod :: import "libc/src/string/memset"
+pthread_impl :: import "libc/src/internal/pthread_impl"
+
+sched_setaffinity :: proc(tid: alltypes.pid_t, size: usize, set: *const cpu_set_t) i32 {
+    return sc.syscall3_ret(nums.SYS_sched_setaffinity.(i64), tid.(i64), size.(i64), set.^usize.(i64)).(i32)
+}
+
+pthread_setaffinity_np :: proc(td: alltypes.pthread_t, size: usize, set: *const cpu_set_t) i32 {
+    pt := (td.^usize).(usize).^*pthread_impl.pthread
+    r := sc.syscall3(nums.SYS_sched_setaffinity.(i64), pt.tid.(i64), size.(i64), set.^usize.(i64))
+    if r < 0 { return (-r).(i32) }
+    return 0
+}
+
+do_getaffinity :: proc(tid: alltypes.pid_t, size: usize, set: *cpu_set_t) i64 {
+    r := sc.syscall3(nums.SYS_sched_getaffinity.(i64), tid.(i64), size.(i64), set.^usize.(i64))
+    if r < 0 { return r }
+    if r.(usize) < size {
+        _ = memset_mod.memset(((set.^*u8).^usize + r.(usize)).(usize).^*void, 0, size - r.(usize))
+    }
+    return 0
+}
+
+sched_getaffinity :: proc(tid: alltypes.pid_t, size: usize, set: *cpu_set_t) i32 {
+    return sc.__syscall_ret(do_getaffinity(tid, size, set)).(i32)
+}
+
+pthread_getaffinity_np :: proc(td: alltypes.pthread_t, size: usize, set: *cpu_set_t) i32 {
+    pt := (td.^usize).(usize).^*pthread_impl.pthread
+    r := do_getaffinity(pt.tid, size, set)
+    if r < 0 { return (-r).(i32) }
+    return 0
+}

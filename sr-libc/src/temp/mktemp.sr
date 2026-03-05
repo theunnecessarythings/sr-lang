@@ -1,0 +1,55 @@
+package libc
+
+// Derived from musl-1.2.5/src/temp/mktemp.c
+
+errno_h :: import "libc/include/errno"
+string_h :: import "libc/src/string"
+stat_mod :: import "libc/src/stat/stat"
+
+__randname :: extern proc(*u8) *u8
+
+mktemp :: proc(template: *u8) *u8 {
+    l := string_h.strlen(template)
+    retries: i32 = 100
+    
+    if l < 6 {
+        errno_h.errno().* = errno_h.EINVAL
+        template[0] = 0
+        return template
+    }
+    
+    // Check last 6 chars are XXXXXX
+    i: usize = 0
+    valid := true
+    while i < 6 {
+        if template[l - 6 + i] != 'X'.(u8) {
+            valid = false
+            break
+        }
+        i += 1
+    }
+    
+    if !valid {
+        errno_h.errno().* = errno_h.EINVAL
+        template[0] = 0
+        return template
+    }
+    
+    // Try to find non-existent name
+    st: stat
+    while retries > 0 {
+        __randname(template + l - 6)
+        if stat_mod.stat(template, &st) != 0 {
+            // stat failed, likely doesn't exist
+            if errno_h.errno().* != errno_h.ENOENT {
+                template[0] = 0
+            }
+            return template
+        }
+        retries -= 1
+    }
+    
+    template[0] = 0
+    errno_h.errno().* = errno_h.EEXIST
+    return template
+}

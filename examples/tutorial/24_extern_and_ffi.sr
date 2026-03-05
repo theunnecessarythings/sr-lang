@@ -1,0 +1,11 @@
+package main
+
+// Question: How do we call C functions?
+// Answer: Declare them with `extern`.
+
+printf :: extern proc(fmt: *const u8, args: any) i32
+
+main :: proc() {
+    // The format string must be a C string.
+    _ = printf("extern: %d\n".ptr, 42)
+}

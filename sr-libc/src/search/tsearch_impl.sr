@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/search/tsearch.h
+
+MAXH :: (sizeof(*void) * 8 * 3 / 2)
+
+node :: struct {
+    key: *const void,
+    a: [2]*node,
+    h: i32,
+}

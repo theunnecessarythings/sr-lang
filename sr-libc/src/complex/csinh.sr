@@ -1,0 +1,66 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/csinh.c
+
+impl :: import "libc/src/complex/complex_impl"
+ldexp_mod :: import "libc/src/complex/__cexp"
+
+huge :: 0x1p1023
+
+csinh :: proc(z: complex(f64)) complex(f64) {
+    x := z.real
+    y := z.imag
+    hx: u32 = 0
+    hy: u32 = 0
+    lx: u32 = 0
+    ly: u32 = 0
+
+    impl.get_f64_words(x, &hx, &lx)
+    impl.get_f64_words(y, &hy, &ly)
+
+    ix := hx & 0x7fffffff
+    iy := hy & 0x7fffffff
+
+    if ix < 0x7ff00000 and iy < 0x7ff00000 {
+        if (iy | ly) == 0 {
+            return impl.cmplx(sinh(x), y)
+        }
+        if ix < 0x40360000 {
+            return impl.cmplx(sinh(x) * cos(y), cosh(x) * sin(y))
+        }
+        if ix < 0x40862e42 {
+            h := exp(fabs(x)) * 0.5
+            return impl.cmplx(copysign(h, x) * cos(y), h * sin(y))
+        }
+        if ix < 0x4096bbaa {
+            w := ldexp_mod.__ldexp_cexp(impl.cmplx(fabs(x), y), -1)
+            return impl.cmplx(w.real * copysign(1.0, x), w.imag)
+        }
+        h := huge * x
+        return impl.cmplx(h * cos(y), h * h * sin(y))
+    }
+
+    if (ix | lx) == 0 and iy >= 0x7ff00000 {
+        return impl.cmplx(copysign(0.0, x * (y - y)), y - y)
+    }
+
+    if (iy | ly) == 0 and ix >= 0x7ff00000 {
+        if (((hx & 0xfffff) | lx) == 0) {
+            return impl.cmplx(x, y)
+        }
+        return impl.cmplx(x, copysign(0.0, y))
+    }
+
+    if ix < 0x7ff00000 and iy >= 0x7ff00000 {
+        return impl.cmplx(y - y, x * (y - y))
+    }
+
+    if ix >= 0x7ff00000 and ((hx & 0xfffff) | lx) == 0 {
+        if iy >= 0x7ff00000 {
+            return impl.cmplx(x * x, x * (y - y))
+        }
+        return impl.cmplx(x * cos(y), (1.0 / 0.0) * sin(y))
+    }
+
+    return impl.cmplx((x * x) * (y - y), (x + x) * (y - y))
+}

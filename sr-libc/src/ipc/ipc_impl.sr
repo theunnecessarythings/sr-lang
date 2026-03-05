@@ -1,0 +1,21 @@
+package libc
+
+// Derived from musl-1.2.5/src/ipc/ipc.h
+
+IPCOP_semop :: 1
+IPCOP_semget :: 2
+IPCOP_semctl :: 3
+IPCOP_semtimedop :: 4
+IPCOP_msgsnd :: 11
+IPCOP_msgrcv :: 12
+IPCOP_msgget :: 13
+IPCOP_msgctl :: 14
+IPCOP_shmat :: 21
+IPCOP_shmdt :: 22
+IPCOP_shmget :: 23
+IPCOP_shmctl :: 24
+
+IPC_64 :: 0x100
+IPC_TIME64 :: 0
+
+IPC_CMD :: fn(cmd: i32) i32 { return (cmd & ~IPC_TIME64) | IPC_64 }

@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/select/poll.c
+
+poll_h :: import "libc/include/poll"
+alltypes :: import "libc/include/alltypes"
+
+poll :: proc(fds: *poll_h.pollfd, n: poll_h.nfds_t, timeout: i32) i32 {
+    if timeout < 0 {
+        return ppoll(fds, n, null, null)
+    }
+
+    ts: alltypes.timespec
+    ts.tv_sec = (timeout / 1000).(i64)
+    ts.tv_nsec = ((timeout % 1000).(i64)) * 1000000
+    return ppoll(fds, n, &ts, null)
+}

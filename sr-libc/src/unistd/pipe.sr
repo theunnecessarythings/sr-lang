@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/pipe.c (x86_64).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+pipe :: proc(fds: *i32) i32 {
+    r := sc.syscall1_ret(nums.SYS_pipe.(i64), fds.^usize.(i64))
+    return r.(i32)
+}

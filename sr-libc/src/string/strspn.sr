@@ -1,0 +1,21 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/strspn.c (portable loop).
+
+strspn :: proc(s: *const u8, accept: *const u8) usize {
+    i: usize = 0
+    while s[i] != 0 {
+        matched := false
+        j: usize = 0
+        while accept[j] != 0 {
+            if s[i] == accept[j] {
+                matched = true
+                break
+            }
+            j += 1
+        }
+        if !matched { break }
+        i += 1
+    }
+    return i
+}

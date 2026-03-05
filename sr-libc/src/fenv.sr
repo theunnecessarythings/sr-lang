@@ -1,0 +1,30 @@
+package libc
+
+// fenv definitions (minimal, from std/c.sr).
+
+FE_ALL_EXCEPT :: 0x3f
+FE_DIVBYZERO :: 0x04
+FE_INEXACT :: 0x20
+FE_INVALID :: 0x01
+FE_OVERFLOW :: 0x08
+FE_UNDERFLOW :: 0x10
+FE_DOWNWARD :: 0
+FE_TONEAREST :: 3
+FE_TOWARDZERO :: 1
+FE_UPWARD :: 2
+FE_DFL_ENV :: 0
+
+fenv_t :: struct { data: [64]u8 }
+fexcept_t :: struct { flags: i32 }
+
+feclearexcept :: extern proc(except: i32) i32
+fegetexceptflag :: extern proc(pflag: *mut fexcept_t, except: i32) i32
+feraiseexcept :: extern proc(except: i32) i32
+fesetexceptflag :: extern proc(pflag: *const fexcept_t, except: i32) i32
+fetestexcept :: extern proc(except: i32) i32
+fegetround :: extern proc() i32
+fesetround :: extern proc(mode: i32) i32
+fegetenv :: extern proc(penv: *mut fenv_t) i32
+feholdexcept :: extern proc(penv: *mut fenv_t) i32
+fesetenv :: extern proc(penv: *const fenv_t) i32
+feupdateenv :: extern proc(penv: *const fenv_t) i32

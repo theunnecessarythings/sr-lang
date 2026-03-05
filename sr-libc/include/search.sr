@@ -1,0 +1,50 @@
+package libc
+
+// Derived from musl-1.2.5/include/search.h
+
+ACTION :: enum i32 { FIND, ENTER }
+VISIT :: enum i32 { preorder, postorder, endorder, leaf }
+
+ENTRY :: struct {
+    key: *u8,
+    data: *void,
+}
+
+__tab :: struct {
+    entries: *ENTRY,
+    mask: usize,
+    used: usize,
+}
+
+hsearch_data :: struct {
+    __tab: *__tab,
+    __unused1: u32,
+    __unused2: u32,
+}
+
+hcreate :: proc(nel: usize) i32
+hdestroy :: proc() void
+hsearch :: proc(item: ENTRY, action: ACTION) *ENTRY
+
+hcreate_r :: proc(nel: usize, htab: *hsearch_data) i32
+hdestroy_r :: proc(htab: *hsearch_data) void
+hsearch_r :: proc(item: ENTRY, action: ACTION, retval: **ENTRY, htab: *hsearch_data) i32
+
+insque :: proc(element: *void, pred: *void) void
+remque :: proc(element: *void) void
+
+lsearch :: proc(key: *const void, base: *void, nelp: *usize, width: usize, compar: proc(*const void, *const void) i32) *void
+lfind :: proc(key: *const void, base: *const void, nelp: *usize, width: usize, compar: proc(*const void, *const void) i32) *void
+
+tdelete :: proc(key: *const void, rootp: **void, cmp: proc(*const void, *const void) i32) *void
+tfind :: proc(key: *const void, rootp: **void, cmp: proc(*const void, *const void) i32) *void
+tsearch :: proc(key: *const void, rootp: **void, cmp: proc(*const void, *const void) i32) *void
+twalk :: proc(root: *const void, action: proc(*const void, VISIT, i32) void) void
+
+qelem :: struct {
+    q_forw: *qelem,
+    q_back: *qelem,
+    q_data: [1]u8,
+}
+
+tdestroy :: proc(root: *void, freekey: proc(*void) void) void

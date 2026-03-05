@@ -17,7 +17,7 @@ fn parseProgramFromText(gpa: std.mem.Allocator, context: *Context, src: [:0]cons
         var i: usize = 0;
         while (i < context.parse_worklist.items.len) : (i += 1) {
             const work = context.parse_worklist.items[i];
-            work.thread.join();
+            if (work.thread) |t| t.join();
             work.diags.deinit();
             gpa.destroy(work.diags);
             work.parser.cst_u.deinit();
@@ -45,7 +45,7 @@ fn parseProgramFromPath(gpa: std.mem.Allocator, context: *Context, path: []const
         var i: usize = 0;
         while (i < context.parse_worklist.items.len) : (i += 1) {
             const work = context.parse_worklist.items[i];
-            work.thread.join();
+            if (work.thread) |t| t.join();
             work.diags.deinit();
             gpa.destroy(work.diags);
             work.parser.cst_u.deinit();

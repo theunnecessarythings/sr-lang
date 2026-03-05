@@ -1,0 +1,10 @@
+package main
+
+io :: import "std/io"
+
+main :: proc() {
+    // Question: Can we embed MLIR directly?
+    // Answer: Use `mlir` blocks.
+    value: i32 = mlir op { "arith.constant"() {value = 42 : i32} : () -> i32 }
+    io.println("%d", value)
+}

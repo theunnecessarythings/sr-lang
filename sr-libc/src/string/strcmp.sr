@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/strcmp.c (portable loop).
+
+strcmp :: proc(lhs: *const u8, rhs: *const u8) i32 {
+    i: usize = 0
+    while lhs[i] != 0 and rhs[i] != 0 {
+        if lhs[i] != rhs[i] {
+            return lhs[i].(i32) - rhs[i].(i32)
+        }
+        i += 1
+    }
+    return lhs[i].(i32) - rhs[i].(i32)
+}

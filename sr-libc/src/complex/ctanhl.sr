@@ -1,0 +1,7 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/ctanhl.c
+
+ctanhl :: proc(z: complex(f128)) complex(f128) {
+    return ctanh(z.(complex(f64))).(complex(f128))
+}

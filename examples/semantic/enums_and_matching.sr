@@ -1,4 +1,6 @@
-package enums_and_matching
+package main
+
+io :: import "std/io"
 
 // Semantic Example: Variants, Enums and Pattern Matching
 
@@ -12,13 +14,16 @@ WebEvent :: variant {
 // A procedure that processes WebEvents using exhaustive pattern matching.
 process_event :: proc(event: WebEvent) {
     match event {
-        WebEvent.PageLoad => print("Page loaded."),
-        WebEvent.Click{ x, y } => print("User clicked at: ", x, ",", y),
+        WebEvent.PageLoad => io.print("Page loaded.\n", 0),
+        WebEvent.Click{ x, y } => {
+            io.print("User clicked at: x=%d\n", x)
+            io.print("y=%d\n", y)
+        },
         WebEvent.KeyPress(c) => {
             if c == 'q' {
-                print("User pressed 'q', quitting.")
+                io.print("User pressed 'q', quitting.\n", 0)
             } else {
-                print("User pressed key: ", c)
+                io.print("User pressed key: %c\n", c)
             }
         },
         // The match must be exhaustive. If a variant is missing, it should
@@ -26,7 +31,7 @@ process_event :: proc(event: WebEvent) {
     }
 }
 
-main := proc() {
+main :: proc() {
     event1 := WebEvent.PageLoad
     event2 := WebEvent.Click{ x: 100, y: 250 }
     event3 := WebEvent.KeyPress('h')

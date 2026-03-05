@@ -1,0 +1,54 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/log2f.c.
+
+libm :: import "libc/src/math/libm_internal"
+log2fdata :: import "libc/src/math/log2f_data"
+
+N :: (1 << log2fdata.LOG2F_TABLE_BITS)
+OFF :: 0x3f330000u32
+
+log2f :: proc(x: f32) f32 {
+    z: f64
+    r: f64
+    r2: f64
+    p: f64
+    y: f64
+    y0: f64
+    invc: f64
+    logc: f64
+    ix: u32
+    iz: u32
+    top: u32
+    tmp: u32
+    k: i32
+    i: u32
+
+    ix = libm.asuint(x)
+    if libm.WANT_ROUNDING != 0 and ix == 0x3f800000 { return 0.0f }
+    if (ix - 0x00800000) >= (0x7f800000 - 0x00800000) {
+        if ix * 2 == 0 { return libm.__math_divzerof(1) }
+        if ix == 0x7f800000 { return x }
+        if (ix & 0x80000000) != 0 or ix * 2 >= 0xff000000 { return libm.__math_invalidf(x) }
+        ix = libm.asuint(x * 0x1p23f)
+        ix = ix - (23u32 << 23)
+    }
+
+    tmp = ix - OFF
+    i = (tmp >> (23 - log2fdata.LOG2F_TABLE_BITS)) % N.(u32)
+    top = tmp & 0xff800000
+    iz = ix - top
+    k = (tmp.(i32) >> 23)
+    invc = log2fdata.__log2f_data.tab[i.(usize)].invc
+    logc = log2fdata.__log2f_data.tab[i.(usize)].logc
+    z = libm.asfloat(iz).(f64)
+
+    r = z * invc - 1.0
+    y0 = logc + k.(f64)
+    r2 = r * r
+    y = log2fdata.__log2f_data.poly[1] * r + log2fdata.__log2f_data.poly[2]
+    y = log2fdata.__log2f_data.poly[0] * r2 + y
+    p = log2fdata.__log2f_data.poly[3] * r + y0
+    y = y * r2 + p
+    return libm.eval_as_float(y.(f32))
+}

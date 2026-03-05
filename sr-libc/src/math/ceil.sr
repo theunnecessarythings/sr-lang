@@ -1,0 +1,23 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/ceil.c.
+
+libm :: import "libc/src/math/libm_internal"
+
+EPS :: 2.2204460492503131e-16
+toint :: 1.0 / EPS
+
+ceil :: proc(x: f64) f64 {
+    u_bits := libm.asuint64(x)
+    e := ((u_bits >> 52) & 0x7ff).(i32)
+    y: f64
+
+    if e >= 0x3ff + 52 or x == 0.0 { return x }
+    if (u_bits >> 63) != 0 { y = x - toint + toint - x } else { y = x + toint - toint - x }
+    if e <= 0x3ff - 1 {
+        libm.fp_force_eval(y)
+        return if (u_bits >> 63) != 0 { -0.0 } else { 1.0 }
+    }
+    if y < 0.0 { return x + y + 1.0 }
+    return x + y
+}

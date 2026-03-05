@@ -1,0 +1,24 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/timerfd.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+// itimerspec is defined in include/sys/timerfd.sr
+
+timerfd_create :: proc(clockid: i32, flags: i32) i32 {
+    r := sc.syscall2_ret(nums.SYS_timerfd_create.(i64), clockid.(i64), flags.(i64))
+    return r.(i32)
+}
+
+timerfd_settime :: proc(fd: i32, flags: i32, new: *const itimerspec, old: ?*itimerspec) i32 {
+    ptr := if old == null { 0 } else { old.^usize }
+    r := sc.syscall4_ret(nums.SYS_timerfd_settime.(i64), fd.(i64), flags.(i64), new.^usize.(i64), ptr.(i64))
+    return r.(i32)
+}
+
+timerfd_gettime :: proc(fd: i32, cur: *itimerspec) i32 {
+    r := sc.syscall2_ret(nums.SYS_timerfd_gettime.(i64), fd.(i64), cur.^usize.(i64))
+    return r.(i32)
+}

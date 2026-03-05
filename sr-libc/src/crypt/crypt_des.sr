@@ -1,0 +1,49 @@
+package libc
+
+// Derived from musl-1.2.5/src/crypt/crypt_des.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <stdint.h>
+// #include <string.h>
+// #include <crypt_des.h>
+
+ascii_to_bin :: proc(ch: i32) uint32_t {
+    // TODO: Translate function body
+    unreachable
+}
+
+ascii_is_unsafe :: proc(ch: u8) i32 {
+    // TODO: Translate function body
+    unreachable
+}
+
+setup_salt :: proc(salt: uint32_t) uint32_t {
+    // TODO: Translate function body
+    unreachable
+}
+
+__des_setkey :: proc(key: u8, ekey: struct expanded_key) void {
+    // TODO: Translate function body
+    unreachable
+}
+
+__do_des :: proc(l_in: uint32_t, r_in: uint32_t, l_out: uint32_t, r_out: uint32_t, count: uint32_t, saltbits: uint32_t, ekey: struct expanded_key) void {
+    // TODO: Translate function body
+    unreachable
+}
+
+des_cipher :: proc(in: u8, out: u8, count: uint32_t, saltbits: uint32_t, ekey: struct expanded_key) void {
+    // TODO: Translate function body
+    unreachable
+}
+
+_crypt_extended_r_uut :: proc(_key: u8, _setting: u8, output: u8) u8 {
+    // TODO: Translate function body
+    unreachable
+}
+
+__crypt_des :: proc(key: u8, setting: u8, output: u8) u8 {
+    // TODO: Translate function body
+    unreachable
+}
+

@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/tcgetpgrp.c
+
+ioctl_mod :: import "libc/src/misc/ioctl"
+ioctl_consts :: import "libc/include/sys/ioctl"
+
+tcgetpgrp :: proc(fd: i32) i32 {
+    pg: i32 = 0
+    r := ioctl_mod.ioctl(fd, ioctl_consts.TIOCGPGRP, (&pg).^*void)
+    if r < 0 { return -1 }
+    return pg
+}

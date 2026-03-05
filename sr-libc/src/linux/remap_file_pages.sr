@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/remap_file_pages.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+remap_file_pages :: proc(addr: *void, size: usize, prot: i32, pgoff: usize, flags: i32) i32 {
+    r := sc.syscall5_ret(
+        nums.SYS_remap_file_pages.(i64),
+        addr.^usize.(i64),
+        size.(i64),
+        prot.(i64),
+        pgoff.(i64),
+        flags.(i64),
+    )
+    return r.(i32)
+}

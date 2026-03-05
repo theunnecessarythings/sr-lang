@@ -1,0 +1,8 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_rwlock_destroy.c
+
+pthread_rwlock_destroy :: proc(rw: *alltypes.pthread_rwlock_t) i32 {
+    _ = rw
+    return 0
+}

@@ -1,0 +1,19 @@
+package libc
+
+// Derived from musl-1.2.5/include/arpa/inet.h
+
+htonl :: proc(n: u32) u32
+htons :: proc(n: u16) u16
+ntohl :: proc(n: u32) u32
+ntohs :: proc(n: u16) u16
+
+inet_addr :: proc(p: *const char) in_addr_t
+inet_network :: proc(p: *const char) in_addr_t
+inet_ntoa :: proc(in: in_addr) *char
+inet_pton :: proc(af: i32, s: *const char restrict, a0: *void restrict) i32
+inet_ntop :: proc(af: i32, a0: *const void restrict, s: *char restrict, l: socklen_t) *char
+
+inet_aton :: proc(s: *const char, dest: *in_addr) i32
+inet_makeaddr :: proc(n: in_addr_t, h: in_addr_t) in_addr
+inet_lnaof :: proc(in: in_addr) in_addr_t
+inet_netof :: proc(in: in_addr) in_addr_t

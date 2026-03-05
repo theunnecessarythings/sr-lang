@@ -1,0 +1,51 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/proto.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <netdb.h>
+// #include <string.h>
+
+string_h :: import "libc/src/string"
+
+__proto_idx: usize = 0
+__proto_aliases: *u8 = null
+__proto_ent: protoent
+
+__proto_data :: "\x00ip\x00\x01icmp\x00\x02igmp\x00\x03ggp\x00\x04ipencap\x00\x05st\x00\x06tcp\x00\x08egp\x00\x0cpup\x00\x11udp\x00\x14hmp\x00\x16xns-idp\x00\x1brdp\x00\x1diso-tp4\x00\x24xtp\x00\x25ddp\x00\x26idpr-cmtp\x00\x29ipv6\x00\x2bipv6-route\x00\x2cipv6-frag\x00\x2didrp\x00\x2ersvp\x00\x2fgre\x00\x32esp\x00\x33ah\x00\x39skip\x00\x3aipv6-icmp\x00\x3bipv6-nonxt\x00\x3cipv6-opts\x00\x49rspf\x00\x51vmtp\x00\x59ospf\x00\x5eipip\x00\x62encap\x00\x67pim\x00\xffraw"
+
+endprotoent :: proc() void {
+    __proto_idx = 0
+}
+
+setprotoent :: proc(stayopen: i32) void {
+    _ = stayopen
+    __proto_idx = 0
+}
+
+getprotoent :: proc() *protoent {
+    if __proto_idx >= __proto_data.len { return null }
+    __proto_ent.p_proto = __proto_data[__proto_idx].(i32)
+    __proto_ent.p_name = (&__proto_data[__proto_idx + 1]).^*u8
+    __proto_ent.p_aliases = (&__proto_aliases).^**u8
+    __proto_idx += string_h.strlen(__proto_ent.p_name) + 2
+    return &__proto_ent
+}
+
+getprotobyname :: proc(name: *const u8) *protoent {
+    endprotoent()
+    p := getprotoent()
+    while p != null && string_h.strcmp(name, p.p_name) != 0 {
+        p = getprotoent()
+    }
+    return p
+}
+
+getprotobynumber :: proc(num: i32) *protoent {
+    endprotoent()
+    p := getprotoent()
+    while p != null && p.p_proto != num {
+        p = getprotoent()
+    }
+    return p
+}

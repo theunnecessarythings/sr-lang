@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const cst_mod = @import("cst.zig");
 const ast_mod = @import("ast.zig");
 const tir_mod = @import("tir.zig");
@@ -45,8 +46,9 @@ pub const Pipeline = struct {
     tir_prune_unused: bool = true,
     tir_warn_unused: bool = false,
     debug_info: bool = false,
+    use_sr_libc: bool = false,
 
-    pub const Mode = enum { lex, parse, ast, check, tir, tir_liveness, mlir, passes, llvm_ir, llvm_passes, jit, compile, run, test_mode, interpret, repl };
+    pub const Mode = enum { lex, parse, ast, check, tir, tir_liveness, mlir, passes, llvm_ir, llvm_passes, wasm, jit, compile, run, test_mode, interpret, repl };
 
     /// Represents compile-time bindings injected into the interpreter.
     pub const ComptimeBinding = union(enum) {
@@ -63,7 +65,8 @@ pub const Pipeline = struct {
         return &self.mlir_ctx.?;
     }
 
-    pub fn run(self: *Pipeline, src_or_path: []const u8, link_args: []const []const u8, mode: Mode, progress: ?*ProgressReporter, opt_level: ?[]const u8) !Result {
+    pub fn run(self: *Pipeline, src_or_path: []const u8, link_args: []const []const u8, mode: Mode, progress: ?*ProgressReporter, opt_level: ?[]const u8, output_path: ?[]const u8) !Result {
+        const threaded = !builtin.single_threaded and !builtin.cpu.arch.isWasm();
         const fname = if (mode == .repl) "temp.sr" else src_or_path;
         const fid = try self.context.source_manager.add(fname);
         const src = if (mode == .repl) src_or_path else try self.context.source_manager.read(fid);
@@ -75,7 +78,12 @@ pub const Pipeline = struct {
 
         // parsing setup
         var parser = parser_mod.Parser.init(self.gpa, src_z, fid, self.context.diags, self.context);
-        const main_th = try std.Thread.spawn(.{}, parser_mod.Parser.run, .{&parser});
+        var main_th: ?std.Thread = null;
+        if (threaded) {
+            main_th = try std.Thread.spawn(.{}, parser_mod.Parser.run, .{&parser});
+        } else {
+            try parser_mod.Parser.run(&parser);
+        }
         self.context.compilation_unit.mutex.lock();
         try self.context.parse_worklist.append(self.gpa, .{ .path = fname, .file_id = fid, .thread = main_th, .diags = self.context.diags, .parser = &parser });
         self.context.compilation_unit.mutex.unlock();
@@ -138,6 +146,11 @@ pub const Pipeline = struct {
         if (!mod.getOperation().verify()) try self.context.diags.addError(.{ .file_id = fid, .start = 0, .end = 0 }, .mlir_verification_failed, .{gen.diagnostic_data.msg orelse ""});
         if (self.context.diags.anyErrors()) return error.MlirCodegenFailed;
 
+        if (builtin.cpu.arch.isWasm() and mode == .mlir) {
+            try self.printMlirToStdout(mod);
+            return .{ .compilation_unit = self.context.compilation_unit, .mlir_module = mod, .gen = gen, .test_count = t_count };
+        }
+
         if (gen.has_triton_fns and self.context.triton_launches.items.len > 0) try self.runTritonPipeline(&dep_lvls);
 
         if (mode == .mlir) {
@@ -157,10 +170,11 @@ pub const Pipeline = struct {
         const lmode: compile.Mode = switch (mode) {
             .llvm_ir => .llvm_ir,
             .llvm_passes => .llvm_passes,
+            .wasm => .wasm,
             .test_mode => .compile,
             else => .compile,
         };
-        try compile.convert_to_llvm_ir(mod.handle, link_args, lmode, opt_level, self.debug_info);
+        try compile.convert_to_llvm_ir(mod.handle, link_args, lmode, opt_level, self.debug_info, self.use_sr_libc, output_path);
 
         if (self.context.diags.anyErrors()) return error.LLVMIRFailed;
         if (mode == .jit) {
@@ -191,7 +205,7 @@ pub const Pipeline = struct {
             const work = self.context.parse_worklist.items[idx];
             self.context.compilation_unit.mutex.unlock();
 
-            work.thread.join();
+            if (work.thread) |t| t.join();
             if (idx > 0) {
                 const no_note: u32 = 0xFFFF_FFFF;
                 const note_offset: u32 = @intCast(self.context.diags.notes.items.len);
@@ -242,6 +256,7 @@ pub const Pipeline = struct {
     }
 
     fn queueImportParse(self: *Pipeline, fid: u32, path: []const u8) !void {
+        const threaded = !builtin.single_threaded and !builtin.cpu.arch.isWasm();
         self.context.compilation_unit.mutex.lock();
         defer self.context.compilation_unit.mutex.unlock();
 
@@ -264,7 +279,13 @@ pub const Pipeline = struct {
             diag.* = Diagnostics.init(self.gpa, self.context.type_store, self.context.interner);
             const parser = try self.gpa.create(parser_mod.Parser);
             parser.* = parser_mod.Parser.init(self.gpa, src_z, fid, diag, self.context);
-            try self.context.parse_worklist.append(self.gpa, .{ .path = path, .file_id = fid, .thread = try std.Thread.spawn(.{}, parser_mod.Parser.run, .{parser}), .diags = diag, .parser = parser });
+            var th: ?std.Thread = null;
+            if (threaded) {
+                th = try std.Thread.spawn(.{}, parser_mod.Parser.run, .{parser});
+            } else {
+                try parser_mod.Parser.run(parser);
+            }
+            try self.context.parse_worklist.append(self.gpa, .{ .path = path, .file_id = fid, .thread = th, .diags = diag, .parser = parser });
         }
     }
 
@@ -283,6 +304,7 @@ pub const Pipeline = struct {
 
     fn runAstLowering(self: *Pipeline) !void {
         var pkg_iter = self.context.compilation_unit.packages.iterator();
+        const threaded = !builtin.single_threaded and !builtin.cpu.arch.isWasm();
         var threads = std.ArrayList(struct { std.Thread, *lower_to_ast.Lower, []const u8, []const u8 }){};
         defer threads.deinit(self.gpa);
 
@@ -291,12 +313,24 @@ pub const Pipeline = struct {
             while (src_it.next()) |u| {
                 const lp = try self.gpa.create(lower_to_ast.Lower);
                 lp.* = try lower_to_ast.Lower.init(self.gpa, &u.value_ptr.cst.?, self.context, u.value_ptr.file_id);
-                const t = try std.Thread.spawn(.{}, struct {
-                    fn run(l: *lower_to_ast.Lower) !void {
-                        try l.runLower();
+                if (threaded) {
+                    const t = try std.Thread.spawn(.{}, struct {
+                        fn run(l: *lower_to_ast.Lower) !void {
+                            try l.runLower();
+                        }
+                    }.run, .{lp});
+                    try threads.append(self.gpa, .{ t, lp, pkg.key_ptr.*, u.key_ptr.* });
+                } else {
+                    try lp.runLower();
+                    self.context.compilation_unit.mutex.lock();
+                    if (self.context.compilation_unit.packages.getPtr(pkg.key_ptr.*)) |p| {
+                        if (p.sources.getPtr(u.key_ptr.*)) |s| s.ast = lp.ast_unit;
                     }
-                }.run, .{lp});
-                try threads.append(self.gpa, .{ t, lp, pkg.key_ptr.*, u.key_ptr.* });
+                    self.context.compilation_unit.mutex.unlock();
+                    for (lp.dependencies.items) |d| try self.context.compilation_unit.addDependency(lp.file_id, d);
+                    lp.dependencies.deinit(self.gpa);
+                    self.gpa.destroy(lp);
+                }
             }
         }
         for (threads.items) |t| {
@@ -341,7 +375,15 @@ pub const Pipeline = struct {
     }
 
     fn runTritonPipeline(self: *Pipeline, deps: *compile.DependencyLevels) !void {
+        if (builtin.os.tag == .emscripten or builtin.os.tag == .wasi) {
+            return error.TritonNotSupported;
+        }
         if (self.context.triton_launches.items.len == 0) return;
+
+        if (builtin.os.tag == .wasi) {
+            std.debug.print("Warning: Triton GPU codegen skipped in WASM build.\n", .{});
+            return;
+        }
 
         std.fs.cwd().makePath("out/triton_kernels") catch |e| if (e != error.PathAlreadyExists) return e;
 
@@ -389,6 +431,7 @@ pub const Pipeline = struct {
     }
 
     fn dumpMlir(self: *Pipeline, mod: mlir.Module, path: []const u8) !void {
+        if (builtin.cpu.arch.isWasm()) return;
         var buf = std.array_list.Managed(u8).init(self.gpa);
         defer buf.deinit();
         var err = false;
@@ -398,6 +441,16 @@ pub const Pipeline = struct {
             std.fs.cwd().makePath("out") catch |e| if (e != error.PathAlreadyExists) return e;
             try std.fs.cwd().writeFile(.{ .data = sink.list.items, .sub_path = path });
         }
+    }
+
+    fn printMlirToStdout(self: *Pipeline, mod: mlir.Module) !void {
+        var buf = std.array_list.Managed(u8).init(self.gpa);
+        defer buf.deinit();
+        var err = false;
+        var sink = codegen.PrintBuffer{ .list = &buf, .had_error = &err };
+        mod.getOperation().print(codegen.printCallback, &sink);
+        if (err) return error.MlirPrintFailed;
+        std.debug.print("{s}\n", .{buf.items});
     }
 };
 

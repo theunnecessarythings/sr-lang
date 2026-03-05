@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/getservbyname.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <netdb.h>
+
+__servbyname_se: servent
+__servbyname_buf: [2]*u8
+
+getservbyname :: proc(name: *const u8, prots: *const u8) *servent {
+    res: *servent = null
+    if getservbyname_r(name, prots, &__servbyname_se, (&__servbyname_buf[0]).^*u8, sizeof(__servbyname_buf), &res) != 0 {
+        return null
+    }
+    return &__servbyname_se
+}

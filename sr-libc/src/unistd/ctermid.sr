@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/ctermid.c
+
+strcpy_mod :: import "libc/src/string/strcpy"
+
+__ctermid_buf: [16]u8
+
+ctermid :: proc(s: ?*u8) *u8 {
+    if s != null {
+        return strcpy_mod.strcpy(s?, "/dev/tty")
+    }
+    return strcpy_mod.strcpy((&__ctermid_buf[0]).^*u8, "/dev/tty")
+}

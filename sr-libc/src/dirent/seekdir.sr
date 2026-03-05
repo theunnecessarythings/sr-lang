@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/dirent/seekdir.c
+
+stdio_h :: import "libc/include/stdio"
+lseek_mod :: import "libc/src/unistd/lseek"
+
+seekdir :: proc(dir: *DIR, off: alltypes.off_t) void {
+    if dir == null { return }
+    _ = lseek_mod.lseek(dir.fd, off, stdio_h.SEEK_SET)
+    dir.buf_pos = 0
+    dir.buf_end = 0
+    dir.tell = off
+}

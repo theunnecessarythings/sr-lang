@@ -1,0 +1,20 @@
+package libc
+
+// Derived from musl-1.2.5/src/stat/utimensat.c (syscall path).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+stat_mod :: import "libc/include/sys/stat"
+
+utimensat :: proc(fd: i32, path: ?*const u8, times: ?*stat_mod.timespec, flags: i32) i32 {
+    path_ptr := if path == null { 0 } else { path?.^usize }
+    times_ptr := if times == null { 0 } else { times?.^usize }
+    r := sc.syscall4_ret(
+        nums.SYS_utimensat.(i64),
+        fd.(i64),
+        path_ptr.(i64),
+        times_ptr.(i64),
+        flags.(i64),
+    )
+    return r.(i32)
+}

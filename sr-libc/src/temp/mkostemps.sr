@@ -1,0 +1,58 @@
+package libc
+
+// Derived from musl-1.2.5/src/temp/mkostemps.c
+
+errno_h :: import "libc/include/errno"
+fcntl_h :: import "libc/include/fcntl"
+string_h :: import "libc/src/string"
+open_mod :: import "libc/src/unistd/open"
+
+__randname :: extern proc(*u8) *u8
+
+__mkostemps :: proc(template: *u8, len: i32, flags: i32) i32 {
+    l: usize = string_h.strlen(template)
+    
+    if l < 6 || len > l.(i32) - 6 {
+        errno_h.errno().* = errno_h.EINVAL
+        return -1
+    }
+    
+    // Check for XXXXXX pattern
+    check_pos := l - len.(usize) - 6
+    i: usize = 0
+    while i < 6 {
+        if template[check_pos + i] != 'X'.(u8) {
+            errno_h.errno().* = errno_h.EINVAL
+            return -1
+        }
+        i += 1
+    }
+    
+    // Clear access mode bits from flags
+    flags_adj := flags & ~fcntl_h.O_ACCMODE
+    retries: i32 = 100
+    
+    while retries > 0 {
+        __randname(template + check_pos)
+        fd := open_mod.open(template, flags_adj | fcntl_h.O_RDWR | fcntl_h.O_CREAT | fcntl_h.O_EXCL, 0o600)
+        if fd >= 0 {
+            return fd
+        }
+        if errno_h.errno().* != errno_h.EEXIST {
+            break
+        }
+        retries -= 1
+    }
+    
+    // Restore template on failure
+    i = 0
+    while i < 6 {
+        template[check_pos + i] = 'X'.(u8)
+        i += 1
+    }
+    return -1
+}
+
+mkostemps :: proc(template: *u8, len: i32, flags: i32) i32 {
+    return __mkostemps(template, len, flags)
+}

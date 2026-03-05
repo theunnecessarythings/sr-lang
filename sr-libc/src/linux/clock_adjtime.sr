@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/clock_adjtime.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+clock_adjtime :: proc(clock_id: clockid_t, utx: *timex) i32 {
+    r := sc.syscall2_ret(nums.SYS_clock_adjtime.(i64), clock_id.(i64), utx.^usize.(i64))
+    return r.(i32)
+}

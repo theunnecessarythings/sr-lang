@@ -1,0 +1,25 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/scalbnl.c.
+
+scalbnl :: proc(x: f128, n: i32) f128 {
+    if n > 16383 {
+        x *= 0x1p16383
+        n -= 16383
+        if n > 16383 {
+            x *= 0x1p16383
+            n -= 16383
+            if n > 16383 { n = 16383 }
+        }
+    } else if n < -16382 {
+        x *= 0x1p-16382 * 0x1p113
+        n += 16382 - 113
+        if n < -16382 {
+            x *= 0x1p-16382 * 0x1p113
+            n += 16382 - 113
+            if n < -16382 { n = -16382 }
+        }
+    }
+    u := (0x3fff + n).(u128) << 112
+    return x * u.^f128
+}

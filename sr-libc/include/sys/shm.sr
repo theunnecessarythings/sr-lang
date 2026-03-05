@@ -1,0 +1,76 @@
+package libc
+
+// Derived from musl-1.2.5/include/sys/shm.h and arch/generic/bits/shm.h
+
+SHM_R :: 0o400
+SHM_W :: 0o200
+
+SHM_RDONLY :: 0o10000
+SHM_RND :: 0o20000
+SHM_REMAP :: 0o40000
+SHM_EXEC :: 0o100000
+
+SHM_LOCK :: 11
+SHM_UNLOCK :: 12
+SHM_STAT :: (13 | (IPC_STAT & 0x100))
+SHM_INFO :: 14
+SHM_STAT_ANY :: (15 | (IPC_STAT & 0x100))
+SHM_DEST :: 0o1000
+SHM_LOCKED :: 0o2000
+SHM_HUGETLB :: 0o4000
+SHM_NORESERVE :: 0o10000
+
+SHM_HUGE_SHIFT :: 26
+SHM_HUGE_MASK :: 0x3f
+SHM_HUGE_64KB :: (16 << 26)
+SHM_HUGE_512KB :: (19 << 26)
+SHM_HUGE_1MB :: (20 << 26)
+SHM_HUGE_2MB :: (21 << 26)
+SHM_HUGE_8MB :: (23 << 26)
+SHM_HUGE_16MB :: (24 << 26)
+SHM_HUGE_32MB :: (25 << 26)
+SHM_HUGE_256MB :: (28 << 26)
+SHM_HUGE_512MB :: (29 << 26)
+SHM_HUGE_1GB :: (30 << 26)
+SHM_HUGE_2GB :: (31 << 26)
+SHM_HUGE_16GB :: (34 << 26)
+
+SHMLBA :: 4096
+
+shmatt_t :: u64
+
+shmid_ds :: struct {
+    shm_perm: ipc_perm,
+    shm_segsz: usize,
+    shm_atime: time_t,
+    shm_dtime: time_t,
+    shm_ctime: time_t,
+    shm_cpid: alltypes.pid_t,
+    shm_lpid: alltypes.pid_t,
+    shm_nattch: u64,
+    __pad1: u64,
+    __pad2: u64,
+}
+
+shminfo :: struct {
+    shmmax: u64,
+    shmmin: u64,
+    shmmni: u64,
+    shmseg: u64,
+    shmall: u64,
+    __unused: [4]u64,
+}
+
+shm_info :: struct {
+    __used_ids: i32,
+    shm_tot: u64,
+    shm_rss: u64,
+    shm_swp: u64,
+    __swap_attempts: u64,
+    __swap_successes: u64,
+}
+
+shmat :: proc(id: i32, addr: *const void, flag: i32) *void
+shmctl :: proc(id: i32, cmd: i32, buf: *shmid_ds) i32
+shmdt :: proc(addr: *const void) i32
+shmget :: proc(key: key_t, size: usize, flag: i32) i32

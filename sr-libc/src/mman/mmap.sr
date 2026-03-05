@@ -1,0 +1,155 @@
+package libc
+
+// Derived from musl-1.2.5/src/mman/mmap.c (simplified, x86_64).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+mman :: import "libc/include/sys/mman"
+
+alltypes :: import "libc/include/alltypes"
+
+ptr_arg :: proc(p: ?*void) i64 {
+    return (if p != null { (p?).^usize } else { 0.(usize) }).(i64)
+}
+
+ptr_arg_u8 :: proc(p: ?*u8) i64 {
+    return (if p != null { (p?).^usize } else { 0.(usize) }).(i64)
+}
+
+ptr_arg_const_void :: proc(p: ?*const void) i64 {
+    return (if p != null { (p?).^usize } else { 0.(usize) }).(i64)
+}
+
+ptr_arg_const_u8 :: proc(p: ?*const u8) i64 {
+    return (if p != null { (p?).^usize } else { 0.(usize) }).(i64)
+}
+
+mmap :: proc(start: ?*void, len: usize, prot: i32, flags: i32, fd: i32, off: alltypes.off_t) ?*void {
+    r := sc.syscall6(
+        nums.SYS_mmap.(i64),
+        ptr_arg(start),
+        len.(i64),
+        prot.(i64),
+        flags.(i64),
+        fd.(i64),
+        off.(i64),
+    )
+    if (r < 0) and (r >= -4095) {
+        _ = sc.__syscall_ret(r)
+        return mman.MAP_FAILED
+    }
+    return r.(usize).^*void
+}
+
+munmap :: proc(addr: ?*void, len: usize) i32 {
+    r := sc.syscall2_ret(nums.SYS_munmap.(i64), ptr_arg(addr), len.(i64))
+    return r.(i32)
+}
+
+mprotect :: proc(addr: ?*void, len: usize, prot: i32) i32 {
+    r := sc.syscall3_ret(nums.SYS_mprotect.(i64), ptr_arg(addr), len.(i64), prot.(i64))
+    return r.(i32)
+}
+
+msync :: proc(addr: ?*void, len: usize, flags: i32) i32 {
+    r := sc.syscall3_ret(nums.SYS_msync.(i64), ptr_arg(addr), len.(i64), flags.(i64))
+    return r.(i32)
+}
+
+madvise :: proc(addr: ?*void, len: usize, advice: i32) i32 {
+    r := sc.syscall3_ret(nums.SYS_madvise.(i64), ptr_arg(addr), len.(i64), advice.(i64))
+    return r.(i32)
+}
+
+posix_madvise :: proc(addr: ?*void, len: usize, advice: i32) i32 {
+    if advice == mman.MADV_DONTNEED { return 0 }
+    r := sc.syscall3(nums.SYS_madvise.(i64), ptr_arg(addr), len.(i64), advice.(i64))
+    if r < 0 { return ((-r).(i32)) }
+    return r.(i32)
+}
+
+mincore :: proc(addr: ?*void, len: usize, vec: ?*u8) i32 {
+    r := sc.syscall3_ret(nums.SYS_mincore.(i64), ptr_arg(addr), len.(i64), ptr_arg_u8(vec))
+    return r.(i32)
+}
+
+mlock :: proc(addr: ?*const void, len: usize) i32 {
+    r := sc.syscall2_ret(nums.SYS_mlock.(i64), ptr_arg_const_void(addr), len.(i64))
+    return r.(i32)
+}
+
+munlock :: proc(addr: ?*const void, len: usize) i32 {
+    r := sc.syscall2_ret(nums.SYS_munlock.(i64), ptr_arg_const_void(addr), len.(i64))
+    return r.(i32)
+}
+
+mlockall :: proc(flags: i32) i32 {
+    r := sc.syscall1_ret(nums.SYS_mlockall.(i64), flags.(i64))
+    return r.(i32)
+}
+
+munlockall :: proc() i32 {
+    r := sc.syscall0_ret(nums.SYS_munlockall.(i64))
+    return r.(i32)
+}
+
+mremap :: proc(old_addr: ?*void, old_size: usize, new_size: usize, flags: i32) ?*void {
+    r := sc.syscall4(
+        nums.SYS_mremap.(i64),
+        ptr_arg(old_addr),
+        old_size.(i64),
+        new_size.(i64),
+        flags.(i64),
+    )
+    if (r < 0) and (r >= -4095) {
+        _ = sc.__syscall_ret(r)
+        return mman.MAP_FAILED
+    }
+    return r.(usize).^*void
+}
+
+mremap_va :: proc(old_addr: ?*void, old_size: usize, new_size: usize, flags: i32, new_addr: ?*void) ?*void {
+    if (flags.(i64) & mman.MREMAP_FIXED.(i64)) != 0 {
+        if new_addr == null { return mman.MAP_FAILED }
+        return mremap_fixed(old_addr, old_size, new_size, flags, new_addr?)
+    }
+    return mremap(old_addr, old_size, new_size, flags)
+}
+
+mremap_fixed :: proc(old_addr: ?*void, old_size: usize, new_size: usize, flags: i32, new_addr: ?*void) ?*void {
+    r := sc.syscall5(
+        nums.SYS_mremap.(i64),
+        ptr_arg(old_addr),
+        old_size.(i64),
+        new_size.(i64),
+        flags.(i64),
+        ptr_arg(new_addr),
+    )
+    if (r < 0) and (r >= -4095) {
+        _ = sc.__syscall_ret(r)
+        return mman.MAP_FAILED
+    }
+    return r.(usize).^*void
+}
+
+mlock2 :: proc(addr: ?*const void, len: usize, flags: i32) i32 {
+    r := sc.syscall3_ret(nums.SYS_mlock2.(i64), ptr_arg_const_void(addr), len.(i64), flags.(i64))
+    return r.(i32)
+}
+
+remap_file_pages :: proc(addr: ?*void, size: usize, prot: i32, pgoff: usize, flags: i32) i32 {
+    r := sc.syscall5_ret(
+        nums.SYS_remap_file_pages.(i64),
+        ptr_arg(addr),
+        size.(i64),
+        prot.(i64),
+        pgoff.(i64),
+        flags.(i64),
+    )
+    return r.(i32)
+}
+
+memfd_create :: proc(name: ?*const u8, flags: u32) i32 {
+    r := sc.syscall2_ret(nums.SYS_memfd_create.(i64), ptr_arg_const_u8(name), flags.(i64))
+    return r.(i32)
+}

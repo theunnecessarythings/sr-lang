@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/logbl.c.
+
+basic :: import "libc/src/math/basic"
+
+logbl :: proc(x: f128) f128 {
+    if !basic.isfinitel(x) { return x * x }
+    if x == 0.0 { return -1.0 / (x * x) }
+    return ilogbl(x).(f128)
+}

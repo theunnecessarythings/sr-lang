@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_rwlock_wrlock.c
+
+__pthread_rwlock_wrlock :: proc(rw: *alltypes.pthread_rwlock_t) i32 {
+    return __pthread_rwlock_timedwrlock(rw, null)
+}
+
+pthread_rwlock_wrlock :: proc(rw: *alltypes.pthread_rwlock_t) i32 {
+    return __pthread_rwlock_wrlock(rw)
+}

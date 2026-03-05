@@ -1,0 +1,24 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/strncasecmp.c (ASCII-only).
+
+tolower_ascii :: fn(c: u8) u8 {
+    if c >= 65 and c <= 90 { return c + 32 }
+    return c
+}
+
+strncasecmp :: proc(l: *const u8, r: *const u8, n: usize) i32 {
+    if n == 0 { return 0 }
+    i: usize = 0
+    while i < n and l[i] != 0 and r[i] != 0 {
+        cl := tolower_ascii(l[i])
+        cr := tolower_ascii(r[i])
+        if cl != cr {
+            return cl.(i32) - cr.(i32)
+        }
+        i += 1
+        if i == n { return 0 }
+    }
+    if i == n { return 0 }
+    return tolower_ascii(l[i]).(i32) - tolower_ascii(r[i]).(i32)
+}

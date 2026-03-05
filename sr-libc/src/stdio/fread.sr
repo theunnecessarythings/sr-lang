@@ -1,0 +1,38 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/fread.c.
+
+memcpy_mod :: import "libc/src/string/memcpy"
+
+min :: fn(a: usize, b: usize) usize { if a < b { return a } return b }
+
+fread :: proc(destv: *void, size: usize, nmemb: usize, f: *alltypes.FILE) usize {
+    dest := destv.^*u8
+    len := size * nmemb
+    l := len
+    if size == 0 { return 0 }
+
+    _ = __lockfile(f)
+    f.mode = f.mode | (f.mode - 1)
+
+    if f.rpos != f.rend {
+        k := min(f.rend.^usize - f.rpos.^usize, l)
+        _ = memcpy_mod.memcpy(dest.^*void, f.rpos.^*const void, k)
+        f.rpos = f.rpos + k
+        dest = dest + k
+        l -= k
+    }
+
+    while l != 0 {
+        k := if __toread(f) != 0 { 0 } else { f.read(f, dest, l) }
+        if k == 0 {
+            _ = __unlockfile(f)
+            return (len - l) / size
+        }
+        l -= k
+        dest = dest + k
+    }
+
+    _ = __unlockfile(f)
+    return nmemb
+}

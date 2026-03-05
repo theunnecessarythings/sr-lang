@@ -1,0 +1,48 @@
+package libc
+
+// Derived from musl-1.2.5/src/malloc/libc_calloc.c
+
+meta_mod :: import "libc/src/malloc/mallocng/meta"
+replaced :: import "libc/src/malloc/replaced"
+errno_mod :: import "libc/include/errno"
+string :: import "libc/src/string/memset"
+lite_malloc_mod :: import "libc/src/malloc/lite_malloc"
+
+mal0_clear :: proc(p: *void, n: usize) usize {
+    pagesz: usize = 4096
+    if n < pagesz { return n }
+
+    pp := (p.^usize + n).(usize).^*u8
+    i: usize = pp.^usize & (pagesz - 1)
+
+    while true {
+        pp = string.memset((pp.^usize - i).(usize).^*void, 0, i).^*u8
+        if (pp.^usize - p.^usize) < pagesz { return pp.^usize - p.^usize }
+
+        i = pagesz
+        while i != 0 {
+            pp = (pp.^usize - 16).(usize).^*u8
+            v1 := ((pp.^usize + 8).(usize).^*u64).*
+            v2 := ((pp.^usize).(usize).^*u64).*
+            if (v1 | v2) != 0 { break }
+            i -= 16
+        }
+    }
+    return 0
+}
+
+__libc_calloc :: proc(m: usize, n: usize) ?*void {
+    if n != 0 and m > ((0.(usize) - 1) / n) {
+        errno_mod.__errno_location().* = errno_mod.ENOMEM
+        return null
+    }
+
+    len := n * m
+    p := lite_malloc_mod.__libc_malloc(len)
+
+    if p == null { return null }
+    if replaced.__malloc_replaced == 0 and meta_mod.is_allzero(p?) != 0 { return p }
+
+    len = mal0_clear(p?, len)
+    return string.memset(p?, 0, len)
+}

@@ -1,0 +1,8 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/default_attr.c
+
+attr_int :: import "libc/src/thread/pthread_attr_internal"
+
+__default_stacksize: usize = attr_int.DEFAULT_STACK_SIZE
+__default_guardsize: usize = attr_int.DEFAULT_GUARD_SIZE

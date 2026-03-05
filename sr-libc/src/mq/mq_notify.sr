@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/mq/mq_notify.c
+
+mq_h :: import "libc/include/mqueue"
+nums :: import "libc/include/syscall"
+sc :: import "libc/src/syscall/syscall"
+
+mq_notify :: proc(mqd: mq_h.mqd_t, sigev: *void) i32 {
+    r := sc.syscall2_ret(
+        nums.SYS_mq_notify.(i64),
+        mqd.(i64),
+        sigev.^usize.(i64),
+    )
+    return r.(i32)
+}

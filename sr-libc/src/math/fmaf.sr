@@ -1,0 +1,38 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/fmaf.c.
+
+fmaf :: proc(x: f32, y: f32, z: f32) f32 {
+    xy := x.(f64) * y.(f64)
+    result := xy + z.(f64)
+    u := result.^u64
+    e := ((u >> 52) & 0x7ff).(i32)
+
+    if (u & 0x1fffffff) != 0x10000000 or e == 0x7ff or ((result - xy == z.(f64)) and (result - z.(f64) == xy)) or fegetround() != FE_TONEAREST {
+        if e < 0x3ff - 126 and e >= 0x3ff - 149 and (fetestexcept(FE_INEXACT) != 0) {
+            _ = feclearexcept(FE_INEXACT)
+            vz := z
+            result = xy + vz.(f64)
+            if fetestexcept(FE_INEXACT) != 0 {
+                _ = feraiseexcept(FE_UNDERFLOW)
+            } else {
+                _ = feraiseexcept(FE_INEXACT)
+            }
+        }
+        return result.(f32)
+    }
+
+    neg := (u >> 63) != 0
+    err: f64
+    if neg == (z.(f64) > xy) {
+        err = xy - result + z.(f64)
+    } else {
+        err = z.(f64) - result + xy
+    }
+    if neg == (err < 0) {
+        u += 1
+    } else {
+        u -= 1
+    }
+    return u.^f64.(f32)
+}

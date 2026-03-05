@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/writev.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+writev :: proc(fd: i32, iov: *const iovec, count: i32) isize {
+    r := sc.syscall3_ret(nums.SYS_writev.(i64), fd.(i64), iov.^usize.(i64), count.(i64))
+    return r.(isize)
+}

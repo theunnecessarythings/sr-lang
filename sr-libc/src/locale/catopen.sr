@@ -1,0 +1,13 @@
+package libc
+
+// Minimal catopen stub (no catalogs).
+
+errno_h :: import "libc/include/errno"
+nl_h :: import "libc/include/nl_types"
+
+catopen :: proc(name: *const u8, oflag: i32) nl_h.nl_catd {
+    _ = name
+    _ = oflag
+    errno_h.errno().* = errno_h.ENOSYS
+    return (-1).(isize)
+}

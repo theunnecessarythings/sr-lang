@@ -1,0 +1,23 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/putspent.c
+
+shadow_h :: import "libc/include/shadow"
+fprintf_mod :: import "libc/src/stdio/fprintf"
+
+putspent :: proc(sp: *shadow_h.spwd, f: *alltypes.FILE) i32 {
+    if sp == null || f == null { return -1 }
+    return fprintf_mod.fprintf(
+        f,
+        "%s:%s:%lld:%lld:%lld:%lld:%lld:%lld:%llu\n",
+        sp.sp_namp,
+        sp.sp_pwdp,
+        sp.sp_lstchg,
+        sp.sp_min,
+        sp.sp_max,
+        sp.sp_warn,
+        sp.sp_inact,
+        sp.sp_expire,
+        sp.sp_flag,
+    )
+}

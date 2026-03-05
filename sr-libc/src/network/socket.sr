@@ -1,0 +1,29 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/socket.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <fcntl.h>
+// #include <errno.h>
+// #include <syscall.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+errno_mod :: import "libc/include/errno"
+fcntl_h :: import "libc/include/fcntl"
+
+socket :: proc(domain: i32, type: i32, protocol: i32) i32 {
+    s := sc.syscall3(nums.SYS_socket.(i64), domain.(i64), type.(i64), protocol.(i64))
+    if (s == -errno_mod.EINVAL || s == -errno_mod.EPROTONOSUPPORT) and ((type & (SOCK_CLOEXEC | SOCK_NONBLOCK)) != 0) {
+        s = sc.syscall3(nums.SYS_socket.(i64), domain.(i64), (type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK)).(i64), protocol.(i64))
+        if s < 0 { return sc.__syscall_ret(s).(i32) }
+        if (type & SOCK_CLOEXEC) != 0 {
+            _ = sc.syscall3(nums.SYS_fcntl.(i64), s, fcntl_h.F_SETFD.(i64), fcntl_h.FD_CLOEXEC.(i64))
+        }
+        if (type & SOCK_NONBLOCK) != 0 {
+            _ = sc.syscall3(nums.SYS_fcntl.(i64), s, fcntl_h.F_SETFL.(i64), fcntl_h.O_NONBLOCK.(i64))
+        }
+    }
+    return sc.__syscall_ret(s).(i32)
+}

@@ -1,0 +1,7 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/cpow.c
+
+cpow :: proc(z: complex(f64), c: complex(f64)) complex(f64) {
+    return cexp(c * clog(z))
+}

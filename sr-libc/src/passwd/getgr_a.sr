@@ -1,0 +1,42 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/getgr_a.c
+
+errno_h :: import "libc/include/errno"
+grp_h :: import "libc/include/grp"
+fopen_mod :: import "libc/src/stdio/fopen"
+fclose_mod :: import "libc/src/stdio/fclose"
+strcmp_mod :: import "libc/src/string/strcmp"
+getgrent_a :: import "libc/src/passwd/getgrent_a"
+
+__getgr_a :: proc(name: *const u8, gid: gid_t, gr: *grp_h.group, buf: *u8, size: usize, mem: *u8, nmem: usize, res: **grp_h.group) i32 {
+    if gr == null || buf == null || mem == null || res == null {
+        return errno_h.EINVAL
+    }
+
+    f := fopen_mod.fopen("/etc/group", "r")
+    if f == null { return errno_h.errno().* }
+
+    out: *grp_h.group = null
+    while true {
+        r := getgrent_a.__getgrent_a(f, gr, buf, size, mem, nmem, &out)
+        if r != 0 || out == null { break }
+        if name != null {
+            if strcmp_mod.strcmp(out.gr_name, name) == 0 {
+                res.* = out
+                _ = fclose_mod.fclose(f)
+                return 0
+            }
+        } else {
+            if out.gr_gid == gid {
+                res.* = out
+                _ = fclose_mod.fclose(f)
+                return 0
+            }
+        }
+    }
+
+    _ = fclose_mod.fclose(f)
+    res.* = null
+    return errno_h.ENOENT
+}

@@ -1,0 +1,109 @@
+package libc
+
+// Derived from musl-1.2.5/include/sys/socket.h (subset).
+
+msghdr :: struct {
+    msg_name: *void,
+    msg_namelen: socklen_t,
+    msg_iov: *iovec,
+    __pad1: i32,
+    msg_iovlen: i32,
+    msg_control: *void,
+    __pad2: i32,
+    msg_controllen: socklen_t,
+    msg_flags: i32,
+}
+
+cmsghdr :: struct {
+    __pad1: i32,
+    cmsg_len: socklen_t,
+    cmsg_level: i32,
+    cmsg_type: i32,
+}
+
+ucred :: struct {
+    pid: alltypes.pid_t,
+    uid: uid_t,
+    gid: gid_t,
+}
+
+mmsghdr :: struct {
+    msg_hdr: msghdr,
+    msg_len: u32,
+}
+
+linger :: struct {
+    l_onoff: i32,
+    l_linger: i32,
+}
+
+sockaddr :: struct {
+    sa_family: sa_family_t,
+    sa_data: [14]u8,
+}
+
+sockaddr_storage :: struct {
+    ss_family: sa_family_t,
+    __ss_padding: [128 - sizeof(isize) - sizeof(sa_family_t)]u8,
+    __ss_align: u64,
+}
+
+SHUT_RD :: 0
+SHUT_WR :: 1
+SHUT_RDWR :: 2
+
+SOCK_STREAM :: 1
+SOCK_DGRAM :: 2
+SOCK_RAW :: 3
+SOCK_RDM :: 4
+SOCK_SEQPACKET :: 5
+SOCK_DCCP :: 6
+SOCK_PACKET :: 10
+
+SOCK_CLOEXEC :: 0o2000000
+SOCK_NONBLOCK :: 0o4000
+
+MSG_TRUNC :: 0x0020
+MSG_DONTWAIT :: 0x0040
+MSG_NOSIGNAL :: 0x4000
+MSG_FASTOPEN :: 0x20000000
+
+PF_UNSPEC :: 0
+PF_LOCAL :: 1
+PF_UNIX :: PF_LOCAL
+PF_FILE :: PF_LOCAL
+PF_INET :: 2
+PF_INET6 :: 10
+PF_NETLINK :: 16
+PF_PACKET :: 17
+
+AF_UNSPEC :: PF_UNSPEC
+AF_LOCAL :: PF_LOCAL
+AF_UNIX :: AF_LOCAL
+AF_FILE :: AF_LOCAL
+AF_INET :: PF_INET
+AF_INET6 :: PF_INET6
+AF_NETLINK :: PF_NETLINK
+AF_PACKET :: PF_PACKET
+
+socket :: proc(domain: i32, type: i32, protocol: i32) i32
+socketpair :: proc(domain: i32, type: i32, protocol: i32, fd: *i32) i32
+shutdown :: proc(fd: i32, how: i32) i32
+bind :: proc(fd: i32, addr: *const sockaddr, len: socklen_t) i32
+connect :: proc(fd: i32, addr: *const sockaddr, len: socklen_t) i32
+listen :: proc(fd: i32, backlog: i32) i32
+accept :: proc(fd: i32, addr: *sockaddr, len: *socklen_t) i32
+accept4 :: proc(fd: i32, addr: *sockaddr, len: *socklen_t, flg: i32) i32
+getsockname :: proc(fd: i32, addr: *sockaddr, len: *socklen_t) i32
+getpeername :: proc(fd: i32, addr: *sockaddr, len: *socklen_t) i32
+send :: proc(fd: i32, buf: *const void, len: usize, flags: i32) isize
+recv :: proc(fd: i32, buf: *void, len: usize, flags: i32) isize
+sendto :: proc(fd: i32, buf: *const void, len: usize, flags: i32, addr: *const sockaddr, alen: socklen_t) isize
+recvfrom :: proc(fd: i32, buf: *void, len: usize, flags: i32, addr: *sockaddr, alen: *socklen_t) isize
+sendmsg :: proc(fd: i32, msg: *const msghdr, flags: i32) isize
+recvmsg :: proc(fd: i32, msg: *msghdr, flags: i32) isize
+getsockopt :: proc(fd: i32, level: i32, optname: i32, optval: *void, optlen: *socklen_t) i32
+setsockopt :: proc(fd: i32, level: i32, optname: i32, optval: *const void, optlen: socklen_t) i32
+sockatmark :: proc(s: i32) i32
+sendmmsg :: proc(fd: i32, msgvec: *mmsghdr, vlen: u32, flags: u32) i32
+recvmmsg :: proc(fd: i32, msgvec: *mmsghdr, vlen: u32, flags: u32, timeout: *timespec) i32

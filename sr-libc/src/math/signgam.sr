@@ -1,0 +1,6 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/signgam.c.
+
+__signgam: i32 = 0
+signgam: i32 = 0

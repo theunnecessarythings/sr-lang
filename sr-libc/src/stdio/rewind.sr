@@ -1,0 +1,8 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/rewind.c.
+
+rewind :: proc(f: *alltypes.FILE) void {
+    _ = fseek(f, 0, SEEK_SET)
+    clearerr(f)
+}

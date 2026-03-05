@@ -1,0 +1,397 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdlib/wcstod.c (string-only path).
+
+ctype :: import "libc/src/ctype/ctype"
+errno_mod :: import "libc/include/errno"
+
+F64_MAX :: 1.7976931348623157e308
+F128_MAX :: 1.189731495357231765085759326628007e4932
+
+w_isspace :: fn(c: wchar_t) bool {
+    if c < 0 or c > 127 { return false }
+    return ctype.isspace(c.(i32)) != 0
+}
+
+w_is_digit :: fn(c: wchar_t) bool {
+    return c >= 48 and c <= 57
+}
+
+w_is_hex :: fn(c: wchar_t) bool {
+    return (c >= 48 and c <= 57) or (c >= 65 and c <= 70) or (c >= 97 and c <= 102)
+}
+
+w_hex_val :: fn(c: wchar_t) i32 {
+    if c >= 48 and c <= 57 { return (c - 48).(i32) }
+    if c >= 65 and c <= 70 { return (c - 65 + 10).(i32) }
+    if c >= 97 and c <= 102 { return (c - 97 + 10).(i32) }
+    return -1
+}
+
+pow10_f64 :: fn(exp: i32) f64 {
+    if exp == 0 { return 1.0 }
+    e := exp
+    base: f64 = 10.0
+    if e < 0 {
+        base = 0.1
+        e = -e
+    }
+    result: f64 = 1.0
+    while e > 0 {
+        if (e & 1) != 0 { result = result * base }
+        base = base * base
+        e >>= 1
+    }
+    return result
+}
+
+pow2_f64 :: fn(exp: i32) f64 {
+    if exp == 0 { return 1.0 }
+    e := exp
+    base: f64 = 2.0
+    if e < 0 {
+        base = 0.5
+        e = -e
+    }
+    result: f64 = 1.0
+    while e > 0 {
+        if (e & 1) != 0 { result = result * base }
+        base = base * base
+        e >>= 1
+    }
+    return result
+}
+
+pow10_f128 :: fn(exp: i32) f128 {
+    if exp == 0 { return 1.0 }
+    e := exp
+    base: f128 = 10.0
+    if e < 0 {
+        base = 0.1
+        e = -e
+    }
+    result: f128 = 1.0
+    while e > 0 {
+        if (e & 1) != 0 { result = result * base }
+        base = base * base
+        e >>= 1
+    }
+    return result
+}
+
+pow2_f128 :: fn(exp: i32) f128 {
+    if exp == 0 { return 1.0 }
+    e := exp
+    base: f128 = 2.0
+    if e < 0 {
+        base = 0.5
+        e = -e
+    }
+    result: f128 = 1.0
+    while e > 0 {
+        if (e & 1) != 0 { result = result * base }
+        base = base * base
+        e >>= 1
+    }
+    return result
+}
+
+parse_decimal_w_f64 :: fn(p_in: *const wchar_t, endptr: ?**wchar_t) f64 {
+    p := p_in
+    sign: f64 = 1.0
+    if p[0] == 45 { sign = -1.0; p = (&p[1]).^*wchar_t }
+    else if p[0] == 43 { p = (&p[1]).^*wchar_t }
+
+    any := false
+    int_part: f64 = 0.0
+    while w_is_digit(p[0]) {
+        any = true
+        int_part = int_part * 10.0 + (p[0] - 48).(f64)
+        p = (&p[1]).^*wchar_t
+    }
+
+    frac_part: f64 = 0.0
+    if p[0] == 46 {
+        p = (&p[1]).^*wchar_t
+        div: f64 = 10.0
+        while w_is_digit(p[0]) {
+            any = true
+            frac_part = frac_part + (p[0] - 48).(f64) / div
+            div = div * 10.0
+            p = (&p[1]).^*wchar_t
+        }
+    }
+
+    if !any {
+        errno_mod.__errno_location().* = errno_mod.EINVAL
+        if endptr != null { endptr?.* = p_in }
+        return 0.0
+    }
+
+    exp: i32 = 0
+    if p[0] == 101 or p[0] == 69 {
+        p = (&p[1]).^*wchar_t
+        neg_exp := false
+        if p[0] == 45 { neg_exp = true; p = (&p[1]).^*wchar_t }
+        else if p[0] == 43 { p = (&p[1]).^*wchar_t }
+        if w_is_digit(p[0]) {
+            while w_is_digit(p[0]) {
+                exp = exp * 10 + (p[0] - 48).(i32)
+                p = (&p[1]).^*wchar_t
+            }
+            if neg_exp { exp = -exp }
+        }
+    }
+
+    if endptr != null { endptr?.* = p }
+
+    val := (int_part + frac_part) * pow10_f64(exp)
+    if val > F64_MAX {
+        errno_mod.__errno_location().* = errno_mod.ERANGE
+        return sign * F64_MAX
+    }
+    if val == 0.0 and (int_part + frac_part) != 0.0 {
+        errno_mod.__errno_location().* = errno_mod.ERANGE
+    }
+    return sign * val
+}
+
+parse_hex_w_f64 :: fn(p_in: *const wchar_t, endptr: ?**wchar_t) f64 {
+    p := p_in
+    sign: f64 = 1.0
+    if p[0] == 45 { sign = -1.0; p = (&p[1]).^*wchar_t }
+    else if p[0] == 43 { p = (&p[1]).^*wchar_t }
+
+    if p[0] == 48 and ((p[1] | 32) == 120) { p = (&p[2]).^*wchar_t }
+
+    any := false
+    int_part: f64 = 0.0
+    while w_is_hex(p[0]) {
+        any = true
+        int_part = int_part * 16.0 + w_hex_val(p[0]).(f64)
+        p = (&p[1]).^*wchar_t
+    }
+
+    frac_part: f64 = 0.0
+    if p[0] == 46 {
+        p = (&p[1]).^*wchar_t
+        div: f64 = 16.0
+        while w_is_hex(p[0]) {
+            any = true
+            frac_part = frac_part + w_hex_val(p[0]).(f64) / div
+            div = div * 16.0
+            p = (&p[1]).^*wchar_t
+        }
+    }
+
+    if !any {
+        errno_mod.__errno_location().* = errno_mod.EINVAL
+        if endptr != null { endptr?.* = p_in }
+        return 0.0
+    }
+
+    exp: i32 = 0
+    if p[0] == 112 or p[0] == 80 {
+        p = (&p[1]).^*wchar_t
+        neg_exp := false
+        if p[0] == 45 { neg_exp = true; p = (&p[1]).^*wchar_t }
+        else if p[0] == 43 { p = (&p[1]).^*wchar_t }
+        if w_is_digit(p[0]) {
+            while w_is_digit(p[0]) {
+                exp = exp * 10 + (p[0] - 48).(i32)
+                p = (&p[1]).^*wchar_t
+            }
+            if neg_exp { exp = -exp }
+        }
+    }
+
+    if endptr != null { endptr?.* = p }
+
+    val := (int_part + frac_part) * pow2_f64(exp)
+    if val > F64_MAX {
+        errno_mod.__errno_location().* = errno_mod.ERANGE
+        return sign * F64_MAX
+    }
+    if val == 0.0 and (int_part + frac_part) != 0.0 {
+        errno_mod.__errno_location().* = errno_mod.ERANGE
+    }
+    return sign * val
+}
+
+parse_decimal_w_f128 :: fn(p_in: *const wchar_t, endptr: ?**wchar_t) f128 {
+    p := p_in
+    sign: f128 = 1.0
+    if p[0] == 45 { sign = -1.0; p = (&p[1]).^*wchar_t }
+    else if p[0] == 43 { p = (&p[1]).^*wchar_t }
+
+    any := false
+    int_part: f128 = 0.0
+    while w_is_digit(p[0]) {
+        any = true
+        int_part = int_part * 10.0 + (p[0] - 48).(f128)
+        p = (&p[1]).^*wchar_t
+    }
+
+    frac_part: f128 = 0.0
+    if p[0] == 46 {
+        p = (&p[1]).^*wchar_t
+        div: f128 = 10.0
+        while w_is_digit(p[0]) {
+            any = true
+            frac_part = frac_part + (p[0] - 48).(f128) / div
+            div = div * 10.0
+            p = (&p[1]).^*wchar_t
+        }
+    }
+
+    if !any {
+        errno_mod.__errno_location().* = errno_mod.EINVAL
+        if endptr != null { endptr?.* = p_in }
+        return 0.0
+    }
+
+    exp: i32 = 0
+    if p[0] == 101 or p[0] == 69 {
+        p = (&p[1]).^*wchar_t
+        neg_exp := false
+        if p[0] == 45 { neg_exp = true; p = (&p[1]).^*wchar_t }
+        else if p[0] == 43 { p = (&p[1]).^*wchar_t }
+        if w_is_digit(p[0]) {
+            while w_is_digit(p[0]) {
+                exp = exp * 10 + (p[0] - 48).(i32)
+                p = (&p[1]).^*wchar_t
+            }
+            if neg_exp { exp = -exp }
+        }
+    }
+
+    if endptr != null { endptr?.* = p }
+
+    val := (int_part + frac_part) * pow10_f128(exp)
+    if val > F128_MAX {
+        errno_mod.__errno_location().* = errno_mod.ERANGE
+        return sign * F128_MAX
+    }
+    if val == 0.0 and (int_part + frac_part) != 0.0 {
+        errno_mod.__errno_location().* = errno_mod.ERANGE
+    }
+    return sign * val
+}
+
+parse_hex_w_f128 :: fn(p_in: *const wchar_t, endptr: ?**wchar_t) f128 {
+    p := p_in
+    sign: f128 = 1.0
+    if p[0] == 45 { sign = -1.0; p = (&p[1]).^*wchar_t }
+    else if p[0] == 43 { p = (&p[1]).^*wchar_t }
+
+    if p[0] == 48 and ((p[1] | 32) == 120) { p = (&p[2]).^*wchar_t }
+
+    any := false
+    int_part: f128 = 0.0
+    while w_is_hex(p[0]) {
+        any = true
+        int_part = int_part * 16.0 + w_hex_val(p[0]).(f128)
+        p = (&p[1]).^*wchar_t
+    }
+
+    frac_part: f128 = 0.0
+    if p[0] == 46 {
+        p = (&p[1]).^*wchar_t
+        div: f128 = 16.0
+        while w_is_hex(p[0]) {
+            any = true
+            frac_part = frac_part + w_hex_val(p[0]).(f128) / div
+            div = div * 16.0
+            p = (&p[1]).^*wchar_t
+        }
+    }
+
+    if !any {
+        errno_mod.__errno_location().* = errno_mod.EINVAL
+        if endptr != null { endptr?.* = p_in }
+        return 0.0
+    }
+
+    exp: i32 = 0
+    if p[0] == 112 or p[0] == 80 {
+        p = (&p[1]).^*wchar_t
+        neg_exp := false
+        if p[0] == 45 { neg_exp = true; p = (&p[1]).^*wchar_t }
+        else if p[0] == 43 { p = (&p[1]).^*wchar_t }
+        if w_is_digit(p[0]) {
+            while w_is_digit(p[0]) {
+                exp = exp * 10 + (p[0] - 48).(i32)
+                p = (&p[1]).^*wchar_t
+            }
+            if neg_exp { exp = -exp }
+        }
+    }
+
+    if endptr != null { endptr?.* = p }
+
+    val := (int_part + frac_part) * pow2_f128(exp)
+    if val > F128_MAX {
+        errno_mod.__errno_location().* = errno_mod.ERANGE
+        return sign * F128_MAX
+    }
+    if val == 0.0 and (int_part + frac_part) != 0.0 {
+        errno_mod.__errno_location().* = errno_mod.ERANGE
+    }
+    return sign * val
+}
+
+wcstof :: proc(s: *const wchar_t, endptr: ?**wchar_t) f32 {
+    return wcstod(s, endptr).(f32)
+}
+
+wcstod :: proc(s: *const wchar_t, endptr: ?**wchar_t) f64 {
+    p := s
+    while w_isspace(p[0]) { p = (&p[1]).^*wchar_t }
+
+    if (p[0] | 32) == 110 and (p[1] | 32) == 97 and (p[2] | 32) == 110 {
+        if endptr != null { endptr?.* = (&p[3]).^*wchar_t }
+        return 0.0 / 0.0
+    }
+    if (p[0] | 32) == 105 and (p[1] | 32) == 110 and (p[2] | 32) == 102 {
+        if (p[3] | 32) == 105 {
+            if endptr != null { endptr?.* = (&p[8]).^*wchar_t }
+        } else if endptr != null {
+            endptr?.* = (&p[3]).^*wchar_t
+        }
+        return 1.0 / 0.0
+    }
+
+    if (p[0] == 43 or p[0] == 45) and p[1] == 48 and (p[2] | 32) == 120 {
+        return parse_hex_w_f64(p, endptr)
+    }
+    if p[0] == 48 and (p[1] | 32) == 120 {
+        return parse_hex_w_f64(p, endptr)
+    }
+    return parse_decimal_w_f64(p, endptr)
+}
+
+wcstold :: proc(s: *const wchar_t, endptr: ?**wchar_t) f128 {
+    p := s
+    while w_isspace(p[0]) { p = (&p[1]).^*wchar_t }
+
+    if (p[0] | 32) == 110 and (p[1] | 32) == 97 and (p[2] | 32) == 110 {
+        if endptr != null { endptr?.* = (&p[3]).^*wchar_t }
+        return 0.0 / 0.0
+    }
+    if (p[0] | 32) == 105 and (p[1] | 32) == 110 and (p[2] | 32) == 102 {
+        if (p[3] | 32) == 105 {
+            if endptr != null { endptr?.* = (&p[8]).^*wchar_t }
+        } else if endptr != null {
+            endptr?.* = (&p[3]).^*wchar_t
+        }
+        return 1.0 / 0.0
+    }
+
+    if (p[0] == 43 or p[0] == 45) and p[1] == 48 and (p[2] | 32) == 120 {
+        return parse_hex_w_f128(p, endptr)
+    }
+    if p[0] == 48 and (p[1] | 32) == 120 {
+        return parse_hex_w_f128(p, endptr)
+    }
+    return parse_decimal_w_f128(p, endptr)
+}

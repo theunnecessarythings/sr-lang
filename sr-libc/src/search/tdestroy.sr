@@ -1,0 +1,20 @@
+package libc
+
+// Derived from musl-1.2.5/src/search/tdestroy.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <stdlib.h>
+// #include <search.h>
+// #include <tsearch.h>
+
+free_mod :: import "libc/src/malloc/free"
+impl :: import "libc/src/search/tsearch_impl"
+
+tdestroy :: proc(root: *void, freekey: proc(*void) void) void {
+    r := root.^*impl.node
+    if r == null { return }
+    tdestroy(r.a[0].^*void, freekey)
+    tdestroy(r.a[1].^*void, freekey)
+    if freekey != null(*void) void { freekey(r.key.^*void) }
+    free_mod.free(r.^*void)
+}

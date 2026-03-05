@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/ttyname.c
+
+ttyname_r_mod :: import "libc/src/unistd/ttyname_r"
+errno_mod :: import "libc/include/errno"
+
+__ttyname_buf: [64]u8
+
+ttyname :: proc(fd: i32) ?*u8 {
+    r := ttyname_r_mod.ttyname_r(fd, (&__ttyname_buf[0]).^*u8, __ttyname_buf.len)
+    if r != 0 {
+        errno_mod.__errno_location().* = r
+        return null
+    }
+    return (&__ttyname_buf[0]).^*u8
+}

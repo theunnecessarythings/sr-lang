@@ -1,0 +1,40 @@
+package main
+
+io :: import "std/io"
+
+main :: proc() {
+    io.print("Comments and literals.\n")
+
+    // Line comments start with //.
+
+    /*
+       Block comments can span lines.
+       They are useful for longer notes.
+    */
+
+    // Question: What are string and char literals?
+    // Answer: Strings use double quotes, chars use single quotes.
+    message := "hello"
+    letter := 'A'
+
+    // Question: How do we escape characters?
+    // Answer: Use backslash sequences.
+    escaped := "line1\nline2"
+
+    // Question: Is there a raw string?
+    // Answer: Yes, prefix with r or r#...#.
+    raw1 := r"C:\\tools\\sr"
+    raw2 := r#"no escapes here \n"#
+
+    // Question: Are booleans built in?
+    // Answer: Yes, `true` and `false`.
+    ok := true
+    fail := false
+
+    io.println("%s %c", message, letter)
+    if ok { io.print("ok\n") }
+    _ = escaped
+    _ = raw1
+    _ = raw2
+    _ = fail
+}

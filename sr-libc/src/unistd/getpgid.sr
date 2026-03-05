@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/getpgid.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+getpgid :: proc(pid: i32) i32 {
+    r := sc.syscall1_ret(nums.SYS_getpgid.(i64), pid.(i64))
+    return r.(i32)
+}

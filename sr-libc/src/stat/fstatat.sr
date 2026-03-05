@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/stat/fstatat.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+fstatat :: proc(fd: i32, path: *const u8, buf: *stat, flags: i32) i32 {
+    r := sc.syscall4_ret(
+        nums.SYS_fstatat.(i64),
+        fd.(i64),
+        path.^usize.(i64),
+        buf.^usize.(i64),
+        flags.(i64),
+    )
+    return r.(i32)
+}

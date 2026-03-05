@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/multibyte/mbsinit.c.
+
+alltypes :: import "libc/include/alltypes"
+
+mbsinit :: proc(st: ?*alltypes.mbstate_t) i32 {
+    if st == null { return 1 }
+    return (st?.*.__opaque1 == 0 and st?.*.__opaque2 == 0).(i32)
+}

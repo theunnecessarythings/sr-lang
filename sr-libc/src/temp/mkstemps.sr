@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/temp/mkstemps.c
+
+__mkostemps :: extern proc(*u8, i32, i32) i32
+
+mkstemps :: proc(template: *u8, len: i32) i32 {
+    return __mkostemps(template, len, 0)
+}

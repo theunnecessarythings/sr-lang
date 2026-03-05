@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/getline.c
+
+getdelim_mod :: import "libc/src/stdio/getdelim"
+
+getline :: proc(s: **u8, n: *usize, f: *alltypes.FILE) isize {
+    return getdelim_mod.getdelim(s, n, 10, f)
+}

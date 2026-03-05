@@ -1,0 +1,31 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/sinh.c.
+
+libm :: import "libc/src/math/libm_internal"
+
+sinh :: proc(x: f64) f64 {
+    u := libm.asuint64(x)
+    w: u32
+    t: f64
+    h: f64
+    absx: f64
+
+    h = 0.5
+    if (u >> 63) != 0 { h = -h }
+    u &= 0x7fff_ffff_ffff_ffff
+    absx = libm.asdouble(u)
+    w = (u >> 32).(u32)
+
+    if w < 0x40862e42 {
+        t = expm1(absx)
+        if w < 0x3ff00000 {
+            if w < 0x3ff00000 - (26 << 20) { return x }
+            return h * (2.0 * t - t * t / (t + 1.0))
+        }
+        return h * (t + t / (t + 1.0))
+    }
+
+    t = libm.__expo2(absx, 2.0 * h)
+    return t
+}

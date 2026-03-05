@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/ofl_add.c.
+alltypes :: import "libc/include/alltypes"
+ofl_mod :: import "libc/src/stdio/ofl"
+
+__ofl_add :: proc(f: *alltypes.FILE) *alltypes.FILE {
+    head := ofl_mod.__ofl_lock()
+    if head.* != null {
+        f.next = head.*?
+        (head.*?).prev = f
+    } else {
+        f.next = (0.(usize)).^*alltypes.FILE
+    }
+    head.* = f
+    ofl_mod.__ofl_unlock()
+    return f
+}

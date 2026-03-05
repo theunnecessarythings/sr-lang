@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/res_init.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <resolv.h>
+
+res_init :: proc() i32 {
+    return 0
+}

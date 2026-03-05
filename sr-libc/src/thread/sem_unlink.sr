@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/sem_unlink.c
+
+shm_unlink :: extern proc(name: *const u8) i32
+
+sem_unlink :: proc(name: *const u8) i32 {
+    return shm_unlink(name)
+}

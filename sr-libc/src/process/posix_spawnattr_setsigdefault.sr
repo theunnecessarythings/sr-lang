@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/process/posix_spawnattr_setsigdefault.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <spawn.h>
+
+posix_spawnattr_setsigdefault :: proc(attr: *posix_spawnattr_t restrict, def: *const alltypes.sigset_t restrict) i32 {
+    attr.__def = def.*
+    return 0
+}

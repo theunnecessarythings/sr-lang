@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/dirent/closedir.c
+
+close_mod :: import "libc/src/unistd/close"
+
+free :: extern proc(p: *void) void
+
+closedir :: proc(dir: *DIR) i32 {
+    if dir == null { return -1 }
+    fd := dir.fd
+    free(dir.^*void)
+    return close_mod.close(fd)
+}

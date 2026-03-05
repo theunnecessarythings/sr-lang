@@ -1,0 +1,26 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/nexttoward.c.
+
+libm :: import "libc/src/math/libm_internal"
+basic :: import "libc/src/math/basic"
+
+nexttoward :: proc(x: f64, y: f128) f64 {
+    ux := x.^u64
+    e: u32
+
+    if basic.isnan(x) != 0 or basic.isnanl(y) { return x + y.(f64) }
+    if x.(f128) == y { return y.(f64) }
+    if x == 0.0 {
+        ux = 1
+        if basic.signbitl(y) != 0 { ux |= 1u64 << 63 }
+    } else if x.(f128) < y {
+        if basic.signbit(x) != 0 { ux -= 1 } else { ux += 1 }
+    } else {
+        if basic.signbit(x) != 0 { ux += 1 } else { ux -= 1 }
+    }
+    e = ((ux >> 52) & 0x7ff).(u32)
+    if e == 0x7ff { libm.fp_force_eval(x + x) }
+    if e == 0 { libm.fp_force_eval(x * x + (ux.^f64) * (ux.^f64)) }
+    return ux.^f64
+}

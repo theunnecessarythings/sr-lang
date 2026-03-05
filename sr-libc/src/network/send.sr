@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/send.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+
+send :: proc(fd: i32, buf: *const void, len: usize, flags: i32) isize {
+    return sendto(fd, buf, len, flags, null, 0)
+}

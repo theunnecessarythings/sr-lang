@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/strlen.c (portable loop).
+
+strlen :: proc(s: *const u8) usize {
+    i: usize = 0
+    while s[i] != 0 {
+        i += 1
+    }
+    return i
+}

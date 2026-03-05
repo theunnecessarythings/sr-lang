@@ -1,0 +1,25 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/sbrk.c (syscall implementation).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+err :: import "libc/include/errno"
+
+sbrk :: proc(inc: intptr_t) *void {
+    cur := sc.syscall1(nums.SYS_brk.(i64), 0)
+    if cur < 0 { _ = sc.__syscall_ret(cur); return null }
+    if inc == 0 { return cur.(usize).^*void }
+    new := cur + inc.(i64)
+    r := sc.syscall1(nums.SYS_brk.(i64), new)
+    if r < 0 {
+        _ = sc.__syscall_ret(r)
+        return null
+    }
+    if r < new {
+        errp := __errno_location()
+        errp.* = err.ENOMEM
+        return null
+    }
+    return cur.(usize).^*void
+}

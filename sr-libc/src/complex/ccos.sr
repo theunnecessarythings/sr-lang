@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/ccos.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+ccos :: proc(z: complex(f64)) complex(f64) {
+    return ccosh(impl.cmplx(-z.imag, z.real))
+}

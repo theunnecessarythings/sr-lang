@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/prctl.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+prctl :: proc(op: i32, arg2: usize, arg3: usize, arg4: usize, arg5: usize) i32 {
+    r := sc.syscall5_ret(
+        nums.SYS_prctl.(i64),
+        op.(i64),
+        arg2.(i64),
+        arg3.(i64),
+        arg4.(i64),
+        arg5.(i64),
+    )
+    return r.(i32)
+}

@@ -1,0 +1,27 @@
+package main
+
+io :: import "std/io"
+
+main :: proc() {
+    // Question: How do we take an address?
+    // Answer: Use `&` and a pointer type `*T`.
+    x: i32 = 42
+    px: *i32 = &x
+
+    // Question: How do we dereference?
+    // Answer: Use `.*`.
+    io.println("x=%d", px.*)
+    px.* = 100
+    io.println("x=%d", x)
+
+    // Question: What is an optional?
+    // Answer: `?T` can be a value or null.
+    opt: ?i32 = null
+    opt = 5
+
+    // Question: How do we unwrap?
+    // Answer: Use `?` or `orelse`.
+    v1 := opt?
+    v2 := opt orelse 0
+    io.println("%d %d", v1, v2)
+}

@@ -1,0 +1,19 @@
+package libc
+
+// Derived from musl-1.2.5/src/mq/mq_send.c
+
+mq_h :: import "libc/include/mqueue"
+nums :: import "libc/include/syscall"
+sc :: import "libc/src/syscall/syscall"
+
+mq_send :: proc(mqd: mq_h.mqd_t, msg: *const u8, len: usize, prio: u32) i32 {
+    r := sc.syscall5_ret(
+        nums.SYS_mq_timedsend.(i64),
+        mqd.(i64),
+        msg.^usize.(i64),
+        len.(i64),
+        prio.(i64),
+        0,
+    )
+    return r.(i32)
+}

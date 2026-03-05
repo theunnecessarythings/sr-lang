@@ -1,0 +1,28 @@
+package libc
+
+// Derived from musl-1.2.5/src/process/posix_spawn_file_actions_adddup2.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <spawn.h>
+// #include <stdlib.h>
+// #include <errno.h>
+// #include <fdop.h>
+
+errno_mod :: import "libc/include/errno"
+malloc_mod :: import "libc/src/malloc/lite_malloc"
+
+posix_spawn_file_actions_adddup2 :: proc(fa: *posix_spawn_file_actions_t, srcfd: i32, fd: i32) i32 {
+    if srcfd < 0 || fd < 0 { return errno_mod.EBADF }
+    op := malloc_mod.__libc_malloc(sizeof(fdop)).(^*fdop)
+    if op == null { return errno_mod.ENOMEM }
+    op.cmd = FDOP_DUP2
+    op.srcfd = srcfd
+    op.fd = fd
+    op.oflag = 0
+    op.mode = 0
+    if fa.__actions != null { fa.__actions.prev = op }
+    op.next = fa.__actions
+    op.prev = null
+    fa.__actions = op
+    return 0
+}

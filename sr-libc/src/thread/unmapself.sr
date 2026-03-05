@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/x86_64/__unmapself.s
+
+__unmapself :: fn(start: *void, len: usize) void asm {
+    movl $11, %eax
+    syscall
+    xor %rdi, %rdi
+    movl $60, %eax
+    syscall
+}

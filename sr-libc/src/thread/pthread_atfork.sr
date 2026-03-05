@@ -1,0 +1,60 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_atfork.c
+
+errno_mod :: import "libc/include/errno"
+lock_mod :: import "libc/src/internal/lock"
+malloc_mod :: import "libc/src/malloc/lite_malloc"
+
+atfork_funcs :: struct {
+    prepare: *proc() void,
+    parent: *proc() void,
+    child: *proc() void,
+    prev: *atfork_funcs,
+    next: *atfork_funcs,
+}
+
+funcs: *atfork_funcs
+fork_lock: [1]i32
+
+__fork_handler :: proc(who: i32) void {
+    p := funcs
+    if p == null { return }
+    if who < 0 {
+        lock_mod.__lock(&fork_lock[0])
+        while true {
+            if p == null { break }
+            if p.prepare != null() void { p.prepare() }
+            funcs = p
+            p = p.next
+        }
+    } else {
+        while true {
+            if p == null { break }
+            if who == 0 {
+                if p.parent != null() void { p.parent() }
+            } else {
+                if p.child != null() void { p.child() }
+            }
+            funcs = p
+            p = p.prev
+        }
+        lock_mod.__unlock(&fork_lock[0])
+    }
+}
+
+pthread_atfork :: proc(prepare: *proc() void, parent: *proc() void, child: *proc() void) i32 {
+    new := malloc_mod.__libc_malloc(sizeof(atfork_funcs)).(^*atfork_funcs)
+    if new == null { return errno_mod.ENOMEM }
+
+    lock_mod.__lock(&fork_lock[0])
+    new.next = funcs
+    new.prev = null
+    new.prepare = prepare
+    new.parent = parent
+    new.child = child
+    if funcs != null { funcs.prev = new }
+    funcs = new
+    lock_mod.__unlock(&fork_lock[0])
+    return 0
+}

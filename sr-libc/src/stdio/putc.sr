@@ -1,0 +1,5 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/putc.c.
+
+putc :: proc(c: i32, f: *alltypes.FILE) i32 { return fputc(c, f) }

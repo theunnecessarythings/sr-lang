@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/tss_delete.c
+
+key_mod :: import "libc/src/thread/pthread_key_create"
+
+tss_delete :: proc(key: tss_t) void {
+    _ = key_mod.__pthread_key_delete(key.(alltypes.pthread_key_t))
+}

@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/exp10l.c (f128 via exp2l).
+
+LOG2_10 :: 3.3219280948873623478703194294893901758648313930245806
+
+exp10l :: proc(x: f128) f128 {
+    return exp2l(x * LOG2_10)
+}

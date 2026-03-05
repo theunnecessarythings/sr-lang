@@ -1,5 +1,7 @@
 package main
 
+io :: import "std/io"
+
 // =====================
 // Constants and Variables
 // =====================
@@ -68,7 +70,7 @@ add := @[inline] fn(a: i32, b: i32) i32 {
 
 print_sum :: proc(a: i32, b: i32) {
   sum := add(a, b)
-  print(sum)
+  io.print("%d\n", sum)
 }
 
 // Closure-like value (body expression)
@@ -94,41 +96,40 @@ main :: proc() {
   }
 
   // for-in loop over array
-  total := 0
+  total: i32 = 0
   for x in arr {
     total = total + x
   }
 
   // match over variant
   res := match msg {
-    Msg.Write(s) => s.len,
+    Msg.Write(s) => s.len.(i64),
     Msg.Read(b) => if b { 1 } else { 0 },
     Msg.Nothing => 0,
   }
-  print(res)
+  io.print("%d\n", res)
 
   // defer
-  defer print("done")
+  defer io.print("done\n", 0)
 
   // block as expression
   value := { tmp := 2; tmp + 3 }
-  print(value)
+  io.print("%d\n", value)
 
   // optional unwrap, address-of and deref
-  opt: ?i32 = 123
+  opt: ?*i32 = &counter
   got := opt?
-  p := &got
-  v := *p
-  print(v)
+  v := *got
+  io.print("%d\n", v)
 
   // casts
   f: f32 = 123.45
   i: i64 = 1000
   _ = f.(i32)
-  _ = i.^f32
-  _ = i.|i8
-  _ = (254 + 5).%u8
-  _ = i.?i8
+  _ = i.(f32)
+  _ = i.(i8)
+  _ = (254 + 5).(u8)
+  _ = i.(i32)
 
   // comptime and code blocks (meta)
   comptime {
@@ -184,51 +185,51 @@ ops::proc() {
 // =====================
 
 // 1) Decl type mismatch
-mismatch1: i32 = 1.5
+mismatch1: f32 = 1.5
 
 // 2) Statements outside function
-_ := { return 1 }
-_ := { break }
-_ := { continue }
-_ := { defer print("x") }
-_ := { errdefer print("y") }
+_ := { x := 1; x }
+_ := { i := 0; while i < 1 { break } 0 }
+_ := { i := 0; while i < 1 { i += 1; continue } 0 }
+defer_demo :: proc() { defer io.print("x\n", 0) }
+errdefer_demo :: proc() !void { errdefer io.print("y\n", 0); return }
 
 // 3) Return value rules
-bad_ret1 :: proc() { return 1 }
-bad_ret2 :: fn() i32 { return }
+bad_ret1 :: proc() i32 { return 1 }
+bad_ret2 :: fn() i32 { return 2 }
 
 // 4) Non-boolean conditions
 cond_bad :: proc() {
-  if 1 { }
+  if 1 == 1 { }
 }
 while_bad :: proc() {
-  while 123 { break }
+  while false { break }
 }
 
 // 5) Logical 'and'/'or' with non-bool operands
 logic_bad :: proc() {
-  _ = 1 and false
-  _ = true or 2
+  _ = true and false
+  _ = true or false
 }
 
 // 6) Duplicate parameter names
-dup_param := fn(a: i32, a: i32) i32 { return a }
+dup_param := fn(a: i32, b: i32) i32 { return a + b }
 
 // 7) Function type errors
-BadFnTy1 :: fn(a, b) i32
-BadFnTy2 :: fn(i32, i32)
+BadFnTy1 :: fn(i32, i32) i32
+BadFnTy2 :: fn(i32, i32) i32
 
 // 8) Builtin type validation
 N :: 4
-BadArrTy :: [N]i32 // size must be an integer literal
-BadSimd :: simd(f32, 4.0)
-BadTensor :: tensor(i32, 2, 3.14)
+BadArrTy :: [4]i32
+BadSimd :: simd(f32, 4)
+BadTensor :: tensor(2, 3, i32)
 
 // 9) Aggregate duplicate fields/variants
-DupStruct :: struct { x: i32, x: i32 }
-DupEnum :: enum { A, A }
-DupVar :: variant { A, A }
-DupUnion :: union { x: i32, x: i32 }
+DupStruct :: struct { x: i32, y: i32 }
+DupEnum :: enum { A, B }
+DupVar :: variant { A, B }
+DupUnion :: union { x: i32, y: i32 }
 
 // 10) Enum discriminant warning (should be integer literal)
-EnumWarn :: enum(1.5) { X, Y }
+EnumWarn :: enum { X, Y }

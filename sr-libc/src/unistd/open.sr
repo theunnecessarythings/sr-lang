@@ -1,0 +1,19 @@
+package libc
+
+// Derived from musl-1.2.5/src/fcntl/open.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+open :: proc(path: *const u8, flags: i32, mode: i32) i32 {
+    // Ensure O_LARGEFILE when setting flags, matching musl behavior.
+    f := (flags | 0o100000).(i32)
+    r := sc.syscall3_ret(nums.SYS_open.(i64), path.^usize.(i64), f.(i64), mode.(i64))
+    return r.(i32)
+}
+
+openat :: proc(dirfd: i32, path: *const u8, flags: i32, mode: i32) i32 {
+    f := (flags | 0o100000).(i32)
+    r := sc.syscall4_ret(nums.SYS_openat.(i64), dirfd.(i64), path.^usize.(i64), f.(i64), mode.(i64))
+    return r.(i32)
+}

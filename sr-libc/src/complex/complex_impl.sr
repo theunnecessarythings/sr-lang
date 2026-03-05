@@ -1,0 +1,46 @@
+package libc
+
+// Helpers for constructing complex values from real/imag parts.
+
+imag_unit_f64 :: (1.0i).(complex(f64))
+imag_unit_f32 :: (1.0i).(complex(f32))
+imag_unit_f128 :: (1.0i).(complex(f128))
+
+cmplx :: proc(re: f64, im: f64) complex(f64) {
+    return (re + im * imag_unit_f64).(complex(f64))
+}
+
+cmplxf :: proc(re: f32, im: f32) complex(f32) {
+    return (re + im * imag_unit_f32).(complex(f32))
+}
+
+cmplxl :: proc(re: f128, im: f128) complex(f128) {
+    return (re + im * imag_unit_f128).(complex(f128))
+}
+
+get_f64_words :: proc(x: f64, hi: *u32, lo: *u32) {
+    bits := x.^u64
+    hi.* = (bits >> 32).(u32)
+    lo.* = (bits & 0xffff_ffffu64).(u32)
+}
+
+set_f64_words :: proc(hi: u32, lo: u32) f64 {
+    return (((hi.(u64) << 32) | lo.(u64))).^f64
+}
+
+get_f64_high :: proc(x: f64) u32 {
+    return ((x.^u64 >> 32) & 0xffff_ffffu64).(u32)
+}
+
+set_f64_high :: proc(x: f64, hi: u32) f64 {
+    bits := x.^u64
+    return (((hi.(u64) << 32) | (bits & 0xffff_ffffu64))).^f64
+}
+
+get_f32_word :: proc(x: f32) u32 {
+    return x.^u32
+}
+
+set_f32_word :: proc(w: u32) f32 {
+    return w.^f32
+}

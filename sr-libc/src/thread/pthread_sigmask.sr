@@ -1,0 +1,31 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_sigmask.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <signal.h>
+// #include <errno.h>
+// #include <syscall.h>
+
+errno_mod :: import "libc/include/errno"
+sig_h :: import "libc/include/signal"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+_NSIG :: 65
+
+pthread_sigmask :: proc(how: i32, set: *const alltypes.sigset_t restrict, old: *alltypes.sigset_t restrict) i32 {
+    if set != null {
+        if (how.(u32) - sig_h.SIG_BLOCK.(u32)) > 2 { return errno_mod.EINVAL }
+    }
+
+    set_ptr := if set == null { 0 } else { set.^usize }
+    old_ptr := if old == null { 0 } else { old.^usize }
+
+    ret := sc.syscall4(nums.SYS_rt_sigprocmask.(i64), how.(i64), set_ptr.(i64), old_ptr.(i64), (_NSIG / 8).(i64))
+    if ret < 0 { return (-ret).(i32) }
+    if old != null {
+        old.__bits[0] &= ~0x380000000u64
+    }
+    return 0
+}

@@ -1,0 +1,121 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdlib/wcstol.c (string-only path).
+
+ctype :: import "libc/src/ctype/ctype"
+errno_mod :: import "libc/include/errno"
+
+U64_MAX :: 0xffffffffffffffffu64
+I64_MAX :: 0x7fffffffffffffff
+I64_MIN_ABS :: 0x8000000000000000u64
+
+w_isspace :: fn(c: wchar_t) bool {
+    if c < 0 or c > 127 { return false }
+    return ctype.isspace(c.(i32)) != 0
+}
+
+w_digit_val :: fn(c: wchar_t) i32 {
+    if c < 0 or c > 127 { return -1 }
+    u := c.(u8)
+    if u >= 48 and u <= 57 { return (u - 48).(i32) }
+    if u >= 65 and u <= 90 { return (u - 65 + 10).(i32) }
+    if u >= 97 and u <= 122 { return (u - 97 + 10).(i32) }
+    return -1
+}
+
+scan_unsigned_w :: fn(s: *const wchar_t, base_in: i32, limit: u64, signed_mode: bool, endptr: ?**wchar_t) u64 {
+    p := s
+    while w_isspace(p[0]) { p = (&p[1]).^*wchar_t }
+
+    neg := false
+    if p[0] == 45 { neg = true; p = (&p[1]).^*wchar_t }
+    else if p[0] == 43 { p = (&p[1]).^*wchar_t }
+
+    base := base_in
+    if base != 0 and (base < 2 or base > 36) {
+        errno_mod.__errno_location().* = errno_mod.EINVAL
+        if endptr != null { endptr?.* = p }
+        return 0
+    }
+
+    if (base == 0 or base == 16) and p[0] == 48 and (p[1] | 32) == 120 and w_digit_val(p[2]) >= 0 {
+        base = 16
+        p = (&p[2]).^*wchar_t
+    } else if base == 0 and p[0] == 48 {
+        base = 8
+    } else if base == 0 {
+        base = 10
+    }
+
+    any := false
+    val: u64 = 0
+    if base == 8 and p[0] == 48 {
+        any = true
+        p = (&p[1]).^*wchar_t
+    }
+    cutoff := limit / base.(u64)
+    cutlim := (limit % base.(u64)).(i32)
+
+    while true {
+        d := w_digit_val(p[0])
+        if d < 0 or d >= base { break }
+        any = true
+        if val > cutoff or (val == cutoff and d > cutlim) {
+            errno_mod.__errno_location().* = errno_mod.ERANGE
+            val = limit
+            p = (&p[1]).^*wchar_t
+            while true {
+                d2 := w_digit_val(p[0])
+                if d2 < 0 or d2 >= base { break }
+                p = (&p[1]).^*wchar_t
+            }
+            break
+        }
+        val = val * base.(u64) + d.(u64)
+        p = (&p[1]).^*wchar_t
+    }
+
+    if !any {
+        errno_mod.__errno_location().* = errno_mod.EINVAL
+        if endptr != null { endptr?.* = s }
+        return 0
+    }
+
+    if endptr != null { endptr?.* = p }
+
+    if neg {
+        if signed_mode and val == limit {
+            return limit
+        }
+        return (0u64 - val)
+    }
+    return val
+}
+
+wcstoull :: proc(s: *const wchar_t, endptr: ?**wchar_t, base: i32) u64 {
+    return scan_unsigned_w(s, base, U64_MAX, false, endptr)
+}
+
+wcstoll :: proc(s: *const wchar_t, endptr: ?**wchar_t, base: i32) i64 {
+    lim := I64_MIN_ABS
+    v := scan_unsigned_w(s, base, lim, true, endptr)
+    return v.(i64)
+}
+
+wcstoul :: proc(s: *const wchar_t, endptr: ?**wchar_t, base: i32) usize {
+    return scan_unsigned_w(s, base, U64_MAX, false, endptr).(usize)
+}
+
+wcstol :: proc(s: *const wchar_t, endptr: ?**wchar_t, base: i32) isize {
+    lim := I64_MIN_ABS
+    v := scan_unsigned_w(s, base, lim, true, endptr)
+    return v.(i64).(isize)
+}
+
+wcstoimax :: proc(s: *const wchar_t, endptr: ?**wchar_t, base: i32) intmax_t {
+    return wcstoll(s, endptr, base)
+}
+
+wcstoumax :: proc(s: *const wchar_t, endptr: ?**wchar_t, base: i32) uintmax_t {
+    return wcstoull(s, endptr, base)
+}

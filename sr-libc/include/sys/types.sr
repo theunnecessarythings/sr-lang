@@ -1,0 +1,63 @@
+package libc
+
+// Derived from musl-1.2.5/include/sys/types.h
+// Core typedefs are provided by alltypes.sr.
+
+alltypes :: import "libc/include/alltypes"
+
+size_t :: alltypes.size_t
+ssize_t :: alltypes.ssize_t
+ptrdiff_t :: alltypes.ptrdiff_t
+alltypes.off_t :: alltypes.off_t
+ino_t :: alltypes.ino_t
+dev_t :: alltypes.dev_t
+mode_t :: alltypes.mode_t
+nlink_t :: alltypes.nlink_t
+uid_t :: alltypes.uid_t
+gid_t :: alltypes.gid_t
+alltypes.pid_t :: alltypes.pid_t
+id_t :: alltypes.id_t
+time_t :: alltypes.time_t
+useconds_t :: alltypes.useconds_t
+suseconds_t :: alltypes.suseconds_t
+blksize_t :: alltypes.blksize_t
+blkcnt_t :: alltypes.blkcnt_t
+fsblkcnt_t :: alltypes.fsblkcnt_t
+fsfilcnt_t :: alltypes.fsfilcnt_t
+clock_t :: alltypes.clock_t
+clockid_t :: alltypes.clockid_t
+key_t :: alltypes.key_t
+sa_family_t :: alltypes.sa_family_t
+socklen_t :: alltypes.socklen_t
+
+timer_t :: alltypes.timer_t
+register_t :: alltypes.register_t
+
+alltypes.pthread_t :: alltypes.pthread_t
+alltypes.pthread_attr_t :: alltypes.pthread_attr_t
+pthread_mutexattr_t :: alltypes.pthread_mutexattr_t
+pthread_condattr_t :: alltypes.pthread_condattr_t
+pthread_rwlockattr_t :: alltypes.pthread_rwlockattr_t
+pthread_barrierattr_t :: alltypes.pthread_barrierattr_t
+alltypes.pthread_mutex_t :: alltypes.pthread_mutex_t
+pthread_cond_t :: alltypes.pthread_cond_t
+alltypes.pthread_rwlock_t :: alltypes.pthread_rwlock_t
+pthread_barrier_t :: alltypes.pthread_barrier_t
+pthread_spinlock_t :: alltypes.pthread_spinlock_t
+alltypes.pthread_key_t :: alltypes.pthread_key_t
+pthread_once_t :: alltypes.pthread_once_t
+
+// GNU/BSD extensions (musl exposes these under _GNU_SOURCE/_BSD_SOURCE)
+u_int8_t :: u8
+u_int16_t :: u16
+u_int32_t :: u32
+u_char :: u8
+u_short :: u16
+ushort :: u16
+u_int :: u32
+uint :: u32
+u_long :: u64
+ulong :: u64
+quad_t :: i64
+u_quad_t :: u64
+caddr_t :: *u8

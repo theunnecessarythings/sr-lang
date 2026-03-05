@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/ldso/dlinfo.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <dlfcn.h>
+// #include <dynlink.h>
+
+dlinfo :: proc(dso: void, req: i32, res: void) i32 {
+    // TODO: Translate function body
+    unreachable
+}
+

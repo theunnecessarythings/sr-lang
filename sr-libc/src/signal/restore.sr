@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/restore.c
+
+__restore :: proc() void asm {
+    movq $15, %rax
+    syscall
+}
+
+__restore_rt :: proc() void asm {
+    movq $15, %rax
+    syscall
+}

@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/sigignore.c
+
+sig_h :: import "libc/include/signal"
+sigaction_mod :: import "libc/src/signal/sigaction"
+sigempty_mod :: import "libc/src/signal/sigemptyset"
+
+sigignore :: proc(sig: i32) i32 {
+    sa: sig_h.sigaction
+    sa.sa_handler = sig_h.SIG_IGN
+    sa.sa_flags = 0
+    sa.sa_restorer = null
+    _ = sigempty_mod.sigemptyset(&sa.sa_mask)
+    return sigaction_mod.__sigaction(sig, &sa, null)
+}

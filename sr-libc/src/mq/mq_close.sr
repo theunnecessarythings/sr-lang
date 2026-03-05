@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/mq/mq_close.c
+
+mq_h :: import "libc/include/mqueue"
+close_mod :: import "libc/src/unistd/close"
+
+mq_close :: proc(mqd: mq_h.mqd_t) i32 {
+    return close_mod.close(mqd)
+}

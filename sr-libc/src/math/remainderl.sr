@@ -1,0 +1,8 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/remainderl.c.
+
+remainderl :: proc(x: f128, y: f128) f128 {
+    q: i32
+    return remquol(x, y, &q)
+}

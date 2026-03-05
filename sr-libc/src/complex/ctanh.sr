@@ -1,0 +1,44 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/ctanh.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+ctanh :: proc(z: complex(f64)) complex(f64) {
+    x := z.real
+    y := z.imag
+    t: f64
+    beta: f64
+    s: f64
+    rho: f64
+    denom: f64
+
+    hx: u32 = 0
+    lx: u32 = 0
+    impl.get_f64_words(x, &hx, &lx)
+    ix := hx & 0x7fffffff
+
+    if ix >= 0x7ff00000 {
+        if ((ix & 0xfffff) | lx) != 0 {
+            return impl.cmplx(x, if y == 0.0 { y } else { x * y })
+        }
+        x = impl.set_f64_high(x, hx - 0x40000000)
+        return impl.cmplx(x, copysign(0.0, if isinf(y) != 0 { y } else { sin(y) * cos(y) }))
+    }
+
+    if isfinite(y) == 0 {
+        return impl.cmplx(if x != 0.0 { y - y } else { x }, y - y)
+    }
+
+    if ix >= 0x40360000 {
+        exp_mx := exp(-fabs(x))
+        return impl.cmplx(copysign(1.0, x), 4.0 * sin(y) * cos(y) * exp_mx * exp_mx)
+    }
+
+    t = tan(y)
+    beta = 1.0 + t * t
+    s = sinh(x)
+    rho = sqrt(1.0 + s * s)
+    denom = 1.0 + beta * s * s
+    return impl.cmplx((beta * rho * s) / denom, t / denom)
+}

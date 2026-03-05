@@ -1,0 +1,8 @@
+package libc
+
+// Derived from musl-1.2.5/src/multibyte/wctomb.c.
+
+wctomb :: proc(s: ?*u8, wc: wchar_t) i32 {
+    if s == null { return 0 }
+    return wcrtomb(s, wc, null).(i32)
+}

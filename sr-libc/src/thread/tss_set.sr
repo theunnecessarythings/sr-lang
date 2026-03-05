@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/tss_set.c
+
+pthread_setspecific_mod :: import "libc/src/thread/pthread_setspecific"
+
+thrd_success :: 0
+
+tss_set :: proc(k: tss_t, x: *void) i32 {
+    _ = pthread_setspecific_mod.pthread_setspecific(k.(alltypes.pthread_key_t), x)
+    return thrd_success
+}

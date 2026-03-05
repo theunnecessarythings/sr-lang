@@ -1,0 +1,59 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/inet_aton.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <ctype.h>
+// #include <sys/socket.h>
+// #include <netinet/in.h>
+// #include <arpa/inet.h>
+// #include <stdlib.h>
+
+ctype_mod :: import "libc/src/ctype/ctype"
+strtoul_mod :: import "libc/src/stdlib/strtol"
+
+__inet_aton :: proc(s0: *const char, dest: *in_addr) i32 {
+    s := snull
+    d := dest.^*u8
+    a: [4]u64 = [4]u64{ 0, 0, 0, 0 }
+    i: i32 = 0
+
+    while i < 4 {
+        z: *u8 = null
+        a[i.(usize)] = strtoul_mod.strtoul(s, &z, 0)
+        if z == s || (z[0] != 0 && z[0] != '.'.(u8)) || ctype_mod.isdigit(s[0].(i32)) == 0 {
+            return 0
+        }
+        if z[0] == 0 { break }
+        s = (&z[1]).^*u8
+        i += 1
+    }
+    if i == 4 { return 0 }
+
+    if i == 0 {
+        a[1] = a[0] & 0xffffff
+        a[0] >>= 24
+        a[2] = a[1] & 0xffff
+        a[1] >>= 16
+        a[3] = a[2] & 0xff
+        a[2] >>= 8
+    } else if i == 1 {
+        a[2] = a[1] & 0xffff
+        a[1] >>= 16
+        a[3] = a[2] & 0xff
+        a[2] >>= 8
+    } else if i == 2 {
+        a[3] = a[2] & 0xff
+        a[2] >>= 8
+    }
+
+    i = 0
+    while i < 4 {
+        if a[i.(usize)] > 255 { return 0 }
+        d[i.(usize)] = a[i.(usize)].(u8)
+        i += 1
+    }
+    return 1
+}
+
+inet_aton :: __inet_aton

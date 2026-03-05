@@ -1,0 +1,149 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/lookup_serv.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <netinet/in.h>
+// #include <netdb.h>
+// #include <ctype.h>
+// #include <string.h>
+// #include <stdlib.h>
+// #include <fcntl.h>
+// #include <errno.h>
+// #include <lookup.h>
+// #include <stdio_impl.h>
+
+ctype_mod :: import "libc/src/ctype/ctype"
+string_h :: import "libc/src/string"
+strtoul_mod :: import "libc/src/stdlib/strtol"
+errno_mod :: import "libc/include/errno"
+netdb_h :: import "libc/include/netdb"
+lookup_h :: import "libc/include/lookup"
+fopen_mod :: import "libc/src/stdio/fopen"
+fgets_mod :: import "libc/src/stdio/fgets"
+fclose_mod :: import "libc/src/stdio/fclose"
+
+__lookup_serv :: proc(buf: *lookup_h.service, name: *const u8, proto: i32, socktype: i32, flags: i32) i32 {
+    line: [128]u8
+    cnt: i32 = 0
+    p: *u8
+    z: *u8
+    port: u64 = 0
+
+    switch socktype {
+        SOCK_STREAM => {
+            switch proto {
+                0 => { proto = IPPROTO_TCP }
+                IPPROTO_TCP => {}
+                else => { return netdb_h.EAI_SERVICE }
+            }
+        }
+        SOCK_DGRAM => {
+            switch proto {
+                0 => { proto = IPPROTO_UDP }
+                IPPROTO_UDP => {}
+                else => { return netdb_h.EAI_SERVICE }
+            }
+        }
+        0 => {}
+        else => {
+            if name != null { return netdb_h.EAI_SERVICE }
+            buf[0].port = 0
+            buf[0].proto = proto.(u8)
+            buf[0].socktype = socktype.(u8)
+            return 1
+        }
+    }
+
+    if name != null {
+        if name[0] == 0 { return netdb_h.EAI_SERVICE }
+        end: *u8 = null
+        port = strtoul_mod.strtoul(name, &end, 10)
+        z = end
+    } else {
+        z = "x".(^*u8)
+    }
+
+    if z[0] == 0 {
+        if port > 65535 { return netdb_h.EAI_SERVICE }
+        if proto != IPPROTO_UDP {
+            buf[cnt.(usize)].port = port.(u16)
+            buf[cnt.(usize)].socktype = SOCK_STREAM.(u8)
+            buf[cnt.(usize)].proto = IPPROTO_TCP.(u8)
+            cnt += 1
+        }
+        if proto != IPPROTO_TCP {
+            buf[cnt.(usize)].port = port.(u16)
+            buf[cnt.(usize)].socktype = SOCK_DGRAM.(u8)
+            buf[cnt.(usize)].proto = IPPROTO_UDP.(u8)
+            cnt += 1
+        }
+        return cnt
+    }
+
+    if (flags & netdb_h.AI_NUMERICSERV) != 0 { return netdb_h.EAI_NONAME }
+
+    l := string_h.strlen(name)
+    f := fopen_mod.fopen("/etc/services", "r")
+    if f == null {
+        switch errno_mod.errno().* {
+            errno_mod.ENOENT, errno_mod.ENOTDIR, errno_mod.EACCES => { return netdb_h.EAI_SERVICE }
+            else => { return netdb_h.EAI_SYSTEM }
+        }
+    }
+
+    while fgets_mod.fgets(&line[0], 128, f) != null && cnt < lookup_h.MAXSERVS.(i32) {
+        p = string_h.strchr(&line[0], '#')
+        if p != null {
+            p[0] = '\n'.(u8)
+            p = (&p[1]).^*u8
+            p[0] = 0
+        }
+
+        // Find service name
+        p = &line[0]
+        while true {
+            p = string_h.strstr(p, name)
+            if p == null { break }
+            if p.^usize > (&line[0]).^usize {
+                prev := (p.^usize - 1).(usize).^*u8
+                if ctype_mod.isspace(prev[0].(i32)) == 0 {
+                    p = (&p[1]).^*u8
+                    continue
+                }
+            }
+            if p[l] != 0 && ctype_mod.isspace(p[l].(i32)) == 0 {
+                p = (&p[1]).^*u8
+                continue
+            }
+            break
+        }
+        if p == null { continue }
+
+        // Skip past canonical name at beginning of line
+        p = &line[0]
+        while p[0] != 0 && ctype_mod.isspace(p[0].(i32)) == 0 { p = (&p[1]).^*u8 }
+
+        end2: *u8 = null
+        port = strtoul_mod.strtoul(p, &end2, 10)
+        z = end2
+        if port > 65535 || z == p { continue }
+        if string_h.strncmp(z, "/udp", 4) == 0 {
+            if proto == IPPROTO_TCP { continue }
+            buf[cnt.(usize)].port = port.(u16)
+            buf[cnt.(usize)].socktype = SOCK_DGRAM.(u8)
+            buf[cnt.(usize)].proto = IPPROTO_UDP.(u8)
+            cnt += 1
+        }
+        if string_h.strncmp(z, "/tcp", 4) == 0 {
+            if proto == IPPROTO_UDP { continue }
+            buf[cnt.(usize)].port = port.(u16)
+            buf[cnt.(usize)].socktype = SOCK_STREAM.(u8)
+            buf[cnt.(usize)].proto = IPPROTO_TCP.(u8)
+            cnt += 1
+        }
+    }
+    _ = fclose_mod.fclose(f)
+    return if cnt > 0 { cnt } else { netdb_h.EAI_SERVICE }
+}

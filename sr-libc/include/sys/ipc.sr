@@ -1,0 +1,28 @@
+package libc
+
+// Derived from musl-1.2.5/include/sys/ipc.h and arch/generic/bits/ipc.h
+
+IPC_CREAT :: 0o1000
+IPC_EXCL :: 0o2000
+IPC_NOWAIT :: 0o4000
+
+IPC_RMID :: 0
+IPC_SET :: 1
+IPC_STAT :: 2
+IPC_INFO :: 3
+
+IPC_PRIVATE :: (0).(key_t)
+
+ipc_perm :: struct {
+    __ipc_perm_key: key_t,
+    uid: uid_t,
+    gid: gid_t,
+    cuid: uid_t,
+    cgid: gid_t,
+    mode: mode_t,
+    __ipc_perm_seq: i32,
+    __pad1: i64,
+    __pad2: i64,
+}
+
+ftok :: proc(path: *const u8, id: i32) key_t

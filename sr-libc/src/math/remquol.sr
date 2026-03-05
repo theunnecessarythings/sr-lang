@@ -1,0 +1,106 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/remquol.c.
+
+basic :: import "libc/src/math/basic"
+
+remquol :: proc(x: f128, y: f128, quo: *i32) f128 {
+    ux := x.^u128
+    uy := y.^u128
+    ex := ((ux >> 112) & 0x7fff).(i32)
+    ey := ((uy >> 112) & 0x7fff).(i32)
+    sx := ((ux >> 127) & 1).(u32)
+    sy := ((uy >> 127) & 1).(u32)
+    q: u32
+
+    quo.* = 0
+    if y == 0.0 or basic.isnanl(y) or ex == 0x7fff { return (x * y) / (x * y) }
+    if x == 0.0 { return x }
+
+    frac_mask := (1u128 << 112) - 1
+    mx: u128
+    my: u128
+    Ex: i32
+    Ey: i32
+
+    if ex == 0 {
+        mx = ux & frac_mask
+        Ex = 1 - 0x3fff
+        while (mx & (1u128 << 112)) == 0 {
+            mx <<= 1
+            Ex -= 1
+        }
+    } else {
+        mx = (1u128 << 112) | (ux & frac_mask)
+        Ex = ex - 0x3fff
+    }
+    if ey == 0 {
+        my = uy & frac_mask
+        Ey = 1 - 0x3fff
+        while (my & (1u128 << 112)) == 0 {
+            my <<= 1
+            Ey -= 1
+        }
+    } else {
+        my = (1u128 << 112) | (uy & frac_mask)
+        Ey = ey - 0x3fff
+    }
+
+    q = 0
+    do_mod := true
+    if Ex < Ey {
+        if Ex + 1 == Ey {
+            do_mod = false
+        } else {
+            return x
+        }
+    }
+
+    if do_mod {
+        while Ex > Ey {
+            if mx >= my {
+                mx = mx - my
+                q += 1
+            }
+            mx <<= 1
+            q <<= 1
+            Ex -= 1
+        }
+        if mx >= my {
+            mx = mx - my
+            q += 1
+        }
+        if mx == 0 {
+            Ex = -120
+        } else {
+            while (mx & (1u128 << 112)) == 0 {
+                mx <<= 1
+                Ex -= 1
+            }
+        }
+    }
+
+    // scale result
+    res: f128
+    if mx == 0 {
+        res = 0.0
+    } else if Ex > -16382 {
+        exp := (Ex + 0x3fff).(u128)
+        bits := (exp << 112) | (mx & frac_mask)
+        res = bits.^f128
+    } else {
+        shift := (-Ex - 16382).(u32)
+        frac := if shift >= 113 { 0 } else { (mx >> shift) }
+        res = (frac & frac_mask).^f128
+    }
+
+    if sy != 0 { y = -y }
+    if Ex == Ey or (Ex + 1 == Ey and (2.0 * res > y or (2.0 * res == y and (q % 2) != 0))) {
+        res -= y
+        q += 1
+    }
+
+    q &= 0x7fffffff
+    quo.* = if (sx ^ sy) != 0 { -q.(i32) } else { q.(i32) }
+    return if sx != 0 { -res } else { res }
+}

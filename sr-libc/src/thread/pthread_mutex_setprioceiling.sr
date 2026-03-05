@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_mutex_setprioceiling.c
+
+errno_mod :: import "libc/include/errno"
+
+pthread_mutex_setprioceiling :: proc(m: *alltypes.pthread_mutex_t restrict, ceiling: i32, old: *int restrict) i32 {
+    return errno_mod.EINVAL
+}

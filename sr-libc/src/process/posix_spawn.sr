@@ -1,0 +1,245 @@
+package libc
+
+// Derived from musl-1.2.5/src/process/posix_spawn.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+errno_mod :: import "libc/include/errno"
+fcntl_h :: import "libc/include/fcntl"
+sig_h :: import "libc/include/signal"
+sched_h :: import "libc/include/sched"
+lock_mod :: import "libc/src/internal/lock"
+abort_lock_mod :: import "libc/src/exit/abort_lock"
+sigaction_mod :: import "libc/src/signal/sigaction"
+sigismember_mod :: import "libc/src/signal/sigismember"
+pipe2_mod :: import "libc/src/unistd/pipe2"
+read_mod :: import "libc/src/unistd/read"
+close_mod :: import "libc/src/unistd/close"
+waitpid_mod :: import "libc/src/process/waitpid"
+execve_mod :: import "libc/src/unistd/execve"
+clone_mod :: import "libc/src/linux/clone"
+pthread_sigmask_mod :: import "libc/src/thread/pthread_sigmask"
+pthread_cancel_mod :: import "libc/src/thread/pthread_setcancelstate"
+
+PATH_MAX :: 4096
+_NSIG :: 65
+
+args :: struct {
+    p: [2]i32,
+    oldmask: alltypes.sigset_t,
+    path: *const char,
+    fa: *const posix_spawn_file_actions_t,
+    attr: *const posix_spawnattr_t,
+    argv: **u8,
+    envp: **u8,
+}
+
+__sys_dup2 :: proc(old: i32, new: i32) i64 {
+    if nums.SYS_dup2 != 0 {
+        return sc.syscall2(nums.SYS_dup2.(i64), old.(i64), new.(i64))
+    }
+    return sc.syscall3(nums.SYS_dup3.(i64), old.(i64), new.(i64), 0)
+}
+
+__sys_open :: proc(path: *const u8, flags: i32, mode: mode_t) i64 {
+    f := flags | fcntl_h.O_LARGEFILE
+    return sc.syscall3(nums.SYS_open.(i64), path.^usize.(i64), f.(i64), mode.(i64))
+}
+
+child :: proc(args_vp: *void) i32 {
+    args := args_vp.^*args
+    p := args.p[1]
+    fa := args.fa
+    attr := args.attr
+    hset: alltypes.sigset_t
+    sa: sig_h.sigaction
+    sa = {}
+    fail_ret: i64 = 0
+
+    _ = sc.syscall1(nums.SYS_close.(i64), args.p[0].(i64))
+
+    while true {
+        sigaction_mod.__get_handler_set(&hset)
+        i := 1
+        while i < _NSIG {
+            if (attr.__flags & POSIX_SPAWN_SETSIGDEF) != 0 && sigismember_mod.sigismember(&attr.__def, i) != 0 {
+                sa.sa_handler = sig_h.SIG_DFL
+            } else if sigismember_mod.sigismember(&hset, i) != 0 {
+                if (i - 32) < 3 {
+                    sa.sa_handler = sig_h.SIG_IGN
+                } else {
+                    _ = sigaction_mod.__libc_sigaction(i, null, &sa)
+                    if sa.sa_handler == sig_h.SIG_IGN { i += 1; continue }
+                    sa.sa_handler = sig_h.SIG_DFL
+                }
+            } else {
+                i += 1
+                continue
+            }
+            _ = sigaction_mod.__libc_sigaction(i, &sa, 0)
+            i += 1
+        }
+
+        if (attr.__flags & POSIX_SPAWN_SETSID) != 0 {
+            ret := sc.syscall0(nums.SYS_setsid.(i64))
+            if ret < 0 { fail_ret = ret; break }
+        }
+
+        if (attr.__flags & POSIX_SPAWN_SETPGROUP) != 0 {
+            ret := sc.syscall2(nums.SYS_setpgid.(i64), 0, attr.__pgrp.(i64))
+            if ret < 0 { fail_ret = ret; break }
+        }
+
+        if (attr.__flags & POSIX_SPAWN_RESETIDS) != 0 {
+            gid := sc.syscall0(nums.SYS_getgid.(i64))
+            ret := sc.syscall1(nums.SYS_setgid.(i64), gid)
+            if ret < 0 { fail_ret = ret; break }
+            uid := sc.syscall0(nums.SYS_getuid.(i64))
+            ret = sc.syscall1(nums.SYS_setuid.(i64), uid)
+            if ret < 0 { fail_ret = ret; break }
+        }
+
+        if fa != null && fa.__actions != null {
+            op := fa.__actions
+            while op.next != null { op = op.next }
+            while op != null {
+                if op.fd == p {
+                    ret := sc.syscall1(nums.SYS_dup.(i64), p.(i64))
+                    if ret < 0 { fail_ret = ret; break }
+                    _ = sc.syscall1(nums.SYS_close.(i64), p.(i64))
+                    p = ret.(i32)
+                }
+                switch op.cmd {
+                    FDOP_CLOSE => {
+                        _ = sc.syscall1(nums.SYS_close.(i64), op.fd.(i64))
+                    },
+                    FDOP_DUP2 => {
+                        fd := op.srcfd
+                        if fd == p {
+                            fail_ret = -errno_mod.EBADF.(i64)
+                            break
+                        }
+                        if fd != op.fd {
+                            ret := __sys_dup2(fd, op.fd)
+                            if ret < 0 { fail_ret = ret; break }
+                        } else {
+                            ret := sc.syscall3(nums.SYS_fcntl.(i64), fd.(i64), fcntl_h.F_GETFD.(i64), 0)
+                            if ret < 0 { fail_ret = ret; break }
+                            ret = sc.syscall3(nums.SYS_fcntl.(i64), fd.(i64), fcntl_h.F_SETFD.(i64), (ret & ~fcntl_h.FD_CLOEXEC).(i64))
+                            if ret < 0 { fail_ret = ret; break }
+                        }
+                    },
+                    FDOP_OPEN => {
+                        fd := __sys_open((&op.path[0]).^*const u8, op.oflag, op.mode)
+                        if fd < 0 { fail_ret = fd; break }
+                        if fd.(i32) != op.fd {
+                            ret := __sys_dup2(fd.(i32), op.fd)
+                            if ret < 0 { fail_ret = ret; break }
+                            _ = sc.syscall1(nums.SYS_close.(i64), fd)
+                        }
+                    },
+                    FDOP_CHDIR => {
+                        ret := sc.syscall1(nums.SYS_chdir.(i64), (&op.path[0]).^usize.(i64))
+                        if ret < 0 { fail_ret = ret; break }
+                    },
+                    FDOP_FCHDIR => {
+                        ret := sc.syscall1(nums.SYS_fchdir.(i64), op.fd.(i64))
+                        if ret < 0 { fail_ret = ret; break }
+                    },
+                    else => {},
+                }
+                if fail_ret != 0 { break }
+                op = op.prev
+            }
+            if fail_ret != 0 { break }
+        }
+
+        _ = sc.syscall3(nums.SYS_fcntl.(i64), p.(i64), fcntl_h.F_SETFD.(i64), fcntl_h.FD_CLOEXEC.(i64))
+
+        if (attr.__flags & POSIX_SPAWN_SETSIGMASK) != 0 {
+            _ = pthread_sigmask_mod.pthread_sigmask(sig_h.SIG_SETMASK, &attr.__mask, null)
+        } else {
+            _ = pthread_sigmask_mod.pthread_sigmask(sig_h.SIG_SETMASK, &args.oldmask, null)
+        }
+
+        exec_fn: fn(*const u8, **u8, **u8) i32 = execve_mod.execve
+        if attr.__fn != null {
+            exec_fn = attr.__fn.(fn(*const u8, **u8, **u8) i32)
+        }
+
+        _ = exec_fn(args.path.^*const u8, args.argv, args.envp)
+        fail_ret = -errno_mod.errno().*
+        break
+    }
+
+    if fail_ret != 0 {
+        errcode: i32 = (-fail_ret).(i32)
+        r := sc.syscall3(nums.SYS_write.(i64), p.(i64), (&errcode).^usize.(i64), sizeof(i32).(i64))
+        while r < 0 && r != -errno_mod.EPIPE {
+            r = sc.syscall3(nums.SYS_write.(i64), p.(i64), (&errcode).^usize.(i64), sizeof(i32).(i64))
+        }
+    }
+    _ = sc.syscall1(nums.SYS_exit.(i64), 127)
+    return 127
+}
+
+posix_spawn :: proc(res: *alltypes.pid_t restrict, path: *const char restrict, fa: *const posix_spawn_file_actions_t, attr: *const posix_spawnattr_t restrict, argv: **u8, envp: **u8) i32 {
+    pid: i32
+    ec: i32 = 0
+    cs: i32 = 0
+    args: args
+    stack: [1024 + PATH_MAX]u8
+    zero_attr: posix_spawnattr_t
+
+    _ = pthread_cancel_mod.pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cs)
+
+    args.path = path
+    args.fa = fa
+    if attr != null {
+        args.attr = attr
+    } else {
+        zero_attr = {}
+        args.attr = &zero_attr
+    }
+    args.argv = argv
+    args.envp = envp
+
+    sigall: alltypes.sigset_t
+    sigall = {}
+    for i := 0; i < 16; i += 1 {
+        sigall.__bits[i] = (~0).(u64)
+    }
+    _ = pthread_sigmask_mod.pthread_sigmask(sig_h.SIG_BLOCK, &sigall, &args.oldmask)
+
+    lock_mod.__lock(&abort_lock_mod.__abort_lock[0])
+
+    if pipe2_mod.pipe2(&args.p[0], fcntl_h.O_CLOEXEC) != 0 {
+        lock_mod.__unlock(&abort_lock_mod.__abort_lock[0])
+        ec = errno_mod.errno().*
+        goto fail
+    }
+
+    pid = clone_mod.clone(child, (&stack[0] + sizeof(stack)).^*void, (sched_h.CLONE_VM | sched_h.CLONE_VFORK | sig_h.SIG_CHLD).(i32), &args, 0, 0, 0)
+    _ = close_mod.close(args.p[1])
+    lock_mod.__unlock(&abort_lock_mod.__abort_lock[0])
+
+    if pid > 0 {
+        if read_mod.read(args.p[0], (&ec).^*void, sizeof(i32)) != sizeof(i32).(isize) {
+            ec = 0
+        } else {
+            status: i32 = 0
+            _ = waitpid_mod.waitpid(pid, &status, 0)
+        }
+    } else {
+        ec = errno_mod.errno().*
+    }
+
+    _ = close_mod.close(args.p[0])
+
+    if ec == 0 && res != 0 { res.* = pid }
+
+fail:
+    _ = pthread_sigmask_mod.pthread_sigmask(sig_h.SIG_SETMASK, &args.oldmask, null)
+    _ = pthread_cancel_mod.pthread_setcancelstate(cs, null)
+    return ec
+}

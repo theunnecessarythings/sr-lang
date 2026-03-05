@@ -1,0 +1,24 @@
+package libc
+
+// Derived from musl-1.2.5/include/sys/sysinfo.h
+
+SI_LOAD_SHIFT :: 16
+
+struct sysinfo {
+    uptime: u64,
+    loads: [3]u64,
+    totalram: u64,
+    freeram: u64,
+    sharedram: u64,
+    bufferram: u64,
+    totalswap: u64,
+    freeswap: u64,
+    procs: u16,
+    pad: u16,
+    totalhigh: u64,
+    freehigh: u64,
+    mem_unit: u32,
+    __reserved: [256]u8,
+}
+
+sysinfo :: proc(info: *sysinfo) i32

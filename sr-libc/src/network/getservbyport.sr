@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/getservbyport.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <netdb.h>
+
+__servbyport_se: servent
+__servbyport_buf: [32]u8
+
+getservbyport :: proc(port: i32, prots: *const u8) *servent {
+    res: *servent = null
+    if getservbyport_r(port, prots, &__servbyport_se, &__servbyport_buf[0], sizeof(__servbyport_buf), &res) != 0 {
+        return null
+    }
+    return &__servbyport_se
+}

@@ -1,0 +1,19 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/membarrier.c (simplified syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+mb :: import "libc/include/sys/membarrier"
+
+__membarrier :: proc(cmd: i32, flags: i32) i32 {
+    r := sc.syscall2_ret(nums.SYS_membarrier.(i64), cmd.(i64), flags.(i64))
+    return r.(i32)
+}
+
+__membarrier_init :: proc() void {
+    _ = sc.syscall2(nums.SYS_membarrier.(i64), mb.MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED.(i64), 0)
+}
+
+// public alias
+membarrier :: proc(cmd: i32, flags: i32) i32 { return __membarrier(cmd, flags) }

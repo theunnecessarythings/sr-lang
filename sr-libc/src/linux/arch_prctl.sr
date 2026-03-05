@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/arch_prctl.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+arch_prctl :: proc(operation: i32, addr: u64) i32 {
+    r := sc.syscall2_ret(nums.SYS_arch_prctl.(i64), operation.(i64), addr.(i64))
+    return r.(i32)
+}

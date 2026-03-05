@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const ast = @import("ast.zig");
 const cst = @import("cst.zig");
 const tir = @import("tir.zig");
@@ -18,6 +19,7 @@ pub const SourceManager = struct {
     gpa: std.mem.Allocator,
     files: std.ArrayList(Entry) = .empty,
     lookup_cache: std.StringHashMap(u32),
+    target_is_wasm: bool = false,
 
     const Entry = struct {
         path: []u8,
@@ -69,10 +71,11 @@ pub const SourceManager = struct {
         defer file.close();
 
         const size = try file.getEndPos();
-        const buffer = try self.gpa.alloc(u8, size);
+        const size_u = std.math.cast(usize, size) orelse return error.FileTooLarge;
+        const buffer = try self.gpa.alloc(u8, size_u);
         errdefer self.gpa.free(buffer);
 
-        if (try file.readAll(buffer) != size) return error.FileReadError;
+        if (try file.readAll(buffer) != size_u) return error.FileReadError;
         return buffer;
     }
 
@@ -109,20 +112,23 @@ pub fn resolveImportPath(allocator: std.mem.Allocator, source_manager: *SourceMa
     const current_file_path = source_manager.get(current_file_id) orelse return error.FileNotFound;
     const current_dir = std.fs.path.dirname(current_file_path) orelse ".";
     const ext = if (std.fs.path.extension(import_name).len == 0) ".sr" else "";
-    const filename = try std.fmt.allocPrint(allocator, "{s}{s}", .{ import_name, ext });
+    const filename_tmp = try std.fmt.allocPrint(allocator, "{s}{s}", .{ import_name, ext });
+    defer allocator.free(filename_tmp);
+    const filename = if (source_manager.target_is_wasm and std.mem.eql(u8, filename_tmp, "std/io.sr"))
+        try allocator.dupe(u8, "std/io_wasm.sr")
+    else
+        try allocator.dupe(u8, filename_tmp);
     defer allocator.free(filename);
 
-    const paths_to_try = [_][]const u8{
-        current_dir,
-        try std.fs.path.join(allocator, &.{ current_dir, "imports" }),
-        try std.fs.path.join(allocator, &.{ try std.fs.selfExeDirPathAlloc(allocator), ".." }),
-    };
-    defer {
-        allocator.free(paths_to_try[1]);
-        allocator.free(paths_to_try[2]); // exe_dir path join result
+    var paths_to_try = std.ArrayList([]const u8){};
+    defer paths_to_try.deinit(allocator);
+    try paths_to_try.append(allocator, current_dir);
+    try paths_to_try.append(allocator, try std.fs.path.join(allocator, &.{ current_dir, "imports" }));
+    if (builtin.os.tag != .emscripten and builtin.os.tag != .wasi) {
+        try paths_to_try.append(allocator, try std.fs.path.join(allocator, &.{ try std.fs.selfExeDirPathAlloc(allocator), ".." }));
     }
 
-    for (paths_to_try) |base| {
+    for (paths_to_try.items) |base| {
         const joined = try std.fs.path.join(allocator, &.{ base, filename });
         defer allocator.free(joined);
         if (std.fs.cwd().access(joined, .{})) |_| {
@@ -152,7 +158,7 @@ pub const Context = struct {
     const ParseRequest = struct {
         path: []const u8,
         file_id: u32,
-        thread: std.Thread,
+        thread: ?std.Thread,
         diags: *Diagnostics,
         parser: *Parser,
     };
@@ -448,6 +454,19 @@ pub fn detectImportCycles(allocator: std.mem.Allocator, unit: *CompilationUnit, 
 pub fn initMLIR(alloc: std.mem.Allocator) mlir.Context {
     mlir.setGlobalAlloc(alloc);
     var ctx = mlir.Context.create();
+    if (builtin.os.tag == .emscripten) {
+        const reg = mlir.DialectRegistry.create();
+        mlir.registerAllDialects(reg);
+        if (!g_passes_registered) {
+            mlir.registerAllPasses();
+            g_passes_registered = true;
+        }
+        ctx.appendDialectRegistry(reg);
+        ctx.loadAllAvailableDialects();
+        ctx.setAllowUnregisteredDialects(true);
+        mlir.registerAllLLVMTranslations(ctx);
+        return ctx;
+    }
     const reg = mlir.DialectRegistry.create();
     mlir.registerAllDialects(reg);
     if (!g_passes_registered) {
@@ -497,41 +516,72 @@ pub fn runJit(module: mlir.c.MlirModule) void {
     }
 }
 
-pub const Mode = enum { llvm_ir, llvm_passes, compile };
+pub const Mode = enum { llvm_ir, llvm_passes, wasm, compile };
 
-pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const u8, mode: Mode, opt_lvl: ?[]const u8, debug: bool) !void {
-    _ = mlir.c.LLVMInitializeNativeTarget();
-    _ = mlir.c.LLVMInitializeNativeAsmPrinter();
-    _ = mlir.c.LLVMInitializeNativeAsmParser();
+pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const u8, mode: Mode, opt_lvl: ?[]const u8, debug: bool, use_sr_libc: bool, output_path: ?[]const u8) !void {
+    if (mode != .wasm) {
+        _ = mlir.c.LLVMInitializeNativeTarget();
+        _ = mlir.c.LLVMInitializeNativeAsmPrinter();
+        _ = mlir.c.LLVMInitializeNativeAsmParser();
+    }
 
     const ctx = mlir.c.LLVMContextCreate();
     defer mlir.c.LLVMContextDispose(ctx);
     const ir = mlir.c.mlirTranslateModuleToLLVMIR(mlir.c.mlirModuleGetOperation(module), ctx);
     if (ir == null) return error.CompilationFailed;
 
-    if (mode != .compile) mlir.c.LLVMDumpModule(ir);
-    if (mode == .llvm_ir) return;
-
-    var target: mlir.c.LLVMTargetRef = undefined;
-    var err: [*c]u8 = undefined;
-    const triple = mlir.c.LLVMGetDefaultTargetTriple();
-    if (mlir.c.LLVMGetTargetFromTriple(triple, &target, &err) != 0) {
-        std.debug.print("Target Error: {s}\n", .{err});
-        mlir.c.LLVMDisposeMessage(err);
-        return error.TargetNotFound;
+    if (mode == .wasm) {
+        const main_fn = mlir.c.LLVMGetNamedFunction(ir, "main");
+        if (main_fn != null) {
+            mlir.c.LLVMSetLinkage(main_fn, mlir.c.LLVMExternalLinkage);
+            mlir.c.LLVMSetVisibility(main_fn, mlir.c.LLVMDefaultVisibility);
+            mlir.c.LLVMAddTargetDependentFunctionAttr(main_fn, "wasm-export-name", "main");
+        }
+        const step_fn = mlir.c.LLVMGetNamedFunction(ir, "step");
+        if (step_fn != null) {
+            mlir.c.LLVMSetLinkage(step_fn, mlir.c.LLVMExternalLinkage);
+            mlir.c.LLVMSetVisibility(step_fn, mlir.c.LLVMDefaultVisibility);
+            mlir.c.LLVMAddTargetDependentFunctionAttr(step_fn, "wasm-export-name", "step");
+        }
     }
 
-    const tm = mlir.c.LLVMCreateTargetMachine(target, triple, "", "", mlir.c.LLVMCodeGenLevelNone, mlir.c.LLVMRelocPIC, mlir.c.LLVMCodeModelDefault);
-    defer mlir.c.LLVMDisposeTargetMachine(tm);
+    if (mode != .compile and mode != .wasm) mlir.c.LLVMDumpModule(ir);
+    if (mode == .llvm_ir) return;
 
-    const builder_opts = mlir.c.LLVMCreatePassBuilderOptions();
-    defer mlir.c.LLVMDisposePassBuilderOptions(builder_opts);
+    var err: [*c]u8 = undefined;
 
-    var pass_buf: [32]u8 = undefined;
-    const passes = try std.fmt.bufPrintZ(&pass_buf, "default<O{s}>", .{opt_lvl orelse "0"});
+    if (mode != .wasm) {
+        var target: mlir.c.LLVMTargetRef = undefined;
+        // Default target triple
+        const triple = mlir.c.LLVMGetDefaultTargetTriple();
+        // defer mlir.c.LLVMDisposeMessage(triple); // Usually needed but check signature
 
-    if (mlir.c.LLVMRunPasses(ir, passes, tm, builder_opts) != null) return error.PassManagerFailed;
-    if (mode != .compile) mlir.c.LLVMDumpModule(ir);
+        if (mlir.c.LLVMGetTargetFromTriple(triple, &target, &err) != 0) {
+            std.debug.print("Target Error: {s}\n", .{err});
+            mlir.c.LLVMDisposeMessage(err);
+            return error.TargetNotFound;
+        }
+
+        const reloc: mlir.c.LLVMRelocMode = @intCast(mlir.c.LLVMRelocPIC);
+        const tm = mlir.c.LLVMCreateTargetMachine(target, triple, "", "", mlir.c.LLVMCodeGenLevelNone, reloc, mlir.c.LLVMCodeModelDefault);
+        defer mlir.c.LLVMDisposeTargetMachine(tm);
+
+        const builder_opts = mlir.c.LLVMCreatePassBuilderOptions();
+        defer mlir.c.LLVMDisposePassBuilderOptions(builder_opts);
+
+        var pass_buf: [32]u8 = undefined;
+        const passes = try std.fmt.bufPrintZ(&pass_buf, "default<O{s}>", .{opt_lvl orelse "0"});
+
+        if (mlir.c.LLVMRunPasses(ir, passes, tm, builder_opts) != null) return error.PassManagerFailed;
+        if (mode != .compile) mlir.c.LLVMDumpModule(ir);
+    } else {
+        // WASM Mode: Just set target info manually
+        const triple_str = "wasm32-unknown-unknown";
+        const dl_str = "e-m:e-p:32:32-i64:64-n32:64-S128";
+        mlir.c.LLVMSetTarget(ir, triple_str);
+        mlir.c.LLVMSetDataLayout(ir, dl_str);
+    }
+
     if (mode == .llvm_passes) return;
 
     std.fs.cwd().makeDir("out") catch |e| if (e != error.PathAlreadyExists) return e;
@@ -542,27 +592,107 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const 
     }
 
     // Link
+    if (builtin.os.tag == .wasi or builtin.os.tag == .emscripten) return;
+
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
+    if (mode == .wasm) {
+        const final_wasm = output_path orelse "out/output.wasm";
+        const out_dir = std.fs.path.dirname(final_wasm) orelse ".";
+
+        var cmd_cc = std.ArrayList([]const u8){};
+        try cmd_cc.appendSlice(alloc, &[_][]const u8{ "zig", "cc", "-target", "wasm32-freestanding", "-c", "-o", "out/output.o", "out/output.ll" });
+        if (opt_lvl) |lvl| try cmd_cc.append(alloc, try std.fmt.allocPrint(alloc, "-O{s}", .{lvl}));
+
+        var child_cc = std.process.Child.init(cmd_cc.items, alloc);
+        const term_cc = child_cc.spawnAndWait() catch return error.LinkFailed;
+        if (term_cc != .Exited or term_cc.Exited != 0) return error.LinkFailed;
+
+        var cmd_ld = std.ArrayList([]const u8){};
+        try cmd_ld.appendSlice(alloc, &[_][]const u8{ "zig", "wasm-ld", "--no-entry", "--export-dynamic", "--allow-undefined", "-o", final_wasm, "out/output.o" });
+        try cmd_ld.appendSlice(alloc, link_args);
+
+        var child_ld = std.process.Child.init(cmd_ld.items, alloc);
+        const term_ld = child_ld.spawnAndWait() catch return error.LinkFailed;
+        if (term_ld != .Exited or term_ld.Exited != 0) return error.LinkFailed;
+
+        // Generate HTML and JS
+        const wasm_name = std.fs.path.basename(final_wasm);
+        const index_path = try std.fs.path.join(alloc, &.{ out_dir, "index.html" });
+
+        // Ensure out_dir exists
+        std.fs.cwd().makePath(out_dir) catch {};
+
+        const html_content = try std.fmt.allocPrint(alloc,
+            \\<!DOCTYPE html>
+            \\<html>
+            \\<head>
+            \\    <title>sr-lang WASM Application</title>
+            \\    <style>
+            \\        body {{ background: #1a1a1a; color: #eee; margin: 0; font-family: system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; overflow: hidden; }}
+            \\        canvas {{ background: #000; box-shadow: 0 0 20px rgba(0,0,0,0.5); border-radius: 4px; }}
+            \\        h1 {{ margin-bottom: 20px; font-weight: 300; letter-spacing: 1px; }}
+            \\    </style>
+            \\    <script src="srlang.js"></script>
+            \\</head>
+            \\<body>
+            \\    <h1 id="title">sr-lang Application</h1>
+            \\    <canvas id="canvas" width="800" height="600"></canvas>
+            \\    <script>
+            \\        const wasmPath = '{s}';
+            \\        document.getElementById('title').textContent = wasmPath.split('/').pop().replace('.wasm', '');
+            \\        srlang.runWasm(wasmPath);
+            \\    </script>
+            \\</body>
+            \\</html>
+        , .{wasm_name});
+        try std.fs.cwd().writeFile(.{ .sub_path = index_path, .data = html_content });
+
+        // Copy srlang.js from std/web/srlang.js
+        const exe_dir = try std.fs.selfExeDirPathAlloc(alloc);
+        const js_src_dir_path = try std.fs.path.join(alloc, &.{ exe_dir[0 .. exe_dir.len - 4], "std/web" });
+        var js_src_dir = std.fs.openDirAbsolute(js_src_dir_path, .{}) catch |e| {
+            std.debug.print("Warning: could not open js source dir {s}: {}\n", .{ js_src_dir_path, e });
+            return;
+        };
+        defer js_src_dir.close();
+
+        var dest_dir = std.fs.cwd().openDir(out_dir, .{}) catch |e| {
+            std.debug.print("Warning: could not open dest dir {s}: {}\n", .{ out_dir, e });
+            return;
+        };
+        defer dest_dir.close();
+
+        js_src_dir.copyFile("srlang.js", dest_dir, "srlang.js", .{}) catch |e| {
+            std.debug.print("Warning: could not copy srlang.js to {s}: {}\n", .{ out_dir, e });
+        };
+
+        return;
+    }
+
     var cmd = std.ArrayList([]const u8){};
-    try cmd.appendSlice(alloc, &[_][]const u8{ "clang", try std.fmt.allocPrint(alloc, "-O{s}", .{opt_lvl orelse "0"}), "-w" });
+    try cmd.appendSlice(alloc, &[_][]const u8{ "zig", "cc", try std.fmt.allocPrint(alloc, "-O{s}", .{opt_lvl orelse "0"}), "-w" });
     if (debug) try cmd.append(alloc, "-g");
-    try cmd.appendSlice(alloc, &[_][]const u8{ "-o", "out/output_program", "out/output.ll" });
+    try cmd.appendSlice(alloc, &[_][]const u8{ "-o", output_path orelse "out/output_program", "out/output.ll" });
 
     const exe_dir = try std.fs.selfExeDirPathAlloc(alloc);
-    const rt_path = try std.fs.path.join(alloc, &.{ exe_dir[0 .. exe_dir.len - 4], "lib/libsr_runtime.a" });
-    try cmd.append(alloc, rt_path);
+    if (use_sr_libc) {
+        try cmd.appendSlice(alloc, &[_][]const u8{ "-nostdlib", "-nostartfiles", "-no-pie", "-Wl,-e,_start" });
+    } else {
+        const rt_path = try std.fs.path.join(alloc, &.{ exe_dir[0 .. exe_dir.len - 4], "lib/libsr_runtime.a" });
+        try cmd.append(alloc, rt_path);
+    }
     const triton_rt_path = try std.fs.path.join(alloc, &.{ exe_dir[0 .. exe_dir.len - 4], "lib/libsr_triton_runtime.a" });
     try cmd.appendSlice(alloc, &[_][]const u8{ "-Wl,-rpath,./out", "-Lout" });
 
     var op = mlir.Operation{ .handle = mlir.c.mlirModuleGetOperation(module) };
-    if (!op.getDiscardableAttributeByName(mlir.StringRef.from("sr.has_triton")).isNull()) {
+    if (!use_sr_libc and !op.getDiscardableAttributeByName(mlir.StringRef.from("sr.has_triton")).isNull()) {
         try cmd.append(alloc, triton_rt_path);
         try cmd.append(alloc, "-lcuda");
     }
-    if (!op.getDiscardableAttributeByName(mlir.StringRef.from("sr.has_async")).isNull()) {
+    if (!use_sr_libc and !op.getDiscardableAttributeByName(mlir.StringRef.from("sr.has_async")).isNull()) {
         try cmd.appendSlice(alloc, &[_][]const u8{ "-L/usr/local/lib", "-Wl,-rpath,/usr/local/lib", "-lmlir_async_runtime" });
     }
     try cmd.appendSlice(alloc, link_args);
@@ -573,6 +703,9 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const 
 }
 
 pub fn runWithStatus() !u8 {
+    if (builtin.os.tag == .emscripten or builtin.os.tag == .wasi) {
+        return error.UnsupportedPlatform;
+    }
     var child = std.process.Child.init(&[_][]const u8{"out/output_program"}, std.heap.page_allocator);
     const term = try child.spawnAndWait();
     return switch (term) {

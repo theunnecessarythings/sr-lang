@@ -1,0 +1,7 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/wait3.c
+
+wait3 :: proc(status: ?*i32, options: i32, usage: ?*rusage) alltypes.pid_t {
+    return wait4(-1, status, options, usage)
+}

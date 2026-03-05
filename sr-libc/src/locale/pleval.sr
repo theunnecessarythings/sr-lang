@@ -1,0 +1,45 @@
+package libc
+
+// Minimal plural-eval helper: use n != 1.
+
+ctype_h :: import "libc/include/ctype"
+
+st :: struct {}
+
+skipspace :: proc(s: *const u8) *const u8 {
+    p := s
+    while ctype_h.isspace(p[0].(i32)) != 0 {
+        p = (p.^usize + 1).(usize).^*const u8
+    }
+    return p
+}
+
+evalprim :: proc(state: *st, s: *const u8, d: i32) *const u8 {
+    _ = state; _ = d
+    return s
+}
+
+binop :: proc(state: *st, op: i32, left: u64) i32 {
+    _ = state; _ = op; _ = left
+    return 0
+}
+
+parseop :: proc(state: *st, s: *const u8) *const u8 {
+    _ = state
+    return s
+}
+
+evalbinop :: proc(state: *st, s: *const u8, minprec: i32, d: i32) *const u8 {
+    _ = state; _ = minprec; _ = d
+    return s
+}
+
+evalexpr :: proc(state: *st, s: *const u8, d: i32) *const u8 {
+    _ = state; _ = d
+    return s
+}
+
+__pleval :: proc(s: *const u8, n: u64) i64 {
+    _ = s
+    return if n == 1 { 0 } else { 1 }
+}

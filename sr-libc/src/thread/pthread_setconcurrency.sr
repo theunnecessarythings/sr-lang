@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_setconcurrency.c
+
+errno_mod :: import "libc/include/errno"
+
+pthread_setconcurrency :: proc(val: i32) i32 {
+    if val < 0 { return errno_mod.EINVAL }
+    if val > 0 { return errno_mod.EAGAIN }
+    return 0
+}

@@ -1,0 +1,142 @@
+package libc
+
+// Derived from musl-1.2.5/src/errno/__strerror.h (message table).
+
+strerror :: proc(errnum: i32) *const u8 {
+    if errnum == 0 { return "No error information".ptr }
+    if errnum == 1 { return "Operation not permitted".ptr }
+    if errnum == 2 { return "No such file or directory".ptr }
+    if errnum == 3 { return "No such process".ptr }
+    if errnum == 4 { return "Interrupted system call".ptr }
+    if errnum == 5 { return "I/O error".ptr }
+    if errnum == 6 { return "No such device or address".ptr }
+    if errnum == 7 { return "Argument list too long".ptr }
+    if errnum == 8 { return "Exec format error".ptr }
+    if errnum == 9 { return "Bad file descriptor".ptr }
+    if errnum == 10 { return "No child process".ptr }
+    if errnum == 11 { return "Resource temporarily unavailable".ptr }
+    if errnum == 12 { return "Out of memory".ptr }
+    if errnum == 13 { return "Permission denied".ptr }
+    if errnum == 14 { return "Bad address".ptr }
+    if errnum == 15 { return "Block device required".ptr }
+    if errnum == 16 { return "Resource busy".ptr }
+    if errnum == 17 { return "File exists".ptr }
+    if errnum == 18 { return "Cross-device link".ptr }
+    if errnum == 19 { return "No such device".ptr }
+    if errnum == 20 { return "Not a directory".ptr }
+    if errnum == 21 { return "Is a directory".ptr }
+    if errnum == 22 { return "Invalid argument".ptr }
+    if errnum == 23 { return "Too many open files in system".ptr }
+    if errnum == 24 { return "No file descriptors available".ptr }
+    if errnum == 25 { return "Not a tty".ptr }
+    if errnum == 26 { return "Text file busy".ptr }
+    if errnum == 27 { return "File too large".ptr }
+    if errnum == 28 { return "No space left on device".ptr }
+    if errnum == 29 { return "Invalid seek".ptr }
+    if errnum == 30 { return "Read-only file system".ptr }
+    if errnum == 31 { return "Too many links".ptr }
+    if errnum == 32 { return "Broken pipe".ptr }
+    if errnum == 33 { return "Domain error".ptr }
+    if errnum == 34 { return "Result not representable".ptr }
+    if errnum == 35 { return "Resource deadlock would occur".ptr }
+    if errnum == 36 { return "Filename too long".ptr }
+    if errnum == 37 { return "No locks available".ptr }
+    if errnum == 38 { return "Function not implemented".ptr }
+    if errnum == 39 { return "Directory not empty".ptr }
+    if errnum == 40 { return "Symbolic link loop".ptr }
+    if errnum == 41 { return "No error information".ptr }
+    if errnum == 42 { return "No message of desired type".ptr }
+    if errnum == 43 { return "Identifier removed".ptr }
+    if errnum == 44 { return "No error information".ptr }
+    if errnum == 45 { return "No error information".ptr }
+    if errnum == 46 { return "No error information".ptr }
+    if errnum == 47 { return "No error information".ptr }
+    if errnum == 48 { return "No error information".ptr }
+    if errnum == 49 { return "No error information".ptr }
+    if errnum == 50 { return "No error information".ptr }
+    if errnum == 51 { return "No error information".ptr }
+    if errnum == 52 { return "No error information".ptr }
+    if errnum == 53 { return "No error information".ptr }
+    if errnum == 54 { return "No error information".ptr }
+    if errnum == 55 { return "No error information".ptr }
+    if errnum == 56 { return "No error information".ptr }
+    if errnum == 57 { return "No error information".ptr }
+    if errnum == 58 { return "No error information".ptr }
+    if errnum == 59 { return "No error information".ptr }
+    if errnum == 60 { return "Device not a stream".ptr }
+    if errnum == 61 { return "No data available".ptr }
+    if errnum == 62 { return "Device timeout".ptr }
+    if errnum == 63 { return "Out of streams resources".ptr }
+    if errnum == 64 { return "No error information".ptr }
+    if errnum == 65 { return "No error information".ptr }
+    if errnum == 66 { return "No error information".ptr }
+    if errnum == 67 { return "Link has been severed".ptr }
+    if errnum == 68 { return "No error information".ptr }
+    if errnum == 69 { return "No error information".ptr }
+    if errnum == 70 { return "No error information".ptr }
+    if errnum == 71 { return "Protocol error".ptr }
+    if errnum == 72 { return "Multihop attempted".ptr }
+    if errnum == 73 { return "No error information".ptr }
+    if errnum == 74 { return "Bad message".ptr }
+    if errnum == 75 { return "Value too large for data type".ptr }
+    if errnum == 76 { return "No error information".ptr }
+    if errnum == 77 { return "File descriptor in bad state".ptr }
+    if errnum == 78 { return "No error information".ptr }
+    if errnum == 79 { return "No error information".ptr }
+    if errnum == 80 { return "No error information".ptr }
+    if errnum == 81 { return "No error information".ptr }
+    if errnum == 82 { return "No error information".ptr }
+    if errnum == 83 { return "No error information".ptr }
+    if errnum == 84 { return "Illegal byte sequence".ptr }
+    if errnum == 85 { return "No error information".ptr }
+    if errnum == 86 { return "No error information".ptr }
+    if errnum == 87 { return "No error information".ptr }
+    if errnum == 88 { return "Not a socket".ptr }
+    if errnum == 89 { return "Destination address required".ptr }
+    if errnum == 90 { return "Message too large".ptr }
+    if errnum == 91 { return "Protocol wrong type for socket".ptr }
+    if errnum == 92 { return "Protocol not available".ptr }
+    if errnum == 93 { return "Protocol not supported".ptr }
+    if errnum == 94 { return "Socket type not supported".ptr }
+    if errnum == 95 { return "No error information".ptr }
+    if errnum == 96 { return "Protocol family not supported".ptr }
+    if errnum == 97 { return "Address family not supported by protocol".ptr }
+    if errnum == 98 { return "Address in use".ptr }
+    if errnum == 99 { return "Address not available".ptr }
+    if errnum == 100 { return "Network is down".ptr }
+    if errnum == 101 { return "Network unreachable".ptr }
+    if errnum == 102 { return "Connection reset by network".ptr }
+    if errnum == 103 { return "Connection aborted".ptr }
+    if errnum == 104 { return "Connection reset by peer".ptr }
+    if errnum == 105 { return "No buffer space available".ptr }
+    if errnum == 106 { return "Socket is connected".ptr }
+    if errnum == 107 { return "Socket not connected".ptr }
+    if errnum == 108 { return "Cannot send after socket shutdown".ptr }
+    if errnum == 109 { return "No error information".ptr }
+    if errnum == 110 { return "Operation timed out".ptr }
+    if errnum == 111 { return "Connection refused".ptr }
+    if errnum == 112 { return "Host is down".ptr }
+    if errnum == 113 { return "Host is unreachable".ptr }
+    if errnum == 114 { return "Operation already in progress".ptr }
+    if errnum == 115 { return "Operation in progress".ptr }
+    if errnum == 116 { return "Stale file handle".ptr }
+    if errnum == 117 { return "No error information".ptr }
+    if errnum == 118 { return "No error information".ptr }
+    if errnum == 119 { return "No error information".ptr }
+    if errnum == 120 { return "No error information".ptr }
+    if errnum == 121 { return "Remote I/O error".ptr }
+    if errnum == 122 { return "Quota exceeded".ptr }
+    if errnum == 123 { return "No medium found".ptr }
+    if errnum == 124 { return "Wrong medium type".ptr }
+    if errnum == 125 { return "Operation canceled".ptr }
+    if errnum == 126 { return "Required key not available".ptr }
+    if errnum == 127 { return "Key has expired".ptr }
+    if errnum == 128 { return "Key has been revoked".ptr }
+    if errnum == 129 { return "Key was rejected by service".ptr }
+    if errnum == 130 { return "Previous owner died".ptr }
+    if errnum == 131 { return "State not recoverable".ptr }
+    if errnum == 132 { return "No error information".ptr }
+    if errnum == 133 { return "No error information".ptr }
+    if errnum == 134 { return "No error information".ptr }
+    return "No error information".ptr
+}

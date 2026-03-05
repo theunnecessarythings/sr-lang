@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/ofl.c (locks elided).
+
+alltypes :: import "libc/include/alltypes"
+
+ofl_head: ?*alltypes.FILE = null
+
+__ofl_lock :: proc() *?*alltypes.FILE { return &ofl_head }
+__ofl_unlock :: proc() void {}

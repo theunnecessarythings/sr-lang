@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/mempcpy.c.
+
+memcpy_mod :: import "libc/src/string/memcpy"
+
+mempcpy :: proc(dest: *void, src: *const void, n: usize) *void {
+    _ = memcpy_mod.memcpy(dest, src, n)
+    return (dest.^usize + n).(usize).^*void
+}

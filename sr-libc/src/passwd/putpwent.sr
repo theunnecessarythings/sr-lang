@@ -1,0 +1,21 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/putpwent.c
+
+pwd_h :: import "libc/include/pwd"
+fprintf_mod :: import "libc/src/stdio/fprintf"
+
+putpwent :: proc(pw: *pwd_h.passwd, f: *alltypes.FILE) i32 {
+    if pw == null || f == null { return -1 }
+    return fprintf_mod.fprintf(
+        f,
+        "%s:%s:%u:%u:%s:%s:%s\n",
+        pw.pw_name,
+        pw.pw_passwd,
+        pw.pw_uid,
+        pw.pw_gid,
+        pw.pw_gecos,
+        pw.pw_dir,
+        pw.pw_shell,
+    )
+}

@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/ctanf.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+ctanf :: proc(z: complex(f32)) complex(f32) {
+    z = ctanhf(impl.cmplxf(-z.imag, z.real))
+    return impl.cmplxf(z.imag, -z.real)
+}

@@ -1,0 +1,20 @@
+package libc
+
+// Derived from musl-1.2.5/src/crypt/encrypt.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <stdint.h>
+// #include <stdlib.h>
+// #include <unistd.h>
+// #include <crypt_des.h>
+
+setkey :: proc(key: u8) void {
+    // TODO: Translate function body
+    unreachable
+}
+
+encrypt :: proc(block: u8, edflag: i32) void {
+    // TODO: Translate function body
+    unreachable
+}
+

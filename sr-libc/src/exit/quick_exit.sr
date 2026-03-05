@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/exit/quick_exit.c
+
+atq :: import "libc/src/exit/at_quick_exit"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+dummy :: proc() void {}
+
+quick_exit :: proc(status: i32) void {
+    atq.__run_quick_exit()
+    _ = sc.syscall1(nums.SYS_exit_group.(i64), status.(i64))
+    while true {}
+}

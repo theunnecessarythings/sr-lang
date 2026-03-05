@@ -1,0 +1,95 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/__lock.c and src/internal/pthread_impl.h
+
+atomic :: import "libc/src/internal/atomic"
+libc_mod :: import "libc/src/internal/libc"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+errno_mod :: import "libc/include/errno"
+
+FUTEX_WAIT :: 0
+FUTEX_WAKE :: 1
+FUTEX_PRIVATE :: 128
+
+INT_MIN :: -2147483648
+INT_MIN_32 :: -2147483648.(i32)
+
+__futexwait :: proc(@[volatile] addr: *void, val: i32, priv: i32) void {
+    p := priv
+    if p != 0 { p = FUTEX_PRIVATE }
+    
+    // __syscall(SYS_futex, addr, FUTEX_WAIT|priv, val, 0)
+    addr_usize := addr.^usize
+    res := sc.syscall4_ret(nums.SYS_futex.(i64), addr_usize.(i64), (FUTEX_WAIT.(i64) | p.(i64)), val.(i64), 0).(i32)
+    if res == -errno_mod.ENOSYS {
+        res2 := sc.syscall4_ret(nums.SYS_futex.(i64), addr_usize.(i64), FUTEX_WAIT.(i64), val.(i64), 0)
+        _ = res2
+    }
+}
+
+__wake :: proc(@[volatile] addr: *void, cnt: i32, priv: i32) void {
+    p := priv
+    if p != 0 { p = FUTEX_PRIVATE }
+    
+    c := cnt
+    if c < 0 { c = 2147483647 } // INT_MAX
+    
+    addr_usize := addr.^usize
+    res := sc.syscall4_ret(nums.SYS_futex.(i64), addr_usize.(i64), (FUTEX_WAKE.(i64) | p.(i64)), c.(i64), 0).(i32)
+    if res == -errno_mod.ENOSYS {
+        res2 := sc.syscall4_ret(nums.SYS_futex.(i64), addr_usize.(i64), FUTEX_WAKE.(i64), c.(i64), 0)
+        _ = res2
+    }
+}
+
+
+__lock :: proc(@[volatile] l: *i32) void {
+    // 	int need_locks = libc.need_locks;
+	// if (!need_locks) return;
+    need_locks := libc_mod.libc_need_locks_get()
+    if need_locks == 0 { return }
+    
+    // fast path: INT_MIN for the lock, +1 for the congestion
+    // a_cas(l, 0, INT_MIN + 1)
+    current := atomic.a_cas(l, 0, INT_MIN_32 + 1).(i32)
+    
+    if need_locks < 0 {
+        libc_mod.libc_need_locks_set(0)
+    }
+    
+    if current == 0 { return }
+    
+    // Spin loop
+    for i in 0..10 {
+        if current < 0 { current = current - (INT_MIN_32 + 1) }
+        // assertion: current >= 0
+        val := atomic.a_cas(l, current, (INT_MIN_32 + (current + 1))).(i32)
+        if val == current { return }
+        current = val
+    }
+    
+    // Spinning failed
+    current = atomic.a_fetch_add(l, 1).(i32) + 1
+    
+    // Heavy congestion loop
+    while true {
+        if current < 0 {
+            __futexwait(l.^*void, current, 1)
+            current = current - (INT_MIN_32 + 1)
+        }
+        
+        val := atomic.a_cas(l, current, (INT_MIN_32 + current)).(i32)
+        if val == current { return }
+        current = val
+    }
+}
+
+__unlock :: proc(@[volatile] l: *i32) void {
+    // if (l[0] < 0)
+    if l.* < 0 {
+        if atomic.a_fetch_add(l, -(INT_MIN_32 + 1)) != (INT_MIN_32 + 1) {
+            __wake(l.^*void, 1, 1)
+        }
+    }
+}

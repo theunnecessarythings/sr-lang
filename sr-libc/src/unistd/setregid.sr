@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/setregid.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+setregid :: proc(rgid: gid_t, egid: gid_t) i32 {
+    r := sc.syscall2_ret(nums.SYS_setregid.(i64), rgid.(i64), egid.(i64))
+    return r.(i32)
+}

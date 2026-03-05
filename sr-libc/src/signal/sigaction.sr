@@ -1,0 +1,46 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/sigaction.c
+
+sig_h :: import "libc/include/signal"
+nums :: import "libc/include/syscall"
+sc :: import "libc/src/syscall/syscall"
+restore_mod :: import "libc/src/signal/restore"
+
+__get_handler_set :: proc(set: *alltypes.sigset_t) void {
+    _ = set
+}
+
+__libc_sigaction :: proc(sig: i32, sa: *const sig_h.sigaction, old: ?*sig_h.sigaction) i32 {
+    ksa: sig_h.sigaction
+    osa: sig_h.sigaction
+
+    sa_ptr: usize = 0
+    old_ptr: usize = 0
+
+    if sa != null {
+        ksa = sa.*
+        ksa.sa_flags = ksa.sa_flags | sig_h.SA_RESTORER.(u64)
+        ksa.sa_restorer = restore_mod.__restore_rt.^*void
+        sa_ptr = (&ksa).^usize
+    }
+    if old != 0 {
+        old_ptr = (&osa).^usize
+    }
+
+    r := sc.syscall4_ret(
+        nums.SYS_rt_sigaction.(i64),
+        sig.(i64),
+        sa_ptr.(i64),
+        old_ptr.(i64),
+        sizeof(alltypes.sigset_t).(i64),
+    )
+    if r == 0 && old != 0 {
+        old.* = osa
+    }
+    return r.(i32)
+}
+
+__sigaction :: proc(sig: i32, sa: *const sig_h.sigaction, old: ?*sig_h.sigaction) i32 {
+    return __libc_sigaction(sig, sa, old)
+}

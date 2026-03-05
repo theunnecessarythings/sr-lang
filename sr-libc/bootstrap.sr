@@ -1,0 +1,11 @@
+package libc
+
+// Aggregates minimal crt/syscall pieces for sr-libc bootstrap builds.
+
+_crt1 :: import "libc/crt/crt1"
+_crt_arch :: import "libc/arch/x86_64/crt_arch"
+_libc_start :: import "libc/src/env/__libc_start_main"
+_syscall :: import "libc/src/syscall/syscall"
+_syscall_nums :: import "libc/include/syscall"
+_exit_impl :: import "libc/src/exit/_Exit"
+_rt_io :: import "libc/src/runtime/rt_io"

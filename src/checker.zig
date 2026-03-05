@@ -137,8 +137,11 @@ const FunctionCtx = struct {
     inferred_result: ?types.TypeId = null,
 };
 
+const ControlKind = enum { loop, match };
 const LoopCtx = struct {
     label: ast.OptStrId,
+    kind: ControlKind = .loop,
+    continue_ty: ?types.TypeId = null,
     result_ty: ?types.TypeId = null,
 };
 
@@ -396,13 +399,17 @@ fn recordClosureCapture(self: *Checker, ctx: *CheckerContext, name: ast.StrId, t
     if (ctx.closure_frames.items.len == 0) return;
     var frame = &ctx.closure_frames.items[ctx.closure_frames.items.len - 1];
     for (frame.captures.items) |c| if (c.name.eq(name)) return;
-    try frame.captures.append(self.gpa, .{ .name = name, .ty = ty });
+    _ = self;
+    try frame.captures.append(ctx.symtab.gpa, .{ .name = name, .ty = ty });
 }
 
-fn pushLoop(self: *Checker, ctx: *CheckerContext, label: ast.OptStrId) !void {
-    try ctx.loop_stack.append(self.gpa, .{ .label = label });
+pub inline fn pushLoop(self: *Checker, ctx: *CheckerContext, label: ast.OptStrId) !void {
+    try ctx.loop_stack.append(self.gpa, .{ .label = label, .kind = .loop });
 }
-fn popLoop(_: *Checker, ctx: *CheckerContext) void {
+pub inline fn pushMatch(self: *Checker, ctx: *CheckerContext, label: ast.OptStrId, continue_ty: types.TypeId) !void {
+    try ctx.loop_stack.append(self.gpa, .{ .label = label, .kind = .match, .continue_ty = continue_ty });
+}
+pub inline fn popLoop(_: *Checker, ctx: *CheckerContext) void {
     if (ctx.loop_stack.items.len > 0) _ = ctx.loop_stack.pop();
 }
 fn inLoop(_: *const Checker, ctx: *CheckerContext) bool {
@@ -531,7 +538,7 @@ pub fn lookup(_: *Checker, ctx: *CheckerContext, name: ast.StrId) ?symbols.Symbo
     return ctx.symtab.lookup(ctx.symtab.currentId(), name);
 }
 
-fn loopCtxForLabel(_: *Checker, ctx: *CheckerContext, opt_label: ast.OptStrId) ?*LoopCtx {
+pub fn loopCtxForLabel(_: *Checker, ctx: *CheckerContext, opt_label: ast.OptStrId) ?*LoopCtx {
     if (ctx.loop_stack.items.len == 0) return null;
     const want = if (!opt_label.isNone()) opt_label.unwrap() else null;
     var i = @as(isize, @intCast(ctx.loop_stack.items.len)) - 1;
@@ -1270,10 +1277,18 @@ fn checkAttributes(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, att
     const attrs = ast_unit.exprs.attr_pool.slice(attrs_opt.asRange());
 
     for (attrs) |aid| {
-        const val_expr = ast_unit.exprs.Attribute.get(aid).value;
+        const attr = ast_unit.exprs.Attribute.get(aid);
+        const val_expr = attr.value;
         if (val_expr.isNone()) continue;
 
         const expr = val_expr.unwrap();
+
+        // `@[export_name=symbol]` is accepted as shorthand for `@[export_name="symbol"]`.
+        // Keep identifier form as a symbol token instead of resolving it as a variable.
+        if (std.mem.eql(u8, ast_unit.exprs.strs.get(attr.name), "export_name") and ast_unit.kind(expr) == .Ident) {
+            continue;
+        }
+
         try self.pushValueReq(ctx, true);
         _ = try self.checkExpr(ctx, ast_unit, expr);
         self.popValueReq(ctx);
@@ -1676,7 +1691,7 @@ fn assignableInteger(self: *Checker, got: types.TypeId) AssignErrors {
 
 fn assignableFloat(self: *Checker, got: types.TypeId) AssignErrors {
     const got_kind = self.typeKind(got);
-    if (got_kind != .F32 and got_kind != .F64) return .expected_float_type;
+    if (got_kind != .F32 and got_kind != .F64 and got_kind != .F128) return .expected_float_type;
     return .success;
 }
 
@@ -1718,7 +1733,7 @@ pub fn assignable(self: *Checker, got: types.TypeId, expect: types.TypeId) Assig
             return self.assignable(got, if (gk == .Error) es.error_ty else es.value_ty);
         },
         .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => if (check_types.isIntegerKind(self, gk)) .success else .expected_integer_type,
-        .F32, .F64 => if (gk == .F32 or gk == .F64) .success else .expected_float_type,
+        .F32, .F64, .F128 => if (gk == .F32 or gk == .F64 or gk == .F128) .success else .expected_float_type,
         else => .failure,
     };
 }
@@ -1808,7 +1823,7 @@ fn coerceComptimeNumericExpr(
     const target_kind = self.typeKind(target_ty);
     // Allow coercion to float targets; avoid unsafe integer range assumptions for now.
     return switch (target_kind) {
-        .F32, .F64 => blk: {
+        .F32, .F64, .F128 => blk: {
             ast_unit.type_info.setExprType(expr_id, target_ty);
             break :blk true;
         },
@@ -1884,6 +1899,7 @@ fn coerceIntLiteral(
             break :blk as_float <= limit;
         },
         .F64 => true,
+        .F128 => true,
         else => false,
     };
 
@@ -1910,10 +1926,11 @@ fn coerceFloatLiteral(
     const ok = switch (target_kind) {
         .F32 => blk: {
             if (!std.math.isFinite(value)) break :blk false;
-            const limit: f64 = @floatCast(std.math.floatMax(f32));
+            const limit: f128 = @floatCast(std.math.floatMax(f32));
             break :blk @abs(value) <= limit;
         },
         .F64 => std.math.isFinite(value),
+        .F128 => std.math.isFinite(value),
         else => false,
     };
 
@@ -1944,10 +1961,11 @@ fn coerceImaginaryLiteral(
     const ok = switch (elem_kind) {
         .F32 => blk: {
             if (!std.math.isFinite(info.value)) break :blk false;
-            const limit: f64 = @floatCast(std.math.floatMax(f32));
+            const limit: f128 = @floatCast(std.math.floatMax(f32));
             break :blk @abs(info.value) <= limit;
         },
         .F64 => std.math.isFinite(info.value),
+        .F128 => std.math.isFinite(info.value),
         else => false,
     };
 
@@ -2284,7 +2302,7 @@ fn checkStmt(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, sid: ast.
         },
         .Return => return try self.checkReturn(ctx, ast_unit, getStmt(ast_unit, .Return, sid)),
         .Break => return try self.checkBreak(ctx, ast_unit, getStmt(ast_unit, .Break, sid)),
-        .Continue => if (!self.inLoop(ctx)) try self.context.diags.addError(exprLoc(ast_unit, getStmt(ast_unit, .Continue, sid)), .continue_outside_loop, .{}),
+        .Continue => _ = try self.checkContinue(ctx, ast_unit, getStmt(ast_unit, .Continue, sid)),
         .Defer => _ = try self.checkDefer(ctx, ast_unit, getStmt(ast_unit, .Defer, sid)),
         .ErrDefer => _ = try self.checkErrDefer(ctx, ast_unit, getStmt(ast_unit, .ErrDefer, sid)),
         .Unreachable => {},
@@ -2360,7 +2378,7 @@ pub fn checkExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: a
         // Control Statements (returning Noreturn or Void)
         .Return => try self.checkReturn(ctx, ast_unit, getExpr(ast_unit, .Return, id)),
         .Break => try self.checkBreak(ctx, ast_unit, getExpr(ast_unit, .Break, id)),
-        .Continue => try self.checkContinue(id),
+        .Continue => try self.checkContinue(ctx, ast_unit, getExpr(ast_unit, .Continue, id)),
         .Unreachable => try self.checkUnreachable(id),
 
         // Misc
@@ -2738,7 +2756,7 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
             // 4. Div/Mod specific checks
             if (bin.op == .div) try self.checkDivByZero(ast_unit, bin.right, loc);
             if (bin.op == .mod) {
-                if ((l_k == .F32 or l_k == .F64) or (r_k == .F32 or r_k == .F64)) break :arith_blk;
+                if ((l_k == .F32 or l_k == .F64 or l_k == .F128) or (r_k == .F32 or r_k == .F64 or r_k == .F128)) break :arith_blk;
                 if (check_types.isIntegerKind(self, l_k) and check_types.isIntegerKind(self, r_k)) {
                     try self.checkIntZeroLiteral(ast_unit, bin.right, loc);
                 }
@@ -2782,8 +2800,8 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
 
             // Coercion Logic for Mixed Types (Int/Float)
             if (l_lit and r_lit) {
-                const l_float = (l_k == .F32 or l_k == .F64);
-                const r_float = (r_k == .F32 or r_k == .F64);
+                const l_float = (l_k == .F32 or l_k == .F64 or l_k == .F128);
+                const r_float = (r_k == .F32 or r_k == .F64 or r_k == .F128);
                 if (l_float and !r_float and check_types.isIntegerKind(self, r_k)) {
                     if (try self.updateCoercedLiteral(ast_unit, bin.right, l, &r, &r_k)) return l;
                 } else if (r_float and !l_float and check_types.isIntegerKind(self, l_k)) {
@@ -2797,8 +2815,8 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
                 // Comptime Constant mixing
                 const l_const = self.constNumericKind(ast_unit, bin.left) != .none;
                 const r_const = self.constNumericKind(ast_unit, bin.right) != .none;
-                const l_float = (l_k == .F32 or l_k == .F64);
-                const r_float = (r_k == .F32 or r_k == .F64);
+                const l_float = (l_k == .F32 or l_k == .F64 or l_k == .F128);
+                const r_float = (r_k == .F32 or r_k == .F64 or r_k == .F128);
 
                 if (l_const and r_float and check_types.isIntegerKind(self, l_k)) return r;
                 if (r_const and l_float and check_types.isIntegerKind(self, r_k)) return l;
@@ -2835,7 +2853,13 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
                 return self.context.type_store.mkTensor(self.context.type_store.tBool(), t_info.dims[0..t_info.rank]);
             }
 
-            if (l_k == .Any or r_k == .Any) return self.context.type_store.tBool();
+            // Guard: enum tag comparisons should be type-safe even when one side is inferred as `any`.
+            if (l_k == .Any or r_k == .Any) {
+                const l_enum = if (l_k == .Enum) l else self.enumTypeFromTagExpr(ctx, ast_unit, bin.left);
+                const r_enum = if (r_k == .Enum) r else self.enumTypeFromTagExpr(ctx, ast_unit, bin.right);
+                if (l_enum != null and r_enum != null and !l_enum.?.eq(r_enum.?)) break :cmp_blk;
+                return self.context.type_store.tBool();
+            }
 
             // 2. Optional Comparison (eq/neq only)
             const is_eq = bin.op == .eq or bin.op == .neq;
@@ -2876,16 +2900,16 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
             // Numeric mixing
             if (!match) {
                 const ints = check_types.isIntegerKind(self, l_k) and check_types.isIntegerKind(self, r_k);
-                const floats = (l_k == .F32 or l_k == .F64) and (r_k == .F32 or r_k == .F64);
+                const floats = (l_k == .F32 or l_k == .F64 or l_k == .F128) and (r_k == .F32 or r_k == .F64 or r_k == .F128);
                 const complex = (l_k == .Complex and r_k == .Complex) and self.context.type_store.get(.Complex, l).elem.eq(self.context.type_store.get(.Complex, r).elem);
 
                 if (ints or floats or complex) {
                     match = true;
                 } else if (l_lit and r_lit) {
                     // Literal mixing
-                    if ((l_k == .F32 or l_k == .F64) and check_types.isIntegerKind(self, r_k)) {
+                    if ((l_k == .F32 or l_k == .F64 or l_k == .F128) and check_types.isIntegerKind(self, r_k)) {
                         if (try self.updateCoercedLiteral(ast_unit, bin.right, l, &r, &r_k)) match = true;
-                    } else if ((r_k == .F32 or r_k == .F64) and check_types.isIntegerKind(self, l_k)) {
+                    } else if ((r_k == .F32 or r_k == .F64 or r_k == .F128) and check_types.isIntegerKind(self, l_k)) {
                         if (try self.updateCoercedLiteral(ast_unit, bin.left, r, &l, &l_k)) match = true;
                     }
                 } else if (l_lit and !r_lit and check_types.isNumericKind(self, r_k)) {
@@ -2930,6 +2954,24 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
     // Common error path
     try self.context.diags.addError(loc, .invalid_binary_op_operands, .{ bin.op, l_k, r_k });
     return self.context.type_store.tTypeError();
+}
+
+fn enumTypeFromTagExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, expr: ast.ExprId) ?types.TypeId {
+    if (ast_unit.kind(expr) != .FieldAccess) return null;
+    const fr = getExpr(ast_unit, .FieldAccess, expr);
+    if (ast_unit.kind(fr.parent) != .Ident) return null;
+
+    const idr = getExpr(ast_unit, .Ident, fr.parent);
+    const sid = self.lookup(ctx, idr.name) orelse return null;
+    const sym = ctx.symtab.syms.get(sid);
+    if (sym.origin_decl.isNone()) return null;
+
+    const decl_id = sym.origin_decl.unwrap();
+    const decl_ty = ast_unit.type_info.decl_types.items[decl_id.toRaw()] orelse return null;
+    if (self.typeKind(decl_ty) != .TypeType) return null;
+
+    const inner = self.context.type_store.get(.TypeType, decl_ty).of;
+    return if (self.typeKind(inner) == .Enum) inner else null;
 }
 
 /// Validate the unary expression `id`, ensuring operand types and operators align.
@@ -3830,8 +3872,21 @@ fn resolveAstModuleFieldAccess(self: *Checker, ast_ty: types.TypeId, field_name:
     const parent_unit = self.context.compilation_unit.findFileUnit(pkg_name, filepath) orelse
         return ts.tTypeError();
     if (parent_unit.ast) |a| {
-        if (a.type_info.getExport(a.exprs.strs.intern(field_name))) |ex| {
-            return ex.ty;
+        const target_sid = a.exprs.strs.intern(field_name);
+        const checker_ctx = self.checker_ctx.items[a.file_id];
+        if (checker_ctx) |c| {
+            if (c.symtab.lookup(.fromRaw(0), target_sid)) |ex| {
+                const sym = c.symtab.syms.get(ex);
+                if (!sym.origin_decl.isNone()) {
+                    const decl = sym.origin_decl.unwrap();
+                    if (a.type_info.decl_types.items[decl.toRaw()] == null) {
+                        try self.checkDecl(c, a, decl);
+                    }
+                    if (a.type_info.decl_types.items[decl.toRaw()]) |resolved| {
+                        return if (self.typeKind(resolved) == .TypeType) ts.get(.TypeType, resolved).of else resolved;
+                    }
+                }
+            }
         }
 
         const last_diag_idx = self.context.diags.count();
@@ -3839,9 +3894,11 @@ fn resolveAstModuleFieldAccess(self: *Checker, ast_ty: types.TypeId, field_name:
 
         var all_exports = List([]const u8){};
         defer all_exports.deinit(self.gpa);
-        var it = a.type_info.exports.iterator();
-        while (it.next()) |entry| {
-            try all_exports.append(self.gpa, a.exprs.strs.get(entry.key_ptr.*));
+        if (checker_ctx) |c| {
+            const scope = c.symtab.scopes.get(.fromRaw(0));
+            for (c.symtab.sym_pool.slice(scope.symbols)) |sid| {
+                try all_exports.append(self.gpa, a.exprs.strs.get(c.symtab.syms.get(sid).name));
+            }
         }
         try self.attachSuggestionListNotes(last_diag_idx, field_name, all_exports.items, .did_you_mean_field, .available_fields);
         return ts.tTypeError();
@@ -4510,7 +4567,7 @@ fn typeInfoResultType(self: *Checker) types.TypeId {
     }, 0);
 
     const void_payload = ts.tVoid();
-    const case_count: usize = 43;
+    const case_count: usize = 44;
     const cases = ts.arena.allocator().alloc(types.TypeStore.StructFieldArg, case_count) catch @panic("OOM");
     var idx: usize = 0;
     const addCase = struct {
@@ -4532,6 +4589,7 @@ fn typeInfoResultType(self: *Checker) types.TypeId {
     addCase(cases, &idx, "U64", void_payload, ts.strs);
     addCase(cases, &idx, "F32", void_payload, ts.strs);
     addCase(cases, &idx, "F64", void_payload, ts.strs);
+    addCase(cases, &idx, "F128", void_payload, ts.strs);
     addCase(cases, &idx, "Usize", void_payload, ts.strs);
     addCase(cases, &idx, "Complex", elem_payload, ts.strs);
     addCase(cases, &idx, "Tensor", tensor_payload, ts.strs);
@@ -5504,6 +5562,7 @@ fn tritonPointeeFromMlir(self: *Checker, tok: []const u8) ?types.TypeId {
         'f' => {
             if (std.mem.eql(u8, inner, "f32")) return ts.tF32();
             if (std.mem.eql(u8, inner, "f64")) return ts.tF64();
+            if (std.mem.eql(u8, inner, "f128")) return ts.tF128();
         },
         else => {},
     }
@@ -6560,6 +6619,7 @@ fn unifyNumeric(self: *Checker, a: types.TypeId, b: types.TypeId) types.TypeId {
     const bk = self.typeKind(b);
     const ts = self.context.type_store;
 
+    if (ak == .F128 or bk == .F128) return ts.tF128();
     if (ak == .F64 or bk == .F64) return ts.tF64();
     if (ak == .F32 or bk == .F32) return ts.tF32();
     if (ak == .Usize or bk == .Usize) return ts.tUsize();
@@ -6601,6 +6661,9 @@ fn castable(self: *Checker, got: types.TypeId, expect: types.TypeId) bool {
     const g_num = check_types.isNumericKind(self, gk);
     const e_num = check_types.isNumericKind(self, ek);
     if (g_num and e_num) return true;
+    if ((gk == .Bool and check_types.isIntegerKind(self, ek)) or
+        (ek == .Bool and check_types.isIntegerKind(self, gk)))
+        return true;
 
     if ((gk == .Enum and check_types.isIntegerKind(self, ek)) or (ek == .Enum and check_types.isIntegerKind(self, gk))) return true;
     if (gk == .Ptr and ek == .Ptr) return true;
@@ -6642,10 +6705,36 @@ fn checkBreak(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, br: ast.
     }
     return ts.tTypeError();
 }
-/// Handle `continue` expressions (no type, but ensures location is tracked).
-fn checkContinue(self: *Checker, id: ast.ExprId) !types.TypeId {
-    _ = id;
-    return self.context.type_store.tVoid();
+/// Handle `continue` expressions (validate match-targeted continuations).
+fn checkContinue(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, row: ast.Rows.Continue) !types.TypeId {
+    const ts = self.context.type_store;
+    if (!self.inLoop(ctx)) {
+        try self.context.diags.addError(exprLoc(ast_unit, row), .continue_outside_loop, .{});
+        return ts.tTypeError();
+    }
+
+    const has_val = !row.value.isNone();
+    const vty = if (has_val) try self.checkExpr(ctx, ast_unit, row.value.unwrap()) else ts.tVoid();
+
+    if (self.loopCtxForLabel(ctx, row.label)) |lctx| {
+        if (lctx.kind == .match) {
+            if (!has_val) {
+                try self.context.diags.addError(exprLoc(ast_unit, row), .continue_requires_value, .{});
+                return ts.tTypeError();
+            }
+            if (self.typeKind(vty) == .TypeError) return ts.tTypeError();
+            if (lctx.continue_ty) |cty| {
+                if (self.assignable(vty, cty) != .success and !self.castable(vty, cty)) {
+                    try self.context.diags.addError(exprLoc(ast_unit, row), .continue_value_type_mismatch, .{ cty, vty });
+                    return ts.tTypeError();
+                }
+            }
+        } else if (has_val) {
+            try self.context.diags.addError(exprLoc(ast_unit, row), .continue_value_not_allowed, .{});
+            return ts.tTypeError();
+        }
+    }
+    return ts.tVoid();
 }
 
 /// Validate `defer` expressions inside functions only.

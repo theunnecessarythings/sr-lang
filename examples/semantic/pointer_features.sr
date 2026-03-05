@@ -1,4 +1,6 @@
-package pointer_features
+package main
+
+io :: import "std/io"
 
 // Semantic Example: Pointer Features
 
@@ -15,20 +17,22 @@ modify :: proc(p_ptr: *Point) {
 
 print_const :: proc(p_ptr: *const Point) {
     // Reading is fine with auto-deref.
-    print("Point is (", p_ptr.x, ", ", p_ptr.y, ")")
+    io.print("Point:\n", 0)
+    io.print("x=%d\n", p_ptr.x)
+    io.print("y=%d\n", p_ptr.y)
 
     // This would cause a compile-time error because p_ptr is a const pointer.
     // p_ptr.x = 300
 }
 
 // The main entry point is defined as a variable (:=)
-main := proc() {
+main :: proc() {
     p := Point{ x: 10, y: 20 }
     
     print_const(&p) // Pass a pointer to p
 
     modify(&p) // Pass a mutable pointer to p
 
-    print("After modification:")
+    io.print("After modification:\n", 0)
     print_const(&p)
 }

@@ -1,0 +1,32 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/tanhl.c (f128 path).
+
+basic :: import "libc/src/math/basic"
+
+LOG3_OVER2 :: 0.54930614433405484570
+LOG5_OVER3_OVER2 :: 0.2554128118829953416
+
+tanhl :: proc(x: f128) f128 {
+    bits := x.^u128
+    sign := ((bits >> 127) & 1) != 0
+    x = basic.fabsl(x)
+
+    t: f128
+    if x > LOG3_OVER2 {
+        if x >= 32.0 {
+            t = 1.0 + 0.0 / (x + 0x1p-120)
+        } else {
+            t = expm1l(2.0 * x)
+            t = 1.0 - 2.0 / (t + 2.0)
+        }
+    } else if x > LOG5_OVER3_OVER2 {
+        t = expm1l(2.0 * x)
+        t = t / (t + 2.0)
+    } else {
+        t = expm1l(-2.0 * x)
+        t = -t / (t + 2.0)
+    }
+
+    return if sign { -t } else { t }
+}

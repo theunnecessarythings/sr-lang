@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/legacy/getpagesize.c
+
+conf_mod :: import "libc/src/conf/sysconf"
+unistd_h :: import "libc/include/unistd"
+
+getpagesize :: proc() i32 {
+    return conf_mod.sysconf(unistd_h._SC_PAGESIZE).(i32)
+}

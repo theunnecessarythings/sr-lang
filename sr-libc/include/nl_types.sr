@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/include/nl_types.h (minimal).
+
+nl_catd :: isize
+
+catopen :: proc(name: *const u8, oflag: i32) nl_catd
+catgets :: proc(catd: nl_catd, set_id: i32, msg_id: i32, msg: *const u8) *u8
+catclose :: proc(catd: nl_catd) i32

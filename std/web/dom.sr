@@ -1,0 +1,98 @@
+package dom
+
+// Event Kinds
+EventKind :: u32
+MouseDown :: 14
+MouseUp   :: 13
+MouseMove :: 10
+KeyDown   :: 16
+KeyUp     :: 15
+
+// Structs
+Event :: struct {
+    kind: EventKind,
+    target_kind: u32,
+    current_target_kind: u32,
+    
+    id: string,
+    
+    timestamp: f64,
+    
+    phase: u8,
+    options: u8,
+    is_composing: bool,
+    is_trusted: bool,
+    
+    // Data Union (Must align to 8 bytes)
+    data: EventData,
+    
+    user_data: *void,
+    callback: *void,
+}
+
+EventData :: union {
+    mouse: MouseEvent,
+    key: KeyEvent,
+    // scroll: ScrollEvent,
+    // wheel: WheelEvent,
+}
+
+MouseEvent :: struct {
+    screen_x: i64,
+    screen_y: i64,
+    client_x: i64,
+    client_y: i64,
+    offset_x: i64,
+    offset_y: i64,
+    page_x: i64,
+    page_y: i64,
+    movement_x: i64,
+    movement_y: i64,
+    
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    meta: bool,
+    
+    button: i16,
+    buttons: u16,
+}
+
+KeyEvent :: struct {
+    location: u8,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    meta: bool,
+    repeat: bool,
+    
+    char_code: u32,
+    
+    key_len: i32,
+    code_len: i32,
+    key_buf: [32]u8,
+    code_buf: [32]u8,
+}
+
+// Externs (Imports from JS)
+init_event_raw :: extern proc(e: *Event) void
+
+add_window_event_listener :: extern proc(name_ptr: *const u8, name_len: usize, kind: u32, data: ?*void, callback: proc(*Event) void) bool
+
+// Helpers
+addWindowEventListener :: proc(name: string, kind: u32, callback: proc(*Event) void) bool {
+    return add_window_event_listener(name.ptr, name.len, kind, null, callback)
+}
+
+// Exported Dispatcher (Called by JS)
+// @[export_name="srlang_dom_do_event_callback"]
+// do_event_callback :: proc(user_data: *void, callback: proc(*Event) void, ctx: *void) void {
+//     // Initialize event struct on stack
+//     e: Event = Event{} // Zero init
+//     init_event_raw(&e)
+//     
+//     e.user_data = user_data
+//     
+//     // Dispatch to user callback
+//     callback(&e)
+// }

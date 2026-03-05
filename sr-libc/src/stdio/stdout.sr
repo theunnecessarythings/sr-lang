@@ -1,0 +1,22 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/stdout.c.
+
+impl :: import "libc/src/stdio/stdio_impl"
+
+stdout_buf: [BUFSIZ + impl.UNGET]u8
+
+__stdout_FILE: alltypes.FILE = alltypes.FILE{
+    buf: (&stdout_buf[0]) + impl.UNGET,
+    buf_size: BUFSIZ,
+    fd: 1,
+    flags: (impl.F_PERM | impl.F_NORD).(u32),
+    lbf: 10,
+    write: __stdout_write,
+    seek: __stdio_seek,
+    close: __stdio_close,
+    lock: -1,
+}
+
+stdout: *alltypes.FILE = &__stdout_FILE
+__stdout_used: *alltypes.FILE = &__stdout_FILE

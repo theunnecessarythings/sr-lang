@@ -1,0 +1,10 @@
+package libc
+
+// Minimal catclose: nothing to close.
+
+nl_h :: import "libc/include/nl_types"
+
+catclose :: proc(catd: nl_h.nl_catd) i32 {
+    _ = catd
+    return 0
+}

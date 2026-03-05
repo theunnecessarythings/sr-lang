@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/crypt/crypt.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <unistd.h>
+// #include <crypt.h>
+
+crypt :: proc(key: u8, salt: u8) u8 {
+    // TODO: Translate function body
+    unreachable
+}
+

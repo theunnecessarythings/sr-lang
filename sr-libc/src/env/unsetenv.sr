@@ -1,0 +1,38 @@
+package libc
+
+// Derived from musl-1.2.5/src/env/unsetenv.c
+
+string_h :: import "libc/src/string"
+errno_h :: import "libc/include/errno"
+
+extern __environ: **u8
+__strchrnul :: extern proc(*u8, i32) *u8
+__env_rm_add :: extern proc(*u8, *u8)
+
+unsetenv :: proc(name: *u8) i32 {
+    l: usize = (__strchrnul(name, '='.(i32)) - name).(usize)
+    if l == 0 || name[l] != 0 {
+        errno_h.errno().* = errno_h.EINVAL
+        return -1
+    }
+    
+    if __environ != 0 {
+        e: **u8 = __environ
+        eo: **u8 = e
+        while e.* != 0 {
+            if string_h.strncmp(name, e.*, l) == 0 && e.*[l] == '='.(u8) {
+                __env_rm_add(e.*, 0)
+            } else if eo != e {
+                eo.* = e.*
+                eo = eo + 1
+            } else {
+                eo = eo + 1
+            }
+            e = e + 1
+        }
+        if eo != e {
+            eo.* = 0
+        }
+    }
+    return 0
+}

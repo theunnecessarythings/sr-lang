@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/ipc/msgctl.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/msg.h>
+// #include <endian.h>
+// #include <syscall.h>
+// #include <ipc.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+ipc :: import "libc/src/ipc/ipc_impl"
+
+msgctl :: proc(q: i32, cmd: i32, buf: *msqid_ds) i32 {
+    r := sc.syscall3_ret(nums.SYS_msgctl.(i64), q.(i64), ipc.IPC_CMD(cmd).(i64), buf.^usize.(i64))
+    return r.(i32)
+}

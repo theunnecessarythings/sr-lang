@@ -1,0 +1,65 @@
+package libc
+
+// Derived from musl-1.2.5/src/env/setenv.c
+
+string_h :: import "libc/src/string"
+errno_h :: import "libc/include/errno"
+
+extern __environ: **u8
+__strchrnul :: extern proc(*u8, i32) *u8
+__putenv :: extern proc(*u8, usize, *u8) i32
+getenv :: extern proc(*u8) *u8
+
+__env_rm_add :: proc(old: *u8, new: *u8) {
+    env_alloced: **u8 = 0  // static
+    env_alloced_n: usize = 0  // static
+    
+    i: usize = 0
+    while i < env_alloced_n {
+        if env_alloced[i] == old {
+            env_alloced[i] = new
+            string_h.free(old.(*void))
+            return
+        } else if env_alloced[i] == 0 && new != 0 {
+            env_alloced[i] = new
+            new = 0
+        }
+        i += 1
+    }
+    
+    if new == 0 {
+        return
+    }
+    
+    t := string_h.realloc(env_alloced.(*void), (env_alloced_n + 1) * sizeof(**u8)).(**u8)
+    if t == 0 {
+        return
+    }
+    env_alloced = t
+    env_alloced[env_alloced_n] = new
+    env_alloced_n += 1
+}
+
+setenv :: proc(var: *u8, value: *u8, overwrite: i32) i32 {
+    l1: usize = (__strchrnul(var, '='.(i32)) - var).(usize)
+    if var == 0 || l1 == 0 || var[l1] != 0 {
+        errno_h.errno().* = errno_h.EINVAL
+        return -1
+    }
+    
+    if overwrite == 0 && getenv(var) != 0 {
+        return 0
+    }
+    
+    l2 := string_h.strlen(value)
+    s := string_h.malloc(l1 + l2 + 2).(*u8)
+    if s == 0 {
+        return -1
+    }
+    
+    string_h.memcpy(s.(*void), var.(*void), l1)
+    s[l1] = '='.(u8)
+    string_h.memcpy((s + l1 + 1).(*void), value.(*void), l2 + 1)
+    
+    return __putenv(s, l1, s)
+}

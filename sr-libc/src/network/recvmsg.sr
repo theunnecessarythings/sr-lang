@@ -1,0 +1,24 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/recvmsg.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <limits.h>
+// #include <time.h>
+// #include <sys/time.h>
+// #include <string.h>
+// #include <syscall.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+__convert_scm_timestamps :: proc(msg: *msghdr, csize: socklen_t) void {
+    _ = msg
+    _ = csize
+}
+
+recvmsg :: proc(fd: i32, msg: *msghdr, flags: i32) isize {
+    r := sc.syscall3_ret(nums.SYS_recvmsg.(i64), fd.(i64), msg.^usize.(i64), flags.(i64))
+    return r.(isize)
+}

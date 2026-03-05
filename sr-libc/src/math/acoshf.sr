@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/acoshf.c.
+
+libm :: import "libc/src/math/libm_internal"
+
+acoshf :: proc(x: f32) f32 {
+    u := libm.asuint(x)
+    a := u & 0x7fffffff
+
+    if a < 0x3f800000 + (1 << 23) {
+        return log1pf(x - 1.0f + sqrtf((x - 1.0f) * (x - 1.0f) + 2.0f * (x - 1.0f)))
+    }
+    if u < 0x3f800000 + (12 << 23) {
+        return logf(2.0f * x - 1.0f / (x + sqrtf(x * x - 1.0f)))
+    }
+    return logf(x) + 0.693147180559945309417232121458176568f
+}

@@ -1,0 +1,510 @@
+package libc
+
+// Derived from musl-1.2.5/include/netinet/in.h
+alltypes :: import "libc/include/alltypes"
+
+sa_family_t :: alltypes.sa_family_t
+sockaddr_storage :: struct {
+    ss_family: sa_family_t,
+    __ss_padding: [118]u8,
+    __ss_align: u64,
+}
+
+in_port_t :: u16
+in_addr_t :: u32
+
+in_addr :: struct { s_addr: in_addr_t }
+
+sockaddr_in :: struct {
+    sin_family: sa_family_t,
+    sin_port: in_port_t,
+    sin_addr: in_addr,
+    sin_zero: [8]u8,
+}
+
+in6_addr :: struct {
+    s6_addr: [16]u8,
+}
+
+s6_addr16 :: proc(a: *in6_addr) *u16 {
+    return (&a.s6_addr[0]).^*u16
+}
+
+s6_addr32 :: proc(a: *in6_addr) *u32 {
+    return (&a.s6_addr[0]).^*u32
+}
+
+sockaddr_in6 :: struct {
+    sin6_family: sa_family_t,
+    sin6_port: in_port_t,
+    sin6_flowinfo: u32,
+    sin6_addr: in6_addr,
+    sin6_scope_id: u32,
+}
+
+ipv6_mreq :: struct {
+    ipv6mr_multiaddr: in6_addr,
+    ipv6mr_interface: u32,
+}
+
+INADDR_ANY :: 0x00000000
+INADDR_BROADCAST :: 0xffffffff
+INADDR_NONE :: 0xffffffff
+INADDR_LOOPBACK :: 0x7f000001
+INADDR_DUMMY :: 0xc0000008
+
+INADDR_UNSPEC_GROUP :: 0xe0000000
+INADDR_ALLHOSTS_GROUP :: 0xe0000001
+INADDR_ALLRTRS_GROUP :: 0xe0000002
+INADDR_ALLSNOOPERS_GROUP :: 0xe000006a
+INADDR_MAX_LOCAL_GROUP :: 0xe00000ff
+
+IN6ADDR_ANY_INIT: in6_addr = in6_addr{ s6_addr: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }
+IN6ADDR_LOOPBACK_INIT: in6_addr = in6_addr{ s6_addr: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] }
+
+INET_ADDRSTRLEN :: 16
+INET6_ADDRSTRLEN :: 46
+
+htonl :: proc(n: u32) u32
+htons :: proc(n: u16) u16
+ntohl :: proc(n: u32) u32
+ntohs :: proc(n: u16) u16
+
+IPPORT_RESERVED :: 1024
+
+IPPROTO_IP :: 0
+IPPROTO_HOPOPTS :: 0
+IPPROTO_ICMP :: 1
+IPPROTO_IGMP :: 2
+IPPROTO_IPIP :: 4
+IPPROTO_TCP :: 6
+IPPROTO_EGP :: 8
+IPPROTO_PUP :: 12
+IPPROTO_UDP :: 17
+IPPROTO_IDP :: 22
+IPPROTO_TP :: 29
+IPPROTO_DCCP :: 33
+IPPROTO_IPV6 :: 41
+IPPROTO_ROUTING :: 43
+IPPROTO_FRAGMENT :: 44
+IPPROTO_RSVP :: 46
+IPPROTO_GRE :: 47
+IPPROTO_ESP :: 50
+IPPROTO_AH :: 51
+IPPROTO_ICMPV6 :: 58
+IPPROTO_NONE :: 59
+IPPROTO_DSTOPTS :: 60
+IPPROTO_MTP :: 92
+IPPROTO_BEETPH :: 94
+IPPROTO_ENCAP :: 98
+IPPROTO_PIM :: 103
+IPPROTO_COMP :: 108
+IPPROTO_SCTP :: 132
+IPPROTO_MH :: 135
+IPPROTO_UDPLITE :: 136
+IPPROTO_MPLS :: 137
+IPPROTO_ETHERNET :: 143
+IPPROTO_RAW :: 255
+IPPROTO_MPTCP :: 262
+IPPROTO_MAX :: 263
+
+IN6_BYTE :: proc(a: *const in6_addr, i: usize) u8 {
+    p := a.^*const u8
+    return p[i]
+}
+
+IN6_IS_ADDR_UNSPECIFIED :: proc(a: *const in6_addr) i32 {
+    if IN6_BYTE(a, 0) != 0 { return 0 }
+    if IN6_BYTE(a, 1) != 0 { return 0 }
+    if IN6_BYTE(a, 2) != 0 { return 0 }
+    if IN6_BYTE(a, 3) != 0 { return 0 }
+    if IN6_BYTE(a, 4) != 0 { return 0 }
+    if IN6_BYTE(a, 5) != 0 { return 0 }
+    if IN6_BYTE(a, 6) != 0 { return 0 }
+    if IN6_BYTE(a, 7) != 0 { return 0 }
+    if IN6_BYTE(a, 8) != 0 { return 0 }
+    if IN6_BYTE(a, 9) != 0 { return 0 }
+    if IN6_BYTE(a, 10) != 0 { return 0 }
+    if IN6_BYTE(a, 11) != 0 { return 0 }
+    if IN6_BYTE(a, 12) != 0 { return 0 }
+    if IN6_BYTE(a, 13) != 0 { return 0 }
+    if IN6_BYTE(a, 14) != 0 { return 0 }
+    if IN6_BYTE(a, 15) != 0 { return 0 }
+    return 1
+}
+
+IN6_IS_ADDR_LOOPBACK :: proc(a: *const in6_addr) i32 {
+    if IN6_BYTE(a, 0) != 0 { return 0 }
+    if IN6_BYTE(a, 1) != 0 { return 0 }
+    if IN6_BYTE(a, 2) != 0 { return 0 }
+    if IN6_BYTE(a, 3) != 0 { return 0 }
+    if IN6_BYTE(a, 4) != 0 { return 0 }
+    if IN6_BYTE(a, 5) != 0 { return 0 }
+    if IN6_BYTE(a, 6) != 0 { return 0 }
+    if IN6_BYTE(a, 7) != 0 { return 0 }
+    if IN6_BYTE(a, 8) != 0 { return 0 }
+    if IN6_BYTE(a, 9) != 0 { return 0 }
+    if IN6_BYTE(a, 10) != 0 { return 0 }
+    if IN6_BYTE(a, 11) != 0 { return 0 }
+    if IN6_BYTE(a, 12) != 0 { return 0 }
+    if IN6_BYTE(a, 13) != 0 { return 0 }
+    if IN6_BYTE(a, 14) != 0 { return 0 }
+    if IN6_BYTE(a, 15) != 1 { return 0 }
+    return 1
+}
+
+IN6_IS_ADDR_MULTICAST :: proc(a: *const in6_addr) i32 {
+    return if IN6_BYTE(a, 0) == 0xff { 1 } else { 0 }
+}
+
+IN6_IS_ADDR_LINKLOCAL :: proc(a: *const in6_addr) i32 {
+    if IN6_BYTE(a, 0) != 0xfe { return 0 }
+    if (IN6_BYTE(a, 1) & 0xc0) != 0x80 { return 0 }
+    return 1
+}
+
+IN6_IS_ADDR_SITELOCAL :: proc(a: *const in6_addr) i32 {
+    if IN6_BYTE(a, 0) != 0xfe { return 0 }
+    if (IN6_BYTE(a, 1) & 0xc0) != 0xc0 { return 0 }
+    return 1
+}
+
+IN6_IS_ADDR_V4MAPPED :: proc(a: *const in6_addr) i32 {
+    if IN6_BYTE(a, 0) != 0 { return 0 }
+    if IN6_BYTE(a, 1) != 0 { return 0 }
+    if IN6_BYTE(a, 2) != 0 { return 0 }
+    if IN6_BYTE(a, 3) != 0 { return 0 }
+    if IN6_BYTE(a, 4) != 0 { return 0 }
+    if IN6_BYTE(a, 5) != 0 { return 0 }
+    if IN6_BYTE(a, 6) != 0 { return 0 }
+    if IN6_BYTE(a, 7) != 0 { return 0 }
+    if IN6_BYTE(a, 8) != 0 { return 0 }
+    if IN6_BYTE(a, 9) != 0 { return 0 }
+    if IN6_BYTE(a, 10) != 0xff { return 0 }
+    if IN6_BYTE(a, 11) != 0xff { return 0 }
+    return 1
+}
+
+IN6_IS_ADDR_V4COMPAT :: proc(a: *const in6_addr) i32 {
+    if IN6_BYTE(a, 0) != 0 { return 0 }
+    if IN6_BYTE(a, 1) != 0 { return 0 }
+    if IN6_BYTE(a, 2) != 0 { return 0 }
+    if IN6_BYTE(a, 3) != 0 { return 0 }
+    if IN6_BYTE(a, 4) != 0 { return 0 }
+    if IN6_BYTE(a, 5) != 0 { return 0 }
+    if IN6_BYTE(a, 6) != 0 { return 0 }
+    if IN6_BYTE(a, 7) != 0 { return 0 }
+    if IN6_BYTE(a, 8) != 0 { return 0 }
+    if IN6_BYTE(a, 9) != 0 { return 0 }
+    if IN6_BYTE(a, 10) != 0 { return 0 }
+    if IN6_BYTE(a, 11) != 0 { return 0 }
+    if IN6_BYTE(a, 12) != 0 { return 0 }
+    if IN6_BYTE(a, 13) != 0 { return 0 }
+    if IN6_BYTE(a, 14) != 0 { return 0 }
+    if IN6_BYTE(a, 15) <= 1 { return 0 }
+    return 1
+}
+
+IN6_IS_ADDR_MC_NODELOCAL :: proc(a: *const in6_addr) i32 {
+    if IN6_IS_ADDR_MULTICAST(a) == 0 { return 0 }
+    if (IN6_BYTE(a, 1) & 0xf) != 0x1 { return 0 }
+    return 1
+}
+
+IN6_IS_ADDR_MC_LINKLOCAL :: proc(a: *const in6_addr) i32 {
+    if IN6_IS_ADDR_MULTICAST(a) == 0 { return 0 }
+    if (IN6_BYTE(a, 1) & 0xf) != 0x2 { return 0 }
+    return 1
+}
+
+IN6_IS_ADDR_MC_SITELOCAL :: proc(a: *const in6_addr) i32 {
+    if IN6_IS_ADDR_MULTICAST(a) == 0 { return 0 }
+    if (IN6_BYTE(a, 1) & 0xf) != 0x5 { return 0 }
+    return 1
+}
+
+IN6_IS_ADDR_MC_ORGLOCAL :: proc(a: *const in6_addr) i32 {
+    if IN6_IS_ADDR_MULTICAST(a) == 0 { return 0 }
+    if (IN6_BYTE(a, 1) & 0xf) != 0x8 { return 0 }
+    return 1
+}
+
+IN6_IS_ADDR_MC_GLOBAL :: proc(a: *const in6_addr) i32 {
+    if IN6_IS_ADDR_MULTICAST(a) == 0 { return 0 }
+    if (IN6_BYTE(a, 1) & 0xf) != 0xe { return 0 }
+    return 1
+}
+
+IN6_ARE_ADDR_EQUAL :: proc(a: *const in6_addr, b: *const in6_addr) i32 {
+    if IN6_BYTE(a, 0) != IN6_BYTE(b, 0) { return 0 }
+    if IN6_BYTE(a, 1) != IN6_BYTE(b, 1) { return 0 }
+    if IN6_BYTE(a, 2) != IN6_BYTE(b, 2) { return 0 }
+    if IN6_BYTE(a, 3) != IN6_BYTE(b, 3) { return 0 }
+    if IN6_BYTE(a, 4) != IN6_BYTE(b, 4) { return 0 }
+    if IN6_BYTE(a, 5) != IN6_BYTE(b, 5) { return 0 }
+    if IN6_BYTE(a, 6) != IN6_BYTE(b, 6) { return 0 }
+    if IN6_BYTE(a, 7) != IN6_BYTE(b, 7) { return 0 }
+    if IN6_BYTE(a, 8) != IN6_BYTE(b, 8) { return 0 }
+    if IN6_BYTE(a, 9) != IN6_BYTE(b, 9) { return 0 }
+    if IN6_BYTE(a, 10) != IN6_BYTE(b, 10) { return 0 }
+    if IN6_BYTE(a, 11) != IN6_BYTE(b, 11) { return 0 }
+    if IN6_BYTE(a, 12) != IN6_BYTE(b, 12) { return 0 }
+    if IN6_BYTE(a, 13) != IN6_BYTE(b, 13) { return 0 }
+    if IN6_BYTE(a, 14) != IN6_BYTE(b, 14) { return 0 }
+    if IN6_BYTE(a, 15) != IN6_BYTE(b, 15) { return 0 }
+    return 1
+}
+
+IN_CLASSA :: proc(a: in_addr_t) i32 { return if (a & 0x80000000) == 0 { 1 } else { 0 } }
+IN_CLASSA_NET :: 0xff000000
+IN_CLASSA_NSHIFT :: 24
+IN_CLASSA_HOST :: (0xffffffff & (0xffffffff ^ IN_CLASSA_NET))
+IN_CLASSA_MAX :: 128
+IN_CLASSB :: proc(a: in_addr_t) i32 { return if (a & 0xc0000000) == 0x80000000 { 1 } else { 0 } }
+IN_CLASSB_NET :: 0xffff0000
+IN_CLASSB_NSHIFT :: 16
+IN_CLASSB_HOST :: (0xffffffff & (0xffffffff ^ IN_CLASSB_NET))
+IN_CLASSB_MAX :: 65536
+IN_CLASSC :: proc(a: in_addr_t) i32 { return if (a & 0xe0000000) == 0xc0000000 { 1 } else { 0 } }
+IN_CLASSC_NET :: 0xffffff00
+IN_CLASSC_NSHIFT :: 8
+IN_CLASSC_HOST :: (0xffffffff & (0xffffffff ^ IN_CLASSC_NET))
+IN_CLASSD :: proc(a: in_addr_t) i32 { return if (a & 0xf0000000) == 0xe0000000 { 1 } else { 0 } }
+IN_MULTICAST :: proc(a: in_addr_t) i32 { return IN_CLASSD(a) }
+IN_EXPERIMENTAL :: proc(a: in_addr_t) i32 { return if (a & 0xe0000000) == 0xe0000000 { 1 } else { 0 } }
+IN_BADCLASS :: proc(a: in_addr_t) i32 { return if (a & 0xf0000000) == 0xf0000000 { 1 } else { 0 } }
+
+IN_LOOPBACKNET :: 127
+
+IP_TOS :: 1
+IP_TTL :: 2
+IP_HDRINCL :: 3
+IP_OPTIONS :: 4
+IP_ROUTER_ALERT :: 5
+IP_RECVOPTS :: 6
+IP_RETOPTS :: 7
+IP_PKTINFO :: 8
+IP_PKTOPTIONS :: 9
+IP_PMTUDISC :: 10
+IP_MTU_DISCOVER :: 10
+IP_RECVERR :: 11
+IP_RECVTTL :: 12
+IP_RECVTOS :: 13
+IP_MTU :: 14
+IP_FREEBIND :: 15
+IP_IPSEC_POLICY :: 16
+IP_XFRM_POLICY :: 17
+IP_PASSSEC :: 18
+IP_TRANSPARENT :: 19
+IP_ORIGDSTADDR :: 20
+IP_RECVORIGDSTADDR :: IP_ORIGDSTADDR
+IP_MINTTL :: 21
+IP_NODEFRAG :: 22
+IP_CHECKSUM :: 23
+IP_BIND_ADDRESS_NO_PORT :: 24
+IP_RECVFRAGSIZE :: 25
+IP_RECVERR_RFC4884 :: 26
+IP_MULTICAST_IF :: 32
+IP_MULTICAST_TTL :: 33
+IP_MULTICAST_LOOP :: 34
+IP_ADD_MEMBERSHIP :: 35
+IP_DROP_MEMBERSHIP :: 36
+IP_UNBLOCK_SOURCE :: 37
+IP_BLOCK_SOURCE :: 38
+IP_ADD_SOURCE_MEMBERSHIP :: 39
+IP_DROP_SOURCE_MEMBERSHIP :: 40
+IP_MSFILTER :: 41
+IP_MULTICAST_ALL :: 49
+IP_UNICAST_IF :: 50
+
+IP_RECVRETOPTS :: IP_RETOPTS
+
+IP_PMTUDISC_DONT :: 0
+IP_PMTUDISC_WANT :: 1
+IP_PMTUDISC_DO :: 2
+IP_PMTUDISC_PROBE :: 3
+IP_PMTUDISC_INTERFACE :: 4
+IP_PMTUDISC_OMIT :: 5
+
+IP_DEFAULT_MULTICAST_TTL :: 1
+IP_DEFAULT_MULTICAST_LOOP :: 1
+IP_MAX_MEMBERSHIPS :: 20
+
+ip_opts :: struct {
+    ip_dst: in_addr,
+    ip_opts: [40]u8,
+}
+
+MCAST_JOIN_GROUP :: 42
+MCAST_BLOCK_SOURCE :: 43
+MCAST_UNBLOCK_SOURCE :: 44
+MCAST_LEAVE_GROUP :: 45
+MCAST_JOIN_SOURCE_GROUP :: 46
+MCAST_LEAVE_SOURCE_GROUP :: 47
+MCAST_MSFILTER :: 48
+
+MCAST_EXCLUDE :: 0
+MCAST_INCLUDE :: 1
+
+ip_mreq :: struct {
+    imr_multiaddr: in_addr,
+    imr_interface: in_addr,
+}
+
+ip_mreqn :: struct {
+    imr_multiaddr: in_addr,
+    imr_address: in_addr,
+    imr_ifindex: i32,
+}
+
+ip_mreq_source :: struct {
+    imr_multiaddr: in_addr,
+    imr_interface: in_addr,
+    imr_sourceaddr: in_addr,
+}
+
+ip_msfilter :: struct {
+    imsf_multiaddr: in_addr,
+    imsf_interface: in_addr,
+    imsf_fmode: u32,
+    imsf_numsrc: u32,
+    imsf_slist: [1]in_addr,
+}
+
+IP_MSFILTER_SIZE :: proc(numsrc: usize) usize {
+    return (sizeof(ip_msfilter) - sizeof(in_addr) + numsrc.(u64) * sizeof(in_addr)).(usize)
+}
+
+group_req :: struct {
+    gr_interface: u32,
+    gr_group: sockaddr_storage,
+}
+
+group_source_req :: struct {
+    gsr_interface: u32,
+    gsr_group: sockaddr_storage,
+    gsr_source: sockaddr_storage,
+}
+
+group_filter :: struct {
+    gf_interface: u32,
+    gf_group: sockaddr_storage,
+    gf_fmode: u32,
+    gf_numsrc: u32,
+    gf_slist: [1]sockaddr_storage,
+}
+
+GROUP_FILTER_SIZE :: proc(numsrc: usize) usize {
+    return (sizeof(group_filter) - sizeof(sockaddr_storage) + numsrc.(u64) * sizeof(sockaddr_storage)).(usize)
+}
+
+in_pktinfo :: struct {
+    ipi_ifindex: i32,
+    ipi_spec_dst: in_addr,
+    ipi_addr: in_addr,
+}
+
+in6_pktinfo :: struct {
+    ipi6_addr: in6_addr,
+    ipi6_ifindex: u32,
+}
+
+ip6_mtuinfo :: struct {
+    ip6m_addr: sockaddr_in6,
+    ip6m_mtu: u32,
+}
+
+IPV6_ADDRFORM :: 1
+IPV6_2292PKTINFO :: 2
+IPV6_2292HOPOPTS :: 3
+IPV6_2292DSTOPTS :: 4
+IPV6_2292RTHDR :: 5
+IPV6_2292PKTOPTIONS :: 6
+IPV6_CHECKSUM :: 7
+IPV6_2292HOPLIMIT :: 8
+IPV6_NEXTHOP :: 9
+IPV6_AUTHHDR :: 10
+IPV6_UNICAST_HOPS :: 16
+IPV6_MULTICAST_IF :: 17
+IPV6_MULTICAST_HOPS :: 18
+IPV6_MULTICAST_LOOP :: 19
+IPV6_JOIN_GROUP :: 20
+IPV6_LEAVE_GROUP :: 21
+IPV6_ROUTER_ALERT :: 22
+IPV6_MTU_DISCOVER :: 23
+IPV6_MTU :: 24
+IPV6_RECVERR :: 25
+IPV6_V6ONLY :: 26
+IPV6_JOIN_ANYCAST :: 27
+IPV6_LEAVE_ANYCAST :: 28
+IPV6_MULTICAST_ALL :: 29
+IPV6_ROUTER_ALERT_ISOLATE :: 30
+IPV6_IPSEC_POLICY :: 34
+IPV6_XFRM_POLICY :: 35
+IPV6_HDRINCL :: 36
+
+IPV6_RECVPKTINFO :: 49
+IPV6_PKTINFO :: 50
+IPV6_RECVHOPLIMIT :: 51
+IPV6_HOPLIMIT :: 52
+IPV6_RECVHOPOPTS :: 53
+IPV6_HOPOPTS :: 54
+IPV6_RTHDRDSTOPTS :: 55
+IPV6_RECVRTHDR :: 56
+IPV6_RTHDR :: 57
+IPV6_RECVDSTOPTS :: 58
+IPV6_DSTOPTS :: 59
+IPV6_RECVPATHMTU :: 60
+IPV6_PATHMTU :: 61
+IPV6_DONTFRAG :: 62
+IPV6_RECVTCLASS :: 66
+IPV6_TCLASS :: 67
+IPV6_AUTOFLOWLABEL :: 70
+IPV6_ADDR_PREFERENCES :: 72
+IPV6_MINHOPCOUNT :: 73
+IPV6_ORIGDSTADDR :: 74
+IPV6_RECVORIGDSTADDR :: IPV6_ORIGDSTADDR
+IPV6_TRANSPARENT :: 75
+IPV6_UNICAST_IF :: 76
+IPV6_RECVFRAGSIZE :: 77
+IPV6_FREEBIND :: 78
+
+IPV6_ADD_MEMBERSHIP :: IPV6_JOIN_GROUP
+IPV6_DROP_MEMBERSHIP :: IPV6_LEAVE_GROUP
+IPV6_RXHOPOPTS :: IPV6_HOPOPTS
+IPV6_RXDSTOPTS :: IPV6_DSTOPTS
+
+IPV6_PMTUDISC_DONT :: 0
+IPV6_PMTUDISC_WANT :: 1
+IPV6_PMTUDISC_DO :: 2
+IPV6_PMTUDISC_PROBE :: 3
+IPV6_PMTUDISC_INTERFACE :: 4
+IPV6_PMTUDISC_OMIT :: 5
+
+IPV6_PREFER_SRC_TMP :: 0x0001
+IPV6_PREFER_SRC_PUBLIC :: 0x0002
+IPV6_PREFER_SRC_PUBTMP_DEFAULT :: 0x0100
+IPV6_PREFER_SRC_COA :: 0x0004
+IPV6_PREFER_SRC_HOME :: 0x0400
+IPV6_PREFER_SRC_CGA :: 0x0008
+IPV6_PREFER_SRC_NONCGA :: 0x0800
+
+IPV6_RTHDR_LOOSE :: 0
+IPV6_RTHDR_STRICT :: 1
+
+IPV6_RTHDR_TYPE_0 :: 0
+
+__UAPI_DEF_IN_ADDR :: 0
+__UAPI_DEF_IN_IPPROTO :: 0
+__UAPI_DEF_IN_PKTINFO :: 0
+__UAPI_DEF_IP_MREQ :: 0
+__UAPI_DEF_SOCKADDR_IN :: 0
+__UAPI_DEF_IN_CLASS :: 0
+__UAPI_DEF_IN6_ADDR :: 0
+__UAPI_DEF_IN6_ADDR_ALT :: 0
+__UAPI_DEF_SOCKADDR_IN6 :: 0
+__UAPI_DEF_IPV6_MREQ :: 0
+__UAPI_DEF_IPPROTO_V6 :: 0
+__UAPI_DEF_IPV6_OPTIONS :: 0
+__UAPI_DEF_IN6_PKTINFO :: 0
+__UAPI_DEF_IP6_MTUINFO :: 0

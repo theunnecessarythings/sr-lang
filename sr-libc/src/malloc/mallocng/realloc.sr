@@ -1,0 +1,63 @@
+package libc
+
+// Derived from musl-1.2.5/src/malloc/mallocng/realloc.c
+
+malloc_mod :: import "libc/src/malloc/mallocng/malloc"
+free_mod :: import "libc/src/malloc/mallocng/free"
+meta_mod :: import "libc/src/malloc/mallocng/meta"
+glue :: import "libc/src/malloc/mallocng/glue"
+mman :: import "libc/src/mman/mremap"
+string :: import "libc/src/string/memcpy"
+
+realloc :: proc(p: ?*void, n: usize) ?*void {
+    if p == null {
+        raw := malloc_mod.malloc(n)
+        return raw
+    }
+    if meta_mod.size_overflows(n) != 0 { return null }
+    
+    g := meta_mod.get_meta((p?).^*u8)
+    idx := meta_mod.get_slot_index((p?).^*u8)
+    stride := meta_mod.get_stride(g)
+    start := ((&g.mem.storage[0]).^usize + stride * idx.(usize)).(usize).^*u8
+    end := (start.^usize + stride - meta_mod.IB).(usize).^*u8
+    old_size := meta_mod.get_nominal_size((p?).^*u8, end)
+    avail_size: usize = end.^usize - (p?).^usize
+    
+    // only resize in-place if size class matches
+    if n <= avail_size and n < meta_mod.MMAP_THRESHOLD and (meta_mod.size_to_class(n) + 1) >= meta_mod.meta_get_sizeclass(g).(i32) {
+        meta_mod.set_size((p?).^*u8, end, n)
+        return p
+    }
+    
+    // use mremap if old and new size are both mmap-worthy
+    if meta_mod.meta_get_sizeclass(g) >= 48 and n >= meta_mod.MMAP_THRESHOLD {
+        // assert(g->sizeclass==63)
+        base: usize = (p?).^usize - start.^usize
+        needed: usize = (n + base + meta_mod.UNIT + meta_mod.IB + 4095) & ((0.(usize)) - 4096)
+        
+        new_p: *void = g.mem.^*void
+        if (meta_mod.meta_get_maplen(g) * 4096) != needed {
+            new_p = mman.mremap(g.mem.^*void, meta_mod.meta_get_maplen(g) * 4096, needed, mman.MREMAP_MAYMOVE, null)
+        }
+
+        if new_p.^usize != mman.MAP_FAILED.^usize { // MAP_FAILED check
+            g.mem = new_p.^*meta_mod.group
+            meta_mod.meta_set_maplen(g, needed / 4096)
+            p = ((&g.mem.storage[0]).^usize + base).(usize).^*void
+            end = ((&g.mem.storage[0]).^usize + (needed - meta_mod.UNIT) - meta_mod.IB).(usize).^*u8
+            end.* = 0
+            meta_mod.set_size((p?).^*u8, end, n)
+            return p
+        }
+    }
+    
+    new_mem := malloc_mod.malloc(n)
+    if new_mem == null { return null }
+    
+    copy_len := n
+    if old_size < n { copy_len = old_size }
+    _ = string.memcpy(new_mem?.^*void, (p?).^*void, copy_len)
+    free_mod.free(p)
+    return new_mem
+}

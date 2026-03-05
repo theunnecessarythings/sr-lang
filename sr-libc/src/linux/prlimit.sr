@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/prlimit.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+res :: import "libc/include/sys/resource"
+
+prlimit :: proc(pid: alltypes.pid_t, resource: i32, new_limit: *const res.rlimit, old_limit: *res.rlimit) i32 {
+    r := sc.syscall4_ret(
+        nums.SYS_prlimit64.(i64),
+        pid.(i64),
+        resource.(i64),
+        new_limit.^usize.(i64),
+        old_limit.^usize.(i64),
+    )
+    return r.(i32)
+}

@@ -1,0 +1,184 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/sem_open.c
+
+shm_mod :: import "libc/src/mman/shm_open"
+fcntl_h :: import "libc/include/fcntl"
+unistd_open :: import "libc/src/unistd/open"
+unistd_close :: import "libc/src/unistd/close"
+unistd_access :: import "libc/src/unistd/access"
+unistd_unlink :: import "libc/src/unistd/unlink"
+unistd_link :: import "libc/src/unistd/link"
+unistd_write :: import "libc/src/unistd/write"
+mman :: import "libc/src/mman/mmap"
+munmap_mod :: import "libc/src/mman/munmap"
+stat_mod :: import "libc/src/stat/fstat"
+errno_mod :: import "libc/include/errno"
+time_mod :: import "libc/src/time/time"
+snprintf_mod :: import "libc/src/stdio/snprintf"
+string_h :: import "libc/src/string"
+stdarg_mod :: import "libc/include/stdarg"
+lock_mod :: import "libc/src/internal/lock"
+pthread_cancel_mod :: import "libc/src/thread/pthread_setcancelstate"
+sem_init_mod :: import "libc/src/thread/sem_init"
+malloc_mod :: import "libc/src/malloc/lite_malloc"
+
+NAME_MAX :: 255
+SEM_NSEMS_MAX :: 256
+SEM_VALUE_MAX :: 0x7fffffff
+FLAGS :: (fcntl_h.O_RDWR | fcntl_h.O_NOFOLLOW | fcntl_h.O_CLOEXEC | fcntl_h.O_NONBLOCK)
+SEM_FAILED :: null
+
+semtab_entry :: struct {
+    ino: ino_t,
+    sem: *sem_t,
+    refcnt: i32,
+}
+
+semtab: *semtab_entry
+lock: [1]i32
+__sem_open_lockptr: *i32 = &lock[0]
+
+sem_open :: proc(name: *const u8, flags: i32, /* TODO */ ...) *sem_t {
+    ap: stdarg_mod.va_list
+    mode: mode_t
+    value: u32
+    fd: i32
+    i: i32
+    e: i32
+    slot: i32
+    first: i32 = 1
+    cnt: i32
+    cs: i32
+    newsem: sem_t
+    map: *void
+    tmp: [64]u8
+    ts: timespec
+    st: stat
+    buf: [NAME_MAX + 10]u8
+
+    mapped := shm_mod.__shm_mapname(name, &buf[0])
+    if mapped == null { return SEM_FAILED }
+
+    lock_mod.__lock(&lock[0])
+    if semtab == null {
+        semtab = malloc_mod.__libc_malloc((sizeof(semtab_entry) * SEM_NSEMS_MAX).(usize)).(^*semtab_entry)
+        if semtab == null {
+            lock_mod.__unlock(&lock[0])
+            return SEM_FAILED
+        }
+        _ = string_h.memset(semtab.^*void, 0, (sizeof(semtab_entry) * SEM_NSEMS_MAX).(usize))
+    }
+
+    slot = -1
+    cnt = 0
+    for i = 0; i < SEM_NSEMS_MAX; i += 1 {
+        cnt += semtab[i].refcnt
+        if semtab[i].sem == null && slot < 0 { slot = i }
+    }
+    if cnt == 0x7fffffff || slot < 0 {
+        errno_mod.errno().* = errno_mod.EMFILE
+        lock_mod.__unlock(&lock[0])
+        return SEM_FAILED
+    }
+    semtab[slot].sem = (-1).(usize).^*sem_t
+    lock_mod.__unlock(&lock[0])
+
+    flags &= (fcntl_h.O_CREAT | fcntl_h.O_EXCL)
+
+    _ = pthread_cancel_mod.__pthread_setcancelstate(pthread_cancel_mod.PTHREAD_CANCEL_DISABLE, &cs)
+
+    if flags == (fcntl_h.O_CREAT | fcntl_h.O_EXCL) && unistd_access.access(mapped?, 0) == 0 {
+        errno_mod.errno().* = errno_mod.EEXIST
+        goto fail
+    }
+
+    while true {
+        if flags != (fcntl_h.O_CREAT | fcntl_h.O_EXCL) {
+            fd = unistd_open.open(mapped?, FLAGS, 0)
+            if fd >= 0 {
+                if stat_mod.fstat(fd, &st) < 0 ||
+                   (map = mman.mmap(null, sizeof(sem_t), mman.PROT_READ | mman.PROT_WRITE, mman.MAP_SHARED, fd, 0)) == mman.MAP_FAILED {
+                    _ = unistd_close.close(fd)
+                    goto fail
+                }
+                _ = unistd_close.close(fd)
+                break
+            }
+            if errno_mod.errno().* != errno_mod.ENOENT { goto fail }
+        }
+        if (flags & fcntl_h.O_CREAT) == 0 { goto fail }
+        if first != 0 {
+            first = 0
+            stdarg_mod.va_start(&ap)
+            mode = stdarg_mod.va_arg(mode_t, &ap) & 0o666
+            value = stdarg_mod.va_arg(u32, &ap)
+            stdarg_mod.va_end(&ap)
+            if value > SEM_VALUE_MAX.(u32) {
+                errno_mod.errno().* = errno_mod.EINVAL
+                goto fail
+            }
+            _ = sem_init_mod.sem_init(&newsem, 1, value)
+        }
+        _ = time_mod.__clock_gettime(time_mod.CLOCK_REALTIME, &ts)
+        _ = snprintf_mod.snprintf(&tmp[0], tmp.len, "/dev/shm/tmp-%d", ts.tv_nsec.(i32))
+        fd = unistd_open.open(&tmp[0], fcntl_h.O_CREAT | fcntl_h.O_EXCL | FLAGS, mode)
+        if fd < 0 {
+            if errno_mod.errno().* == errno_mod.EEXIST { continue }
+            goto fail
+        }
+        if unistd_write.write(fd, &newsem.^*void, sizeof(sem_t)) != sizeof(sem_t).(isize) ||
+           stat_mod.fstat(fd, &st) < 0 ||
+           (map = mman.mmap(null, sizeof(sem_t), mman.PROT_READ | mman.PROT_WRITE, mman.MAP_SHARED, fd, 0)) == mman.MAP_FAILED {
+            _ = unistd_close.close(fd)
+            _ = unistd_unlink.unlink(&tmp[0])
+            goto fail
+        }
+        _ = unistd_close.close(fd)
+        e = if unistd_link.link(&tmp[0], mapped?) != 0 { errno_mod.errno().* } else { 0 }
+        _ = unistd_unlink.unlink(&tmp[0])
+        if e == 0 { break }
+        _ = munmap_mod.__munmap(map, sizeof(sem_t))
+        if e != errno_mod.EEXIST || flags == (fcntl_h.O_CREAT | fcntl_h.O_EXCL) { goto fail }
+    }
+
+    lock_mod.__lock(&lock[0])
+    for i = 0; i < SEM_NSEMS_MAX && semtab[i].ino != st.st_ino; i += 1 {}
+    if i < SEM_NSEMS_MAX {
+        _ = munmap_mod.__munmap(map, sizeof(sem_t))
+        semtab[slot].sem = null
+        slot = i
+        map = semtab[i].sem.^*void
+    }
+    semtab[slot].refcnt += 1
+    semtab[slot].sem = map.^*sem_t
+    semtab[slot].ino = st.st_ino
+    lock_mod.__unlock(&lock[0])
+    _ = pthread_cancel_mod.__pthread_setcancelstate(cs, null)
+    return map.^*sem_t
+
+fail:
+    _ = pthread_cancel_mod.__pthread_setcancelstate(cs, null)
+    lock_mod.__lock(&lock[0])
+    if slot >= 0 { semtab[slot].sem = null }
+    lock_mod.__unlock(&lock[0])
+    return SEM_FAILED
+}
+
+sem_close :: proc(sem: *sem_t) i32 {
+    i: i32
+    lock_mod.__lock(&lock[0])
+    for i = 0; i < SEM_NSEMS_MAX && semtab[i].sem != sem; i += 1 {}
+    if i < SEM_NSEMS_MAX {
+        semtab[i].refcnt -= 1
+        if semtab[i].refcnt != 0 {
+            lock_mod.__unlock(&lock[0])
+            return 0
+        }
+        semtab[i].sem = null
+        semtab[i].ino = 0
+    }
+    lock_mod.__unlock(&lock[0])
+    _ = munmap_mod.__munmap(sem.^*void, sizeof(sem_t))
+    return 0
+}

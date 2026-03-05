@@ -1,0 +1,21 @@
+package libc
+
+// Derived from musl-1.2.5/src/ipc/semget.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/sem.h>
+// #include <limits.h>
+// #include <errno.h>
+// #include <syscall.h>
+// #include <ipc.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+errno_mod :: import "libc/include/errno"
+
+USHRT_MAX :: 65535
+
+semget :: proc(key: key_t, n: i32, fl: i32) i32 {
+    if n > USHRT_MAX { return sc.__syscall_ret((-errno_mod.EINVAL).(i64)).(i32) }
+    return sc.syscall3_ret(nums.SYS_semget.(i64), key.(i64), n.(i64), fl.(i64)).(i32)
+}

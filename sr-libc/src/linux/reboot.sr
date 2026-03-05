@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/reboot.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+reboot :: proc(type: i32) i32 {
+    r := sc.syscall3_ret(nums.SYS_reboot.(i64), 0xfee1dead, 672274793, type.(i64))
+    return r.(i32)
+}

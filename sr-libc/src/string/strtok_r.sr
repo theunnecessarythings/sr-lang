@@ -1,0 +1,31 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/strtok_r.c.
+
+strspn_mod :: import "libc/src/string/strspn"
+strcspn_mod :: import "libc/src/string/strcspn"
+
+strtok_r :: proc(s: ?*u8, sep: *const u8, save: *?*u8) ?*u8 {
+    if s == null {
+        s = save.*
+        if s == null { return null }
+    }
+    s_ptr := s?
+
+    offset := strspn_mod.strspn(s_ptr, sep)
+    s_ptr = (&s_ptr[offset]).^*u8
+    if s_ptr[0] == 0 {
+        save.* = null
+        return null
+    }
+
+    end_off := strcspn_mod.strcspn(s_ptr, sep)
+    p := (&s_ptr[end_off]).^*u8
+    if p[0] != 0 {
+        p[0] = 0
+        save.* = (&p[1]).^?*u8
+    } else {
+        save.* = null
+    }
+    return s_ptr
+}

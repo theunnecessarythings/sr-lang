@@ -1,0 +1,21 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/tls.c
+
+pthread_impl :: import "libc/src/internal/pthread_impl"
+libc_mod :: import "libc/src/internal/libc"
+string_h :: import "libc/src/string/memset"
+
+__copy_tls :: proc(mem: ?*u8) *pthread_impl.pthread {
+    pthread_size := sizeof(pthread_impl.pthread).(usize)
+    if libc_mod.__libc.tls_size == 0 {
+        libc_mod.__libc.tls_size = pthread_size
+        libc_mod.__libc.tls_align = 16
+        libc_mod.__libc.tls_cnt = 0
+    }
+    p_val := ((mem?).^usize + libc_mod.__libc.tls_size - pthread_size)
+    p := p_val.^*pthread_impl.pthread
+    _ = string_h.memset(p.^*void, 0, pthread_size)
+    p.self = p
+    return p
+}

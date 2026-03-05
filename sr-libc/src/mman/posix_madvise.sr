@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/mman/posix_madvise.c
+
+syscall :: import "libc/src/syscall"
+
+SYS_madvise :: 28
+
+posix_madvise :: proc(addr: *void, len: usize, advice: i32) i32 {
+    if advice == 4 { // POSIX_MADV_DONTNEED
+        return 0
+    }
+    r := syscall.syscall3(SYS_madvise, addr.(u64), len, advice.(u64)).(i32)
+    if r < 0 {
+        return -r
+    }
+    return r
+}

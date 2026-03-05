@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/stpcpy.c (portable loop).
+
+stpcpy :: proc(dest: *u8, src: *const u8) *u8 {
+    i: usize = 0
+    while true {
+        dest[i] = src[i]
+        if src[i] == 0 { break }
+        i += 1
+    }
+    return &dest[i]
+}

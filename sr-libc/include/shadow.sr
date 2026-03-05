@@ -1,0 +1,22 @@
+package libc
+
+// Derived from musl-1.2.5/include/shadow.h
+
+spwd :: struct {
+    sp_namp: ?*u8,
+    sp_pwdp: ?*u8,
+    sp_lstchg: i64,
+    sp_min: i64,
+    sp_max: i64,
+    sp_warn: i64,
+    sp_inact: i64,
+    sp_expire: i64,
+    sp_flag: u64,
+}
+
+getspnam :: proc(name: ?*const u8) ?*spwd
+getspnam_r :: proc(name: ?*const u8, sp: ?*spwd, buf: ?*u8, size: usize, res: ?*?*spwd) i32
+getspent :: proc() ?*spwd
+fgetspent :: proc(f: ?*alltypes.FILE) ?*spwd
+putspent :: proc(sp: ?*spwd, f: ?*alltypes.FILE) i32
+lckpwdf :: proc() i32

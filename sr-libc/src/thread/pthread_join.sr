@@ -1,0 +1,60 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_join.c
+
+pthread_impl :: import "libc/src/internal/pthread_impl"
+timedwait_mod :: import "libc/src/thread/__timedwait"
+time_mod :: import "libc/src/time/time"
+errno_mod :: import "libc/include/errno"
+atomic :: import "libc/src/internal/atomic"
+munmap_mod :: import "libc/src/mman/munmap"
+cancel_mod :: import "libc/src/thread/pthread_setcancelstate"
+testcancel_mod :: import "libc/src/thread/pthread_testcancel"
+alltypes :: import "libc/include/alltypes"
+
+__pthread_timedjoin_np :: proc(t: alltypes.pthread_t, res: **void, at: *const alltypes.timespec) i32 {
+    state: i32
+    cs: i32
+    r: i32 = 0
+    td := t.^*pthread_impl.pthread
+
+    testcancel_mod.__pthread_testcancel()
+    _ = cancel_mod.__pthread_setcancelstate(cancel_mod.PTHREAD_CANCEL_DISABLE, &cs)
+    if cs == cancel_mod.PTHREAD_CANCEL_ENABLE { _ = cancel_mod.__pthread_setcancelstate(cs, null) }
+
+    while true {
+        state = td.detach_state
+        if state == 0 || r == errno_mod.ETIMEDOUT || r == errno_mod.EINVAL { break }
+        if state >= pthread_impl.DT_DETACHED { atomic.a_crash() }
+        r = timedwait_mod.__timedwait_cp(&td.detach_state, state, time_mod.CLOCK_REALTIME, at, 1)
+    }
+
+    _ = cancel_mod.__pthread_setcancelstate(cs, null)
+
+    if r == errno_mod.ETIMEDOUT || r == errno_mod.EINVAL { return r }
+    __tl_sync(t)
+    if res != null { res.* = td.result }
+    if td.map_base != null { _ = munmap_mod.__munmap(td.map_base.^*void, td.map_size) }
+    return 0
+}
+
+__pthread_join :: proc(t: alltypes.pthread_t, res: **void) i32 {
+    return __pthread_timedjoin_np(t, res, null)
+}
+
+__pthread_tryjoin_np :: proc(t: alltypes.pthread_t, res: **void) i32 {
+    td := t.^*pthread_impl.pthread
+    return if td.detach_state == pthread_impl.DT_JOINABLE { errno_mod.EBUSY } else { __pthread_join(t, res) }
+}
+
+pthread_join :: proc(t: alltypes.pthread_t, res: **void) i32 {
+    return __pthread_join(t, res)
+}
+
+pthread_tryjoin_np :: proc(t: alltypes.pthread_t, res: **void) i32 {
+    return __pthread_tryjoin_np(t, res)
+}
+
+pthread_timedjoin_np :: proc(t: alltypes.pthread_t, res: **void, at: *const alltypes.timespec) i32 {
+    return __pthread_timedjoin_np(t, res, at)
+}

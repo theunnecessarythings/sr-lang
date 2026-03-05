@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/rindex.c.
+
+strrchr_mod :: import "libc/src/string/strrchr"
+
+rindex :: proc(s: *const u8, c: i32) ?*const u8 {
+    return strrchr_mod.strrchr(s, c)
+}
+
+rindex_mut :: proc(s: *u8, c: i32) ?*u8 {
+    return strrchr_mod.strrchr_mut(s, c)
+}

@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/snprintf.c.
+
+stdarg_mod :: import "libc/include/stdarg"
+
+snprintf :: proc(s: *u8, n: usize, fmt: *const u8, args: any) i32 {
+    ap: stdarg_mod.va_list
+    stdarg_mod.va_start(&ap)
+    ret := vsnprintf(s, n, fmt, ap)
+    stdarg_mod.va_end(&ap)
+    return ret
+}

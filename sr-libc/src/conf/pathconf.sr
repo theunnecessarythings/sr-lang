@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/conf/pathconf.c
+
+// Path configuration queries.
+// Simply delegates to fpathconf with -1 fd (indicating no file descriptor).
+
+pathconf :: proc(path: *const u8, name: i32) i64 {
+    return fpathconf(-1, name)
+}

@@ -1,0 +1,98 @@
+package libc
+
+// Derived from musl-1.2.5/src/internal/pthread_impl.h
+
+// We need a complex struct definition here.
+// But first, let's ensure we have basic types.
+// types :: import "libc/include/sys/types" ? NO, explicit.
+
+pthread :: struct {
+    // Part 1
+    self: ?*pthread,
+    dtv: *usize, // assuming !TLS_ABOVE_TP or similar? musl x86_64 usually has TLS_ABOVE_TP?
+                 // Wait, x86_64 is TLS_ABOVE_TP.
+                 // struct pthread {
+                 //   struct pthread *self;
+                 //   uintptr_t *dtv; // ifndef TLS_ABOVE_TP.
+                 //   ...
+                 // }
+                 // On x86_64, TLS_ABOVE_TP is defined?
+                 // Let's check arch/x86_64/pthread_arch.h
+    prev: ?*pthread,
+    next: ?*pthread,
+    sysinfo: usize,
+    
+    // Part 2
+    tid: i32,
+    errno_val: i32,
+    @[volatile] detach_state: i32,
+    @[volatile] cancel: i32,
+    @[volatile] canceldisable: u8,
+    @[volatile] cancelasync: u8,
+    tsd_used: u8, 
+    dlerror_flag: u8, 
+    map_base: *u8,
+    map_size: usize,
+    stack: *void,
+    stack_size: usize,
+    guard_size: usize,
+    result: *void,
+    cancelbuf: *void, 
+    tsd: **void,
+    
+    // robust_list match:
+    // struct robust_list { struct robust_list *next; long off; void *pending; };
+    // robust_list_head: *void, // next
+    // robust_list_off: i64,            // off
+    // robust_list_pending: *void, // pending
+    robust_list: struct {
+        head: *void,
+        off: i64,
+        @[volatile] pending: ?*void,
+    },
+    
+    h_errno_val: i32,
+    @[volatile] timer_id: i32,
+    locale: *void, 
+    killlock: [1]i32,
+    dlerror_buf: *u8,
+    stdio_locks: *void,
+    
+    // Part 3 (TLS_ABOVE_TP specific attributes)
+    canary: usize,
+    dtv_above: *usize, 
+}
+
+__ptcb :: struct {
+    __f: *proc(*void) void,
+    __x: *void,
+    __next: * __ptcb,
+}
+
+// Global locks
+__thread_list_lock: [1]i32
+
+DT_EXITED :: 0
+DT_EXITING :: 1
+DT_JOINABLE :: 2
+DT_DETACHED :: 3
+
+SIGTIMER :: 32
+SIGCANCEL :: 33
+SIGSYNCCALL :: 34
+
+
+// NOTE: The exact layout depends on ARCH flags.
+// For x86_64, TLS_ABOVE_TP is defined in musl defaults usually?
+// Let's verify via arch/x86_64/pthread_arch.h if possible.
+
+__pthread_main: pthread
+
+__pthread_self :: proc() *pthread {
+    if __pthread_main.self == null {
+        __pthread_main.self = &__pthread_main
+        __pthread_main.next = &__pthread_main
+        __pthread_main.prev = &__pthread_main
+    }
+    return (&__pthread_main)
+}

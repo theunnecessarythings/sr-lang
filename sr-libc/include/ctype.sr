@@ -1,0 +1,60 @@
+package libc
+
+// Derived from musl-1.2.5/include/ctype.h (ASCII-only + locale variants).
+
+isalnum :: proc(c: i32) i32
+isalpha :: proc(c: i32) i32
+isascii :: proc(c: i32) i32
+isblank :: proc(c: i32) i32
+iscntrl :: proc(c: i32) i32
+isdigit :: proc(c: i32) i32
+isgraph :: proc(c: i32) i32
+islower :: proc(c: i32) i32
+isprint :: proc(c: i32) i32
+ispunct :: proc(c: i32) i32
+isspace :: proc(c: i32) i32
+isupper :: proc(c: i32) i32
+isxdigit :: proc(c: i32) i32
+
+toascii :: proc(c: i32) i32
+tolower :: proc(c: i32) i32
+toupper :: proc(c: i32) i32
+
+__isalnum_l :: proc(c: i32, l: locale_t) i32
+__isalpha_l :: proc(c: i32, l: locale_t) i32
+__isascii_l :: proc(c: i32, l: locale_t) i32
+__isblank_l :: proc(c: i32, l: locale_t) i32
+__iscntrl_l :: proc(c: i32, l: locale_t) i32
+__isdigit_l :: proc(c: i32, l: locale_t) i32
+__isgraph_l :: proc(c: i32, l: locale_t) i32
+__islower_l :: proc(c: i32, l: locale_t) i32
+__isprint_l :: proc(c: i32, l: locale_t) i32
+__ispunct_l :: proc(c: i32, l: locale_t) i32
+__isspace_l :: proc(c: i32, l: locale_t) i32
+__isupper_l :: proc(c: i32, l: locale_t) i32
+__isxdigit_l :: proc(c: i32, l: locale_t) i32
+
+isalnum_l :: proc(c: i32, l: locale_t) i32
+isalpha_l :: proc(c: i32, l: locale_t) i32
+isascii_l :: proc(c: i32, l: locale_t) i32
+isblank_l :: proc(c: i32, l: locale_t) i32
+iscntrl_l :: proc(c: i32, l: locale_t) i32
+isdigit_l :: proc(c: i32, l: locale_t) i32
+isgraph_l :: proc(c: i32, l: locale_t) i32
+islower_l :: proc(c: i32, l: locale_t) i32
+isprint_l :: proc(c: i32, l: locale_t) i32
+ispunct_l :: proc(c: i32, l: locale_t) i32
+isspace_l :: proc(c: i32, l: locale_t) i32
+isupper_l :: proc(c: i32, l: locale_t) i32
+isxdigit_l :: proc(c: i32, l: locale_t) i32
+
+__tolower_l :: proc(c: i32, l: locale_t) i32
+__toupper_l :: proc(c: i32, l: locale_t) i32
+
+tolower_l :: proc(c: i32, l: locale_t) i32
+toupper_l :: proc(c: i32, l: locale_t) i32
+
+__ctype_b_loc :: proc() **u16
+__ctype_tolower_loc :: proc() **i32
+__ctype_toupper_loc :: proc() **i32
+__ctype_get_mb_cur_max :: proc() usize

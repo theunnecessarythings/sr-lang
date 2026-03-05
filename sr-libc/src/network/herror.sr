@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/herror.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <stdio.h>
+// #include <netdb.h>
+
+fprintf_mod :: import "libc/src/stdio/fprintf"
+stderr_mod :: import "libc/src/stdio/stderr"
+hstr_mod :: import "libc/src/network/hstrerror"
+h_errno_mod :: import "libc/src/network/h_errno"
+
+herror :: proc(msg: *const u8) void {
+    prefix := if msg != null { msg } else { "" }
+    mid := if msg != null { ": " } else { "" }
+    _ = fprintf_mod.fprintf(stderr_mod.stderr, "%s%s%s\n", prefix, mid, hstr_mod.hstrerror(h_errno_mod.h_errno().*))
+}

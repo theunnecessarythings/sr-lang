@@ -1,0 +1,112 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/log1pl.c (ld80 coefficients, f128 path).
+
+basic :: import "libc/src/math/basic"
+
+P: [7]f128 = [
+    4.5270000862445199635215e-5,
+    4.9854102823193375972212e-1,
+    6.5787325942061044846969e0,
+    2.9911919328553073277375e1,
+    6.0949667980987787057556e1,
+    5.7112963590585538103336e1,
+    2.0039553499201281259648e1,
+]
+
+Q: [6]f128 = [
+    1.5062909083469192043167e1,
+    8.3047565967967209469434e1,
+    2.2176239823732856465394e2,
+    3.0909872225312059774938e2,
+    2.1642788614495947685003e2,
+    6.0118660497603843919306e1,
+]
+
+R: [4]f128 = [
+    1.9757429581415468984296e-3,
+    -7.1990767473014147232598e-1,
+    1.0777257190312272158094e1,
+    -3.5717684488096787370998e1,
+]
+
+S: [4]f128 = [
+    -2.6201045551331104417768e1,
+    1.9361891836232102174846e2,
+    -4.2861221385716144629696e2,
+]
+
+C1 :: 6.9314575195312500000000e-1
+C2 :: 1.4286068203094172321215e-6
+SQRTH :: 0.70710678118654752440
+
+polevll :: fn(x: f128, coef: *f128, n: i32) f128 {
+    i: i32 = 1
+    ans := coef[0]
+    while i <= n {
+        ans = ans * x + coef[i.(usize)]
+        i += 1
+    }
+    return ans
+}
+
+p1evll :: fn(x: f128, coef: *f128, n: i32) f128 {
+    i: i32 = 1
+    ans := x + coef[0]
+    while i < n {
+        ans = ans * x + coef[i.(usize)]
+        i += 1
+    }
+    return ans
+}
+
+log1pl :: proc(xm1: f128) f128 {
+    if basic.isnanl(xm1) { return xm1 }
+    if xm1 == 0.0 { return xm1 }
+    if xm1 == basic.f128_inf { return xm1 }
+
+    x := xm1 + 1.0
+    if x <= 0.0 {
+        if x == 0.0 { return -1.0 / (x * x) }
+        return 0.0 / 0.0
+    }
+
+    e: i32
+    x = frexpl(x, &e)
+
+    if e > 2 or e < -2 {
+        z: f128
+        y: f128
+        if x < SQRTH {
+            e -= 1
+            z = x - 0.5
+            y = 0.5 * z + 0.5
+        } else {
+            z = x - 0.5
+            z -= 0.5
+            y = 0.5 * x + 0.5
+        }
+        x = z / y
+        z = x * x
+        z = x * (z * polevll(z, &R[0], 3) / p1evll(z, &S[0], 3))
+        z = z + e * C2
+        z = z + x
+        z = z + e * C1
+        return z
+    }
+
+    if x < SQRTH {
+        e -= 1
+        if e != 0 { x = 2.0 * x - 1.0 } else { x = xm1 }
+    } else {
+        if e != 0 { x = x - 1.0 } else { x = xm1 }
+    }
+
+    z := x * x
+    y := x * (z * polevll(x, &P[0], 6) / p1evll(x, &Q[0], 6))
+    y = y + e * C2
+    z = y - 0.5 * z
+    z = z + x
+    z = z + e * C1
+    return z
+}

@@ -1,0 +1,34 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/ilogbf.c.
+
+libm :: import "libc/src/math/libm_internal"
+
+FP_ILOGB0 :: -2147483648
+FP_ILOGBNAN :: -2147483648
+INT_MAX :: 2147483647
+
+ilogbf :: proc(x: f32) i32 {
+    u := x.^u32
+    i := u
+    e := ((i >> 23) & 0xff).(i32)
+
+    if e == 0 {
+        i <<= 9
+        if i == 0 {
+            libm.fp_force_evalf(0.0f / 0.0f)
+            return FP_ILOGB0
+        }
+        e = -0x7f
+        while (i >> 31) == 0 {
+            e -= 1
+            i <<= 1
+        }
+        return e
+    }
+    if e == 0xff {
+        libm.fp_force_evalf(0.0f / 0.0f)
+        return if (i << 9) != 0 { FP_ILOGBNAN } else { INT_MAX }
+    }
+    return e - 0x7f
+}

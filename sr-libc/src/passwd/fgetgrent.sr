@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/fgetgrent.c
+
+grp_h :: import "libc/include/grp"
+getgrent_a :: import "libc/src/passwd/getgrent_a"
+
+__gr_line: [1024]u8
+__gr_mem: [256]usize
+__gr_res: grp_h.group
+
+fgetgrent :: proc(f: *alltypes.FILE) *grp_h.group {
+    res: *grp_h.group = null
+    r := getgrent_a.__getgrent_a(f, &__gr_res, &__gr_line[0], 1024, (&__gr_mem[0]).^*u8, sizeof(__gr_mem), &res)
+    if r != 0 { return null }
+    return res
+}

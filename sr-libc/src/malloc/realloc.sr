@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/malloc/realloc.c
+
+realloc_mod :: import "libc/src/malloc/mallocng/realloc"
+
+realloc :: proc(p: ?*void, n: usize) ?*void {
+    return realloc_mod.realloc(p, n)
+}

@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/memset.c (portable loop).
+
+memset :: proc(dest: *void, c: i32, n: usize) *void {
+    d := dest.^*u8
+    v := c.(u8)
+    i: usize = 0
+    while i < n {
+        d[i] = v
+        i += 1
+    }
+    return dest
+}

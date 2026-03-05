@@ -1,0 +1,34 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/getspent.c
+
+shadow_h :: import "libc/include/shadow"
+fopen_mod :: import "libc/src/stdio/fopen"
+fclose_mod :: import "libc/src/stdio/fclose"
+rewind_mod :: import "libc/src/stdio/rewind"
+fgetspent_mod :: import "libc/src/passwd/fgetspent"
+
+__sp_file: ?*alltypes.FILE = null
+
+setspent :: proc() void {
+    if __sp_file == null {
+        __sp_file = fopen_mod.fopen("/etc/shadow", "r")
+        return
+    }
+    rewind_mod.rewind(__sp_file?)
+}
+
+endspent :: proc() void {
+    if __sp_file != null {
+        _ = fclose_mod.fclose(__sp_file?)
+        __sp_file = null
+    }
+}
+
+getspent :: proc() ?*shadow_h.spwd {
+    if __sp_file == null {
+        __sp_file = fopen_mod.fopen("/etc/shadow", "r")
+        if __sp_file == null { return null }
+    }
+    return fgetspent_mod.fgetspent(__sp_file)
+}

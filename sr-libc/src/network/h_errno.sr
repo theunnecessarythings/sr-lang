@@ -1,0 +1,23 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/h_errno.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <netdb.h>
+// #include <pthread_impl.h>
+
+pthread_impl :: import "libc/src/internal/pthread_impl"
+
+__h_errno_value := 0
+
+@[export_name="__h_errno_location"]
+__h_errno_location :: proc() *i32 {
+    pt := pthread_impl.__pthread_self()
+    if pt.stack == null { return &__h_errno_value }
+    return &pt.h_errno_val
+}
+
+@[export_name="h_errno"]
+h_errno :: proc() *i32 {
+    return __h_errno_location()
+}

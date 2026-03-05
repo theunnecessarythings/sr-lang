@@ -1,0 +1,20 @@
+package libc
+
+// Derived from musl-1.2.5/src/locale/strxfrm.c
+
+string_h :: import "libc/src/string"
+
+__strxfrm_l :: proc(dest: *u8, src: *const u8, n: usize, loc: locale_t) usize {
+    _ = loc
+    len := string_h.strlen(src)
+    if dest != null && n != 0 {
+        copy_len := if len < (n - 1) { len } else { n - 1 }
+        _ = string_h.memcpy(dest.^*void, src.^*const void, copy_len)
+        dest[copy_len] = 0
+    }
+    return len
+}
+
+strxfrm :: proc(dest: *u8, src: *const u8, n: usize) usize {
+    return __strxfrm_l(dest, src, n, null)
+}

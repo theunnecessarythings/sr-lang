@@ -141,6 +141,7 @@ i32_ty: mlir.Type,
 i64_ty: mlir.Type,
 f32_ty: mlir.Type,
 f64_ty: mlir.Type,
+f128_ty: mlir.Type,
 llvm_ptr_ty: mlir.Type,
 
 // Symbol Tables & Maps
@@ -155,7 +156,9 @@ val_types: std.AutoHashMap(tir.ValueId, types.TypeId),
 def_instr: std.AutoHashMap(tir.ValueId, tir.InstrId),
 global_addr_cache: std.StringHashMap(mlir.Value),
 force_llvm_func_syms: std.AutoHashMap(tir.StrId, void),
+force_llvm_export_symbols: std.StringHashMap(void),
 async_body_syms: std.AutoHashMap(tir.FuncId, tir.StrId),
+defined_export_symbols: std.StringHashMap(void),
 
 // Function Context
 cur_region: ?mlir.Region = null,
@@ -165,11 +168,11 @@ current_func_sym: ?tir.StrId = null,
 i64_one_in_entry: ?mlir.Value = null,
 ret_join_block: ?mlir.Block = null,
 ret_has_value: bool = false,
-    ret_type_cache: ?mlir.Type = null,
-    current_func_is_async: bool = false,
-    current_func_is_triton: bool = false,
-    current_scope: ?mlir.Attribute = null,
-    inline_mlir_counter: u32 = 0,
+ret_type_cache: ?mlir.Type = null,
+current_func_is_async: bool = false,
+current_func_is_triton: bool = false,
+current_scope: ?mlir.Attribute = null,
+inline_mlir_counter: u32 = 0,
 // Diagnostics
 diagnostic_handler: mlir.c.MlirDiagnosticHandlerID,
 diagnostic_data: *DiagnosticData,
@@ -188,6 +191,7 @@ pub const FuncInfo = struct {
     param_types: []mlir.Type = &[_]mlir.Type{},
     owns_param_types: bool = false,
     dbg_subprogram: ?mlir.Attribute = null,
+    symbol_name: []const u8 = "",
 };
 
 const TensorIndex = union(enum) { constant: i64, value: tir.ValueId };
@@ -218,6 +222,33 @@ fn clearTensorElemPtrs(self: *Codegen) void {
     var it = self.tensor_elem_ptrs.valueIterator();
     while (it.next()) |info| self.freeTensorElemPtrInfo(info);
     self.tensor_elem_ptrs.clearRetainingCapacity();
+}
+
+fn clearOwnedSymbolSet(self: *Codegen, set: *std.StringHashMap(void)) void {
+    var key_it = set.keyIterator();
+    while (key_it.next()) |key_ptr| {
+        self.gpa.free(@constCast(key_ptr.*));
+    }
+    set.clearRetainingCapacity();
+}
+
+fn clearDefinedExportSymbols(self: *Codegen) void {
+    self.clearOwnedSymbolSet(&self.defined_export_symbols);
+}
+
+fn clearForceLlvmExportSymbols(self: *Codegen) void {
+    self.clearOwnedSymbolSet(&self.force_llvm_export_symbols);
+}
+
+fn insertOwnedSymbol(self: *Codegen, set: *std.StringHashMap(void), symbol_name: []const u8) !void {
+    if (!set.contains(symbol_name)) {
+        const owned = try self.gpa.dupe(u8, symbol_name);
+        try set.put(owned, {});
+    }
+}
+
+fn markForceLlvmExportSymbol(self: *Codegen, symbol_name: []const u8) !void {
+    try self.insertOwnedSymbol(&self.force_llvm_export_symbols, symbol_name);
 }
 
 fn releaseTensorElemPtrs(self: *Codegen) void {
@@ -425,6 +456,7 @@ pub fn init(gpa: Allocator, context: *compile.Context, mlir_ctx: *mlir.Context, 
         .i64_ty = mlir.Type.getSignlessIntegerType(ctx, 64),
         .f32_ty = mlir.Type.getFloat32Type(ctx),
         .f64_ty = mlir.Type.getFloat64Type(ctx),
+        .f128_ty = mlir.Type.getFloat128Type(ctx),
         .llvm_ptr_ty = mlir.LLVM.getPointerType(ctx, 0),
         .func_syms = .init(gpa),
         .global_syms = .init(gpa),
@@ -437,7 +469,9 @@ pub fn init(gpa: Allocator, context: *compile.Context, mlir_ctx: *mlir.Context, 
         .def_instr = .init(gpa),
         .global_addr_cache = .init(gpa),
         .force_llvm_func_syms = .init(gpa),
+        .force_llvm_export_symbols = .init(gpa),
         .async_body_syms = .init(gpa),
+        .defined_export_symbols = .init(gpa),
         .diagnostic_handler = mlir.c.mlirContextAttachDiagnosticHandler(ctx.handle, diagnosticHandler, @ptrCast(diag_data), null),
         .diagnostic_data = diag_data,
         .active_type_info = null,
@@ -468,7 +502,11 @@ pub fn deinit(self: *Codegen) void {
     self.def_instr.deinit();
     self.global_addr_cache.deinit();
     self.force_llvm_func_syms.deinit();
+    self.clearForceLlvmExportSymbols();
+    self.force_llvm_export_symbols.deinit();
     self.async_body_syms.deinit();
+    self.clearDefinedExportSymbols();
+    self.defined_export_symbols.deinit();
 
     var li_it = self.line_index_cache.valueIterator();
     while (li_it.next()) |lines| self.gpa.free(lines.*);
@@ -538,7 +576,6 @@ fn analyzeBlockForAddrTaken(self: *Codegen, block_id: tir.BlockId, t: *tir.TIR) 
 
 /// Populate a list of functions whose LLVM symbols must be emitted because addresses are taken.
 fn collectForceLlvmFuncSyms(self: *Codegen, t: *tir.TIR) !void {
-    self.force_llvm_func_syms.clearRetainingCapacity();
     const funcs = t.funcs.func_pool.inner.data.items;
 
     // Denestified loop: iterate functions -> iterate blocks -> analyze block
@@ -547,6 +584,26 @@ fn collectForceLlvmFuncSyms(self: *Codegen, t: *tir.TIR) !void {
         const blocks = t.funcs.block_pool.slice(f.blocks);
         for (blocks) |bid| {
             try self.analyzeBlockForAddrTaken(bid, t);
+        }
+    }
+}
+
+fn collectGlobalSymbolMetadata(self: *Codegen, levels: *const compile.DependencyLevels, unit_by_file: *const std.AutoHashMap(u32, *package.FileUnit)) !void {
+    self.clearDefinedExportSymbols();
+    self.clearForceLlvmExportSymbols();
+    self.force_llvm_func_syms.clearRetainingCapacity();
+
+    for (levels.levels.items) |level| {
+        for (level.items) |file_id| {
+            const unit = unit_by_file.get(file_id) orelse continue;
+            const t = unit.tir orelse continue;
+            try self.collectForceLlvmFuncSyms(t);
+            for (t.funcs.func_pool.inner.data.items) |raw| {
+                const fid = tir.FuncId.fromRaw(raw);
+                const f = t.funcs.Function.get(fid);
+                if (f.is_extern) continue;
+                try self.insertOwnedSymbol(&self.defined_export_symbols, self.functionExportedSymbol(t, f));
+            }
         }
     }
 }
@@ -577,6 +634,8 @@ pub fn emit(self: *Codegen, levels: *const compile.DependencyLevels) !mlir.Modul
             try unit_by_file.put(unit.value_ptr.file_id, unit.value_ptr);
         }
     }
+
+    try self.collectGlobalSymbolMetadata(levels, &unit_by_file);
 
     for (levels.levels.items) |level| {
         if (level.items.len == 0) continue;
@@ -666,9 +725,7 @@ fn emitTritonModuleWithFilter(self: *Codegen, levels: *const compile.DependencyL
 
                                 if (okind == .ConstInt) {
                                     const val = @as(i32, @intCast(unit.tir.?.instrs.ConstInt.get(cst.Index(tir.Rows.ConstInt).fromRaw(row_idx)).value));
-                                    if (std.mem.eql(u8, name, "triton_num_warps")) ttg_num_warps = val
-                                    else if (std.mem.eql(u8, name, "triton_threads_per_warp")) ttg_threads_per_warp = val
-                                    else if (std.mem.eql(u8, name, "triton_ptx_version")) ttg_ptx_version = val;
+                                    if (std.mem.eql(u8, name, "triton_num_warps")) ttg_num_warps = val else if (std.mem.eql(u8, name, "triton_threads_per_warp")) ttg_threads_per_warp = val else if (std.mem.eql(u8, name, "triton_ptx_version")) ttg_ptx_version = val;
                                 } else if (okind == .ConstString and std.mem.eql(u8, name, "triton_target")) {
                                     const row = unit.tir.?.instrs.ConstString.get(cst.Index(tir.Rows.ConstString).fromRaw(row_idx));
                                     ttg_target = unit.tir.?.instrs.strs.get(row.text);
@@ -770,7 +827,6 @@ pub fn emitModule(
     self.di_subprograms.clearRetainingCapacity();
     self.loc_cache.clearRetainingCapacity();
     self.async_body_syms.clearRetainingCapacity();
-    try self.collectForceLlvmFuncSyms(t);
     try debug.attachTargetInfo(self);
     try debug.ensureDebugModuleAttrs(self);
     try self.emitExternDecls(t);
@@ -781,6 +837,8 @@ pub fn emitModule(
         const fid = tir.FuncId.fromRaw(fid_raw);
         const row = t.funcs.Function.get(fid);
         if (row.is_triton_fn) continue;
+        if (row.is_extern) continue;
+        if (self.functionHasAnySignature(t, row)) continue;
         try self.emitFunctionHeader(fid, t);
         if (row.is_async) {
             const body_sym = try self.asyncBodyName(fid, t);
@@ -824,6 +882,8 @@ pub fn emitModule(
             self.has_triton_fns = true;
             continue;
         }
+        if (row.is_extern) continue;
+        if (self.functionHasAnySignature(t, row)) continue;
         const blocks = t.funcs.block_pool.slice(row.blocks);
         if (blocks.len > 0) {
             if (row.is_async) {
@@ -843,6 +903,15 @@ pub fn emitModule(
         }
     }
     return self.module;
+}
+
+fn functionHasAnySignature(self: *Codegen, t: *tir.TIR, row: tir.FuncRows.Function) bool {
+    if (self.context.type_store.getKind(row.result) == .Any) return true;
+    for (t.funcs.param_pool.slice(row.params)) |pid| {
+        const p = t.funcs.Param.get(pid);
+        if (self.context.type_store.getKind(p.ty) == .Any) return true;
+    }
+    return false;
 }
 
 /// Map `opt_loc` to an MLIR `Location`, caching repeated lookups.
@@ -885,7 +954,7 @@ fn attributeFromConstInit(self: *Codegen, ci: tir.ConstInit, ty: mlir.Type) !mli
     return switch (ci) {
         .int => |val| mlir.Attribute.integerAttrGet(ty, val),
         .bool => |val| mlir.Attribute.integerAttrGet(ty, if (val) 1 else 0),
-        .float => |val| mlir.Attribute.floatAttrDoubleGet(self.mlir_ctx, ty, val),
+        .float => |val| self.floatAttrForType(ty, val),
         .aggregate => |fields| {
             if (!mlir.LLVM.isLLVMStructType(ty)) return error.Unexpected;
             if (mlir.LLVM.getLLVMStructTypeNumElementTypes(ty) != fields.len) return error.Unexpected;
@@ -917,6 +986,44 @@ fn appendZeroValueInBlock(self: *Codegen, block: *mlir.Block, ty: mlir.Type) mli
     return op.getResult(0);
 }
 
+fn functionExportedSymbol(_: *Codegen, t: *tir.TIR, f: tir.FuncRows.Function) []const u8 {
+    var export_sym: ?tir.StrId = null;
+    const attrs = t.instrs.attribute_pool.slice(f.attrs);
+    for (attrs) |aid| {
+        const attr = t.instrs.Attribute.get(aid);
+        if (!std.mem.eql(u8, t.instrs.strs.get(attr.name), "export_name")) continue;
+        if (attr.value.isNone()) continue;
+        const vid = attr.value.unwrap();
+        if (vid.toRaw() >= t.value_defs.items.len) continue;
+        const iid = t.value_defs.items[vid.toRaw()];
+        switch (t.kind(iid)) {
+            .ConstString => {
+                const cs = t.instrs.get(.ConstString, iid);
+                export_sym = cs.text;
+            },
+            else => {},
+        }
+    }
+    return if (export_sym) |sid| t.instrs.strs.get(sid) else t.instrs.strs.get(f.name);
+}
+
+fn hasDefinedFunctionSymbol(self: *Codegen, symbol_name: []const u8) bool {
+    return self.defined_export_symbols.contains(symbol_name);
+}
+
+fn isSyntheticFuncInfo(self: *Codegen, info: FuncInfo) bool {
+    var callee_op_tmp = info.op;
+    var module_op_tmp = self.module.getOperation();
+    return callee_op_tmp.equal(&module_op_tmp);
+}
+
+fn variadicCalleeTypeAttr(_: *Codegen, info: FuncInfo, synthetic_callee: bool) mlir.Attribute {
+    if (!synthetic_callee) {
+        return info.op.getInherentAttributeByName(mlir.StringRef.from("function_type"));
+    }
+    return mlir.Attribute.typeAttrGet(mlir.LLVM.getLLVMFunctionType(info.ret_type, info.param_types, true));
+}
+
 /// Emit MLIR declarations for the extern globals and functions referenced in `t`.
 fn emitExternDecls(self: *Codegen, t: *tir.TIR) !void {
     const global_ids = t.funcs.global_pool.inner.data.items;
@@ -932,7 +1039,7 @@ fn emitExternDecls(self: *Codegen, t: *tir.TIR) !void {
         // --- Function Handling ---
         if (self.context.type_store.getKind(g.ty) == .Function) {
             if (self.func_syms.contains(g.name)) continue;
-
+            if (self.hasDefinedFunctionSymbol(name)) continue;
             const fnty = self.context.type_store.get(.Function, g.ty);
             var params_sr = self.context.type_store.type_pool.slice(fnty.params);
             if (fnty.is_variadic) params_sr = params_sr[0 .. params_sr.len - 1];
@@ -1139,6 +1246,7 @@ fn emitTritonFunction(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
 /// Prepare the MLIR function declaration/operator for `f_id` before emitting its body.
 fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
     const f = t.funcs.Function.get(f_id);
+    if (f.is_extern) return;
     const func_name_id = f.name;
     if (self.func_syms.contains(func_name_id)) return;
 
@@ -1160,7 +1268,32 @@ fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
     const results = if (has_res) res_buf[0..1] else res_buf[0..0];
     const fn_ret_ty = if (has_res) res_buf[0] else self.void_ty;
 
-    const emit_as_llvm = self.force_llvm_func_syms.get(f.name) != null;
+    // Check for export_name
+    var export_sym: ?tir.StrId = null;
+    const f_attrs_chk = t.instrs.attribute_pool.slice(f.attrs);
+
+    for (f_attrs_chk) |aid| {
+        const attr = t.instrs.Attribute.get(aid);
+        const aname = t.instrs.strs.get(attr.name);
+        if (std.mem.eql(u8, aname, "export_name")) {
+            if (!attr.value.isNone()) {
+                const vid = attr.value.unwrap();
+                if (vid.toRaw() < t.value_defs.items.len) {
+                    const iid = t.value_defs.items[vid.toRaw()];
+                    switch (t.kind(iid)) {
+                        .ConstString => {
+                            const cs = t.instrs.get(.ConstString, iid);
+                            export_sym = cs.text;
+                        },
+                        else => {},
+                    }
+                }
+            }
+        }
+    }
+
+    const final_name = if (export_sym) |s| t.instrs.strs.get(s) else t.instrs.strs.get(f.name);
+    const emit_as_llvm = self.force_llvm_func_syms.get(f.name) != null or self.force_llvm_export_symbols.contains(final_name);
     const fty = if (emit_as_llvm)
         mlir.LLVM.getLLVMFunctionType(fn_ret_ty, param_tys, false)
     else
@@ -1169,7 +1302,7 @@ fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
     var attrs = ArrayList(mlir.NamedAttribute).init(self.gpa);
     defer attrs.deinit();
 
-    try attrs.append(self.named("sym_name", self.strAttr(t.instrs.strs.get(f.name))));
+    try attrs.append(self.named("sym_name", self.strAttr(final_name)));
     try attrs.append(self.named("function_type", mlir.Attribute.typeAttrGet(fty)));
     try attrs.append(self.named("sym_visibility", self.strAttr("public")));
     if (f.is_async) try attrs.append(self.named("async", mlir.Attribute.unitAttrGet(self.mlir_ctx)));
@@ -1220,6 +1353,7 @@ fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
         .param_types = stored_param_tys,
         .owns_param_types = true,
         .dbg_subprogram = maybe_dbg_attr,
+        .symbol_name = final_name,
     });
 }
 
@@ -1358,6 +1492,14 @@ fn emitFunctionBodyWith(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR, sym_overr
         self.gpa.free(entry_locs);
     };
 
+    if (params.len < n_formals) {
+        std.debug.print("codegen: param mismatch for {s}: n_formals={d} params={d}\n", .{
+            self.context.type_store.strs.get(func_sym),
+            n_formals,
+            params.len,
+        });
+        return error.CompilationFailed;
+    }
     for (params[0..n_formals], 0..) |p_id, i| entry_arg_tys[i] = try self.llvmTypeOf(t.funcs.Param.get(p_id).ty);
 
     const blocks = t.funcs.block_pool.slice(f.blocks);
@@ -1544,14 +1686,6 @@ fn rewriteAsmParams(self: *Codegen, text: []const u8, params: []const tir.ParamI
                 }
             }
 
-            if (!replaced and has_res) {
-                if (std.mem.eql(u8, tok, "rax") or std.mem.eql(u8, tok, "rdx") or
-                    std.mem.eql(u8, tok, "eax") or std.mem.eql(u8, tok, "edx"))
-                {
-                    try out.appendSlice("$0");
-                    replaced = true;
-                }
-            }
             if (!replaced) try out.appendSlice(tok);
             i = j;
             continue;
@@ -1756,6 +1890,7 @@ fn ensureFuncDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !FuncIn
     if (self.func_syms.get(callee_id)) |fi| return fi; // Cached hit
 
     const name = t.instrs.strs.get(callee_id);
+    const use_synthetic_decl = self.hasDefinedFunctionSymbol(name);
     var is_var = false;
     var ret_sr: types.TypeId = undefined;
 
@@ -1903,6 +2038,22 @@ fn ensureFuncDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !FuncIn
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
 
+    if (use_synthetic_decl) {
+        try self.markForceLlvmExportSymbol(name);
+        const info: FuncInfo = .{
+            .op = self.module.getOperation(),
+            .is_variadic = is_var,
+            .n_formals = params_sr.len,
+            .ret_type = ret_type,
+            .param_types = final_params,
+            .owns_param_types = true,
+            .dbg_subprogram = null,
+            .symbol_name = name,
+        };
+        try self.func_syms.put(callee_id, info);
+        return info;
+    }
+
     const fnop = self.buildOp("llvm.func", EmitOpArgs{
         .attributes = &.{
             self.named("sym_name", self.strAttr(name)),
@@ -1923,6 +2074,7 @@ fn ensureFuncDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !FuncIn
         .param_types = final_params,
         .owns_param_types = true,
         .dbg_subprogram = null,
+        .symbol_name = name,
     };
     try self.func_syms.put(callee_id, info);
     return info;
@@ -1983,7 +2135,7 @@ fn emitConstInt(self: *Codegen, p: tir.Rows.ConstInt) !mlir.Value {
     if (!is_float and (ty.isAVector() or ty.isATensor())) {
         is_float = ty.getShapedElementType().isAFloat();
     }
-    return if (is_float) self.constFloat(ty, @floatFromInt(p.value)) else self.constInt(ty, p.value);
+    return if (is_float) self.constFloat(ty, @as(f128, @floatFromInt(p.value))) else self.constInt(ty, p.value);
 }
 
 /// Emit an MLIR constant floating-point value.
@@ -2266,6 +2418,12 @@ fn emitStore(self: *Codegen, p: tir.Rows.Store) !mlir.Value {
     const ptr = self.getVal(p.ptr);
     const v_sr = self.srTypeOfValue(p.value);
     const ptr_sr = self.srTypeOfValue(p.ptr);
+
+    // Skip store for zero-sized types
+    switch (self.context.type_store.getKind(v_sr)) {
+        .Void, .Noreturn, .Undef => return .empty(),
+        else => {},
+    }
 
     // Handle Tensor Slot Stores (Logical Ptr)
     if (self.context.type_store.getKind(ptr_sr) == .Ptr) {
@@ -2675,9 +2833,14 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
     }
 
     // 4. Standard Indexing (Load)
-    // Case A: Indexing into Slice/DynArray value (not via ptr)
-    if (!base.getType().equal(self.llvm_ptr_ty) and (base_sr_kind == .Slice or base_sr_kind == .DynArray)) {
-        const elem_ptr_ty = if (base_sr_kind == .Slice) self.llvm_ptr_ty else try self.llvmTypeOf(self.context.type_store.mkPtr(self.context.type_store.get(.DynArray, base_sr_ty).elem, false));
+    // Case A: Indexing into Slice/DynArray/String value (not via ptr)
+    if (!base.getType().equal(self.llvm_ptr_ty) and (base_sr_kind == .Slice or base_sr_kind == .DynArray or base_sr_kind == .String)) {
+        const elem_ptr_ty = switch (base_sr_kind) {
+            .Slice => self.llvm_ptr_ty,
+            .DynArray => try self.llvmTypeOf(self.context.type_store.mkPtr(self.context.type_store.get(.DynArray, base_sr_ty).elem, false)),
+            .String => self.llvm_ptr_ty,
+            else => unreachable,
+        };
 
         const ptr0 = self.extractAt(base, elem_ptr_ty, &.{0});
         // The GEP result type for load is simply the result type
@@ -2824,8 +2987,10 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
         finfo = if (is_local) try self.ensureDeclFromCall(p, t) else try self.ensureFuncDeclFromCall(p, t);
     }
     const func_info = finfo.?;
+    const real_callee_name = if (func_info.symbol_name.len > 0) func_info.symbol_name else callee_name;
 
-    const callee_op_name = func_info.op.getName().str().toSlice();
+    const synthetic_callee = self.isSyntheticFuncInfo(func_info);
+    const callee_op_name = if (synthetic_callee) "llvm.func" else func_info.op.getName().str().toSlice();
     const isExternLL = std.mem.eql(u8, callee_op_name, "llvm.func");
 
     // Gather Arguments
@@ -2896,7 +3061,7 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
         const op_name = if (self.emit_only_triton or callee_is_tt or caller_is_tt) "tt.call" else "func.call";
 
         var attr_buf: [1]mlir.NamedAttribute = undefined;
-        attr_buf[0] = self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(callee_name)));
+        attr_buf[0] = self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(real_callee_name)));
 
         const call = self.appendOp(op_name, EmitOpArgs{
             .operands = call_args,
@@ -2996,12 +3161,12 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
     var attr_list: ArrayList(mlir.NamedAttribute) = .init(self.gpa);
     defer attr_list.deinit();
 
-    try attr_list.append(self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(callee_name))));
+    try attr_list.append(self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(real_callee_name))));
     try attr_list.append(self.named("operand_segment_sizes", seg));
     try attr_list.append(self.named("op_bundle_sizes", empty_bundle));
 
     if (func_info.is_variadic) {
-        const func_ty = func_info.op.getInherentAttributeByName(mlir.StringRef.from("function_type"));
+        const func_ty = self.variadicCalleeTypeAttr(func_info, synthetic_callee);
         try attr_list.append(self.named("var_callee_type", func_ty));
     }
 
@@ -3854,12 +4019,12 @@ fn emitCmp(
             .Tensor => {
                 const elem = self.context.type_store.get(.Tensor, lhs_sr).elem;
                 const elem_kind = self.context.type_store.getKind(elem);
-                is_float = elem_kind == .F32 or elem_kind == .F64;
+                is_float = elem_kind == .F32 or elem_kind == .F64 or elem_kind == .F128;
             },
             .Simd => {
                 const elem = self.context.type_store.get(.Simd, lhs_sr).elem;
                 const elem_kind = self.context.type_store.getKind(elem);
-                is_float = elem_kind == .F32 or elem_kind == .F64;
+                is_float = elem_kind == .F32 or elem_kind == .F64 or elem_kind == .F128;
             },
             else => {},
         }
@@ -4403,7 +4568,7 @@ pub fn zeroOf(self: *Codegen, ty: mlir.Type) mlir.Value {
         const elem_ty = ty.getShapedElementType();
         var elem_zero: mlir.Attribute = undefined;
         if (elem_ty.isAFloat()) {
-            elem_zero = mlir.Attribute.floatAttrDoubleGet(self.mlir_ctx, elem_ty, 0.0);
+            elem_zero = self.floatAttrForType(elem_ty, 0.0);
         } else if (elem_ty.isAInteger()) {
             elem_zero = mlir.Attribute.integerAttrGet(elem_ty, 0);
         } else {
@@ -4545,11 +4710,24 @@ pub fn constInt(self: *Codegen, ty: mlir.Type, v: i128) mlir.Value {
     });
 }
 
+fn floatAttrForType(self: *Codegen, ty: mlir.Type, v: f128) mlir.Attribute {
+    if (ty.isAFloat() and ty.getFloatBitwidth() == 128) {
+        var val_buf: [128]u8 = undefined;
+        const val_slice = std.fmt.bufPrint(&val_buf, "{d}", .{v}) catch return mlir.Attribute.floatAttrDoubleGet(self.mlir_ctx, ty, @floatCast(v));
+        var attr_buf: [160]u8 = undefined;
+        const attr_slice = std.fmt.bufPrint(&attr_buf, "{s} : f128", .{val_slice}) catch return mlir.Attribute.floatAttrDoubleGet(self.mlir_ctx, ty, @floatCast(v));
+        const parsed = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(attr_slice));
+        if (!parsed.isNull()) return parsed;
+        std.debug.panic("failed to parse f128 attribute", .{});
+    }
+    return mlir.Attribute.floatAttrDoubleGet(self.mlir_ctx, ty, @floatCast(v));
+}
+
 /// Emit a constant floating-point value `v` of MLIR type `ty`.
-pub fn constFloat(self: *Codegen, ty: mlir.Type, v: f64) mlir.Value {
+pub fn constFloat(self: *Codegen, ty: mlir.Type, v: f128) mlir.Value {
     if (ty.isAVector() or ty.isATensor()) {
         const elem_ty = ty.getShapedElementType();
-        const attr = mlir.Attribute.floatAttrDoubleGet(self.mlir_ctx, elem_ty, v);
+        const attr = self.floatAttrForType(elem_ty, v);
         return self.emitOp("arith.constant", EmitOpArgs{
             .results = &.{ty},
             .attributes = &.{self.named("value", mlir.Attribute.denseElementsAttrSplatGet(ty, attr))},
@@ -4557,7 +4735,7 @@ pub fn constFloat(self: *Codegen, ty: mlir.Type, v: f64) mlir.Value {
     }
     return self.emitOp("llvm.mlir.constant", EmitOpArgs{
         .results = &.{ty},
-        .attributes = &.{self.named("value", mlir.Attribute.floatAttrDoubleGet(self.mlir_ctx, ty, v))},
+        .attributes = &.{self.named("value", self.floatAttrForType(ty, v))},
     });
 }
 
@@ -5446,7 +5624,7 @@ pub fn complexFromParts(self: *Codegen, re: mlir.Value, im: mlir.Value, complex_
 pub fn llvmTypeOf(self: *Codegen, ty: types.TypeId) !mlir.Type {
     const kind = self.context.type_store.getKind(ty);
     switch (kind) {
-        .Void, .Noreturn => return self.void_ty,
+        .Void, .Noreturn, .Undef => return self.void_ty,
         .Bool => return self.i1_ty,
 
         // Group integer types
@@ -5457,8 +5635,9 @@ pub fn llvmTypeOf(self: *Codegen, ty: types.TypeId) !mlir.Type {
 
         .F32 => return self.f32_ty,
         .F64 => return self.f64_ty,
+        .F128 => return self.f128_ty,
 
-        .Function, .Ptr, .MlirModule, .MlirAttribute, .Code => return self.llvm_ptr_ty,
+        .Function, .Ptr, .Isize, .MlirModule, .MlirAttribute, .Code => return self.llvm_ptr_ty,
         .Closure => {
             const fields = [_]mlir.Type{ self.llvm_ptr_ty, self.llvm_ptr_ty };
             return mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields, false);
@@ -5639,7 +5818,6 @@ pub fn llvmTypeOf(self: *Codegen, ty: types.TypeId) !mlir.Type {
             self.loc.getAttribute().dump();
             std.debug.panic("CodeGen: Unresolved 'Any' type encountered.\n", .{});
         },
-        else => std.debug.panic("CodeGen: Unhandled type kind: {}\n", .{kind}),
     }
 }
 

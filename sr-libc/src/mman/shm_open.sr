@@ -1,0 +1,58 @@
+package libc
+
+// Derived from musl-1.2.5/src/mman/shm_open.c (x86_64).
+
+sc :: import "libc/src/syscall/syscall"
+errno_mod :: import "libc/include/errno"
+fcntl_mod :: import "libc/include/fcntl"
+str :: import "libc/src/string/strchrnul"
+mem :: import "libc/src/string/memcpy"
+unistd_open :: import "libc/src/unistd/open"
+unistd_unlink :: import "libc/src/unistd/unlink"
+
+NAME_MAX :: 255
+
+PTHREAD_CANCEL_DISABLE :: 1
+
+pthread_setcancelstate :: extern proc(state: i32, old: *i32) i32
+
+__shm_mapname :: proc(name: *const u8, buf: *u8) ?*u8 {
+    p_name := name
+    while p_name[0] == 47 { p_name = (&p_name[1]).^*u8 }
+    p_ptr := str.strchrnul(p_name, 47)
+    name_len := (p_ptr.^usize - p_name.^usize)
+    if p_ptr[0] != 0 or p_ptr == p_name {
+        errno_mod.__errno_location().* = errno_mod.EINVAL
+        return null
+    }
+    if name_len <= 2 and p_name[0] == 46 and p_name[name_len - 1] == 46 {
+        errno_mod.__errno_location().* = errno_mod.EINVAL
+        return null
+    }
+    if name_len > NAME_MAX {
+        errno_mod.__errno_location().* = errno_mod.ENAMETOOLONG
+        return null
+    }
+    _ = mem.memcpy(buf.^*void, "/dev/shm/".^*const void, 9)
+    _ = mem.memcpy((&buf[9]).^*void, p_name.^*const void, (name_len + 1).(usize))
+    return buf
+}
+
+shm_open :: proc(name: *const u8, flags: i32, mode: mode_t) i32 {
+    buf: [NAME_MAX + 10]u8
+    mapped := __shm_mapname(name, &buf[0])
+    if mapped == null { return -1 }
+
+    cs: i32 = 0
+    _ = pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cs)
+    fd := unistd_open.open(mapped?, flags | fcntl_mod.O_NOFOLLOW | fcntl_mod.O_CLOEXEC | fcntl_mod.O_NONBLOCK, mode)
+    _ = pthread_setcancelstate(cs, null)
+    return fd
+}
+
+shm_unlink :: proc(name: *const u8) i32 {
+    buf: [NAME_MAX + 10]u8
+    mapped := __shm_mapname(name, &buf[0])
+    if mapped == null { return -1 }
+    return unistd_unlink.unlink(mapped?)
+}

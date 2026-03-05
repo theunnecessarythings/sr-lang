@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/ldso/tlsdesc.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <stddef.h>
+// #include <dynlink.h>
+
+__tlsdesc_static :: proc() ptrdiff_t {
+    // TODO: Translate function body
+    unreachable
+}
+

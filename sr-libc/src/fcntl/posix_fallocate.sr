@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/fcntl/posix_fallocate.c (x86_64).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+posix_fallocate :: proc(fd: i32, base: alltypes.off_t, len: alltypes.off_t) i32 {
+    r := sc.syscall4(
+        nums.SYS_fallocate.(i64),
+        fd.(i64),
+        0,
+        base.(i64),
+        len.(i64),
+    )
+    if r < 0 { return (-r).(i32) }
+    return r.(i32)
+}

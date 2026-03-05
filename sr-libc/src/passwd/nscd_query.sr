@@ -1,0 +1,8 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/nscd_query.c
+
+__nscd_query :: proc(req: i32, key: *const u8, buf: *i32, len: usize, swap: i32) *alltypes.FILE {
+    _ = req; _ = key; _ = buf; _ = len; _ = swap
+    return null
+}

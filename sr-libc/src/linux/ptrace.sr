@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/ptrace.c (fixed-arg wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+ptrace :: proc(req: i32, pid: alltypes.pid_t, addr: *void, data: *void) i64 {
+    r := sc.syscall4_ret(
+        nums.SYS_ptrace.(i64),
+        req.(i64),
+        pid.(i64),
+        addr.^usize.(i64),
+        data.^usize.(i64),
+    )
+    return r
+}

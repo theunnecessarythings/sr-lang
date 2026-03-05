@@ -1,0 +1,41 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/tmpfile.c
+
+randname :: import "libc/src/temp/__randname"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+fcntl_mod :: import "libc/include/fcntl"
+stdio :: import "libc/include/stdio"
+
+MAXTRIES :: 100
+
+// Need to implement or import sys_open (wrapper for open syscall) and __fdopen
+sys_open :: proc(path: *const u8, flags: i32, mode: i32) i32 {
+    return sc.syscall3_ret(nums.SYS_open.(i64), path.^usize.(i64), flags.(i64), mode.(i64)).(i32)
+}
+
+__fdopen :: extern proc(i32, *const u8) *stdio.alltypes.FILE 
+
+tmpfile :: proc() *stdio.alltypes.FILE {
+    s: [20]u8 = [47,116,109,112,47,116,109,112,102,105,108,101,95,88,88,88,88,88,88,0] // "/tmp/tmpfile_XXXXXX"
+    fd: i32
+    f: *stdio.alltypes.FILE
+    try: i32
+
+    for try = 0; try < MAXTRIES; try += 1 {
+        _ = randname.__randname((&s[0]) + 13)
+        // O_RDWR|O_CREAT|O_EXCL, 0600
+        flags := fcntl_mod.O_RDWR | fcntl_mod.O_CREAT | fcntl_mod.O_EXCL
+        fd = sys_open(&s[0], flags, 0o600)
+        if fd >= 0 {
+            _ = sc.syscall1(nums.SYS_unlink.(i64), (&s[0]).^usize.(i64))
+            f = __fdopen(fd, "w+")
+            if f == null {
+                _ = sc.syscall1(nums.SYS_close.(i64), fd.(i64))
+            }
+            return f
+        }
+    }
+    return null
+}

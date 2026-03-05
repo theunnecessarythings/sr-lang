@@ -1,0 +1,30 @@
+package libc
+
+// Inline MLIR-backed stdarg helpers (LLVM dialect).
+
+memcpy_mod :: import "libc/src/string/memcpy"
+
+va_start :: proc(ap: *va_list) void {
+    ApTy :: typeof(ap)
+    I8Ptr :: mlir type { !llvm.ptr<i8> }
+    ap_i8: I8Ptr = mlir op(ap) { "llvm.bitcast"(%arg0) : (`ApTy`) -> `I8Ptr` }
+    mlir op(ap_i8):void { "llvm.va_start"(%arg0) : (`I8Ptr`) -> () }
+}
+
+va_end :: proc(ap: *va_list) void {
+    ApTy :: typeof(ap)
+    I8Ptr :: mlir type { !llvm.ptr<i8> }
+    ap_i8: I8Ptr = mlir op(ap) { "llvm.bitcast"(%arg0) : (`ApTy`) -> `I8Ptr` }
+    mlir op(ap_i8):void { "llvm.va_end"(%arg0) : (`I8Ptr`) -> () }
+}
+
+va_copy :: proc(dst: *va_list, src: *va_list) void {
+    _ = memcpy_mod.memcpy(dst.^*void, src.^*const void, sizeof(va_list))
+}
+
+va_arg :: proc(comptime T: type, ap: *va_list) T {
+    ApTy :: typeof(ap)
+    I8Ptr :: mlir type { !llvm.ptr<i8> }
+    ap_i8: I8Ptr = mlir op(ap) { "llvm.bitcast"(%arg0) : (`ApTy`) -> `I8Ptr` }
+    return mlir op(ap_i8) { "llvm.va_arg"(%arg0) : (`I8Ptr`) -> `T` }
+}

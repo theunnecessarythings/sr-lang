@@ -1,0 +1,225 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/getifaddrs.c
+
+string_h :: import "libc/src/string"
+calloc_mod :: import "libc/src/stdlib/calloc"
+free_mod :: import "libc/src/stdlib/free"
+ifaddrs_h :: import "libc/include/ifaddrs"
+netif_h :: import "libc/include/net/if"
+netlink_h :: import "libc/include/netlink"
+netlink_mod :: import "libc/src/network/netlink"
+
+IFADDRS_HASH_SIZE :: 64
+
+sockaddr_ll_hack :: struct {
+    sll_family: u16,
+    sll_protocol: u16,
+    sll_ifindex: i32,
+    sll_hatype: u16,
+    sll_pkttype: u8,
+    sll_halen: u8,
+    sll_addr: [24]u8,
+}
+
+sockany :: union {
+    sa: sockaddr,
+    ll: sockaddr_ll_hack,
+    v4: sockaddr_in,
+    v6: sockaddr_in6,
+}
+
+ifaddrs_storage :: struct {
+    ifa: ifaddrs_h.ifaddrs,
+    hash_next: *ifaddrs_storage,
+    addr: sockany,
+    netmask: sockany,
+    ifu: sockany,
+    index: u32,
+    name: [netif_h.IFNAMSIZ + 1]u8,
+}
+
+ifaddrs_ctx :: struct {
+    first: *ifaddrs_h.ifaddrs,
+    last: *ifaddrs_h.ifaddrs,
+    hash: [IFADDRS_HASH_SIZE]*ifaddrs_storage,
+}
+
+freeifaddrs :: proc(ifp: *ifaddrs_h.ifaddrs) void {
+    n: *ifaddrs_h.ifaddrs
+    while ifp != null {
+        n = ifp.ifa_next
+        free_mod.free(ifp.^*void)
+        ifp = n
+    }
+}
+
+copy_addr :: proc(r: **sockaddr, af: i32, sa: *sockany, addr: *void, addrlen: usize, ifindex: i32) void {
+    dst: *u8
+    len: i32
+
+    switch af {
+        AF_INET => {
+            dst = (&sa.v4.sin_addr).^*u8
+            len = 4
+        }
+        AF_INET6 => {
+            dst = (&sa.v6.sin6_addr).^*u8
+            len = 16
+            if IN6_IS_ADDR_LINKLOCAL(addr.^*const in6_addr) != 0 || IN6_IS_ADDR_MC_LINKLOCAL(addr.^*const in6_addr) != 0 {
+                sa.v6.sin6_scope_id = ifindex.(u32)
+            }
+        }
+        else => { return }
+    }
+
+    if addrlen < len.(usize) { return }
+    sa.sa.sa_family = af.(sa_family_t)
+    _ = string_h.memcpy(dst.^*void, addr, len.(usize))
+    r.* = &sa.sa
+}
+
+gen_netmask :: proc(r: **sockaddr, af: i32, sa: *sockany, prefixlen: i32) void {
+    addr: [16]u8 = [16]u8{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}
+    i: i32
+    if prefixlen > (8 * sizeof(addr)).(i32) { prefixlen = (8 * sizeof(addr)).(i32) }
+    i = prefixlen / 8
+    _ = string_h.memset(&addr[0].^*void, 0xff, i.(usize))
+    if i < sizeof(addr).(i32) {
+        addr[i.(usize)] = (0xff << (8 - (prefixlen % 8))).(u8)
+    }
+    copy_addr(r, af, sa, &addr[0].^*void, sizeof(addr), 0)
+}
+
+copy_lladdr :: proc(r: **sockaddr, sa: *sockany, addr: *void, addrlen: usize, ifindex: i32, hatype: u16) void {
+    if addrlen > sizeof(sa.ll.sll_addr) { return }
+    sa.ll.sll_family = AF_PACKET.(u16)
+    sa.ll.sll_ifindex = ifindex
+    sa.ll.sll_hatype = hatype
+    sa.ll.sll_halen = addrlen.(u8)
+    _ = string_h.memcpy(&sa.ll.sll_addr[0].^*void, addr, addrlen)
+    r.* = &sa.sa
+}
+
+netlink_msg_to_ifaddr :: proc(pctx: *void, h: *netlink_h.nlmsghdr) i32 {
+    ctx := pctx.^*ifaddrs_ctx
+    ifs: *ifaddrs_storage
+    ifs0: *ifaddrs_storage
+    rta: *netlink_h.rtattr
+    stats_len: i32 = 0
+
+    if h.nlmsg_type == netlink_h.RTM_NEWLINK {
+        ifi := netlink_h.NLMSG_DATA(h).^*netlink_h.ifinfomsg
+        rta = netlink_h.NLMSG_RTA(h, sizeof(netlink_h.ifinfomsg))
+        while netlink_h.NLMSG_RTAOK(rta, h) {
+            if rta.rta_type == netlink_h.IFLA_STATS {
+                stats_len = netlink_h.RTA_DATALEN(rta).(i32)
+                break
+            }
+            rta = netlink_h.RTA_NEXT(rta)
+        }
+        ifs0 = null
+    } else {
+        ifa := netlink_h.NLMSG_DATA(h).^*netlink_h.ifaddrmsg
+        ifs0 = ctx.hash[(ifa.ifa_index % IFADDRS_HASH_SIZE.(u32)).(usize)]
+        while ifs0 != null && ifs0.index != ifa.ifa_index {
+            ifs0 = ifs0.hash_next
+        }
+        if ifs0 == null { return 0 }
+    }
+
+    ifs = calloc_mod.calloc(1, sizeof(ifaddrs_storage) + stats_len.(usize)).^*ifaddrs_storage
+    if ifs == null { return -1 }
+
+    if h.nlmsg_type == netlink_h.RTM_NEWLINK {
+        ifi := netlink_h.NLMSG_DATA(h).^*netlink_h.ifinfomsg
+        ifs.index = ifi.ifi_index.(u32)
+        ifs.ifa.ifa_flags = ifi.ifi_flags
+
+        rta = netlink_h.NLMSG_RTA(h, sizeof(netlink_h.ifinfomsg))
+        while netlink_h.NLMSG_RTAOK(rta, h) {
+            switch rta.rta_type {
+                netlink_h.IFLA_IFNAME => {
+                    if netlink_h.RTA_DATALEN(rta) < sizeof(ifs.name) {
+                        _ = string_h.memcpy(&ifs.name[0].^*void, netlink_h.RTA_DATA(rta), netlink_h.RTA_DATALEN(rta))
+                        ifs.ifa.ifa_name = &ifs.name[0]
+                    }
+                }
+                netlink_h.IFLA_ADDRESS => {
+                    copy_lladdr(&ifs.ifa.ifa_addr, &ifs.addr, netlink_h.RTA_DATA(rta), netlink_h.RTA_DATALEN(rta), ifi.ifi_index, ifi.ifi_type)
+                }
+                netlink_h.IFLA_BROADCAST => {
+                    copy_lladdr(&ifs.ifa.ifa_ifu.ifu_broadaddr, &ifs.ifu, netlink_h.RTA_DATA(rta), netlink_h.RTA_DATALEN(rta), ifi.ifi_index, ifi.ifi_type)
+                }
+                netlink_h.IFLA_STATS => {
+                    ifs.ifa.ifa_data = (ifs.^usize + sizeof(ifaddrs_storage)).(usize).^*void
+                    _ = string_h.memcpy(ifs.ifa.ifa_data, netlink_h.RTA_DATA(rta), netlink_h.RTA_DATALEN(rta))
+                }
+                else => {}
+            }
+            rta = netlink_h.RTA_NEXT(rta)
+        }
+        if ifs.ifa.ifa_name != null {
+            bucket := (ifs.index % IFADDRS_HASH_SIZE.(u32)).(usize)
+            ifs.hash_next = ctx.hash[bucket]
+            ctx.hash[bucket] = ifs
+        }
+    } else {
+        ifa := netlink_h.NLMSG_DATA(h).^*netlink_h.ifaddrmsg
+        ifs.ifa.ifa_name = ifs0.ifa.ifa_name
+        ifs.ifa.ifa_flags = ifs0.ifa.ifa_flags
+        rta = netlink_h.NLMSG_RTA(h, sizeof(netlink_h.ifaddrmsg))
+        while netlink_h.NLMSG_RTAOK(rta, h) {
+            switch rta.rta_type {
+                netlink_h.IFA_ADDRESS => {
+                    if ifs.ifa.ifa_addr != null {
+                        copy_addr(&ifs.ifa.ifa_ifu.ifu_dstaddr, ifa.ifa_family.(i32), &ifs.ifu, netlink_h.RTA_DATA(rta), netlink_h.RTA_DATALEN(rta), ifa.ifa_index.(i32))
+                    } else {
+                        copy_addr(&ifs.ifa.ifa_addr, ifa.ifa_family.(i32), &ifs.addr, netlink_h.RTA_DATA(rta), netlink_h.RTA_DATALEN(rta), ifa.ifa_index.(i32))
+                    }
+                }
+                netlink_h.IFA_BROADCAST => {
+                    copy_addr(&ifs.ifa.ifa_ifu.ifu_broadaddr, ifa.ifa_family.(i32), &ifs.ifu, netlink_h.RTA_DATA(rta), netlink_h.RTA_DATALEN(rta), ifa.ifa_index.(i32))
+                }
+                netlink_h.IFA_LOCAL => {
+                    if ifs.ifa.ifa_addr != null {
+                        ifs.ifu = ifs.addr
+                        ifs.ifa.ifa_ifu.ifu_dstaddr = &ifs.ifu.sa
+                        _ = string_h.memset(&ifs.addr.^*void, 0, sizeof(sockany))
+                    }
+                    copy_addr(&ifs.ifa.ifa_addr, ifa.ifa_family.(i32), &ifs.addr, netlink_h.RTA_DATA(rta), netlink_h.RTA_DATALEN(rta), ifa.ifa_index.(i32))
+                }
+                netlink_h.IFA_LABEL => {
+                    if netlink_h.RTA_DATALEN(rta) < sizeof(ifs.name) {
+                        _ = string_h.memcpy(&ifs.name[0].^*void, netlink_h.RTA_DATA(rta), netlink_h.RTA_DATALEN(rta))
+                        ifs.ifa.ifa_name = &ifs.name[0]
+                    }
+                }
+                else => {}
+            }
+            rta = netlink_h.RTA_NEXT(rta)
+        }
+        if ifs.ifa.ifa_addr != null {
+            gen_netmask(&ifs.ifa.ifa_netmask, ifa.ifa_family.(i32), &ifs.netmask, ifa.ifa_prefixlen.(i32))
+        }
+    }
+
+    if ifs.ifa.ifa_name != null {
+        if ctx.first == null { ctx.first = &ifs.ifa }
+        if ctx.last != null { ctx.last.ifa_next = &ifs.ifa }
+        ctx.last = &ifs.ifa
+    } else {
+        free_mod.free(ifs.^*void)
+    }
+    return 0
+}
+
+getifaddrs :: proc(ifap: **ifaddrs_h.ifaddrs) i32 {
+    ctx: ifaddrs_ctx
+    r: i32
+
+    _ = string_h.memset(&ctx.^*void, 0, sizeof(ifaddrs_ctx))
+    r = netlink_mod.__rtnetlink_enumerate(AF_UNSPEC, AF_UNSPEC, netlink_msg_to_ifaddr, &ctx)
+    if r == 0 { ifap.* = ctx.first } else { freeifaddrs(ctx.first) }
+    return r
+}

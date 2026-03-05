@@ -1,0 +1,22 @@
+package libc
+
+// Derived from musl-1.2.5/src/process/fexecve.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+statc :: import "libc/include/sys/stat"
+errno_mod :: import "libc/include/errno"
+procfd_mod :: import "libc/src/misc/procfdname"
+
+fexecve :: proc(fd: i32, argv: **u8, envp: **u8) i32 {
+    r := sc.syscall5(nums.SYS_execveat.(i64), fd.(i64), ("" ).^usize.(i64), argv.^usize.(i64), envp.^usize.(i64), statc.AT_EMPTY_PATH.(i64))
+    if r != -errno_mod.ENOSYS {
+        return sc.__syscall_ret(r).(i32)
+    }
+
+    buf: [32]u8
+    procfd_mod.procfdname((&buf[0]).^*u8, fd.(u32))
+    _ = execve((&buf[0]).^*const u8, argv, envp)
+    if errno_mod.errno().* == errno_mod.ENOENT { errno_mod.errno().* = errno_mod.EBADF }
+    return -1
+}

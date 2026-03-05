@@ -1,0 +1,37 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/strstr.c (portable loop).
+
+strstr :: proc(haystack: *const u8, needle: *const u8) ?*const u8 {
+    if needle[0] == 0 { return haystack }
+
+    i: usize = 0
+    while haystack[i] != 0 {
+        j: usize = 0
+        while needle[j] != 0 and haystack[i + j] == needle[j] {
+            j += 1
+        }
+        if needle[j] == 0 {
+            return &haystack[i]
+        }
+        i += 1
+    }
+    return null
+}
+
+strstr_mut :: proc(haystack: *u8, needle: *const u8) ?*u8 {
+    if needle[0] == 0 { return haystack }
+
+    i: usize = 0
+    while haystack[i] != 0 {
+        j: usize = 0
+        while needle[j] != 0 and haystack[i + j] == needle[j] {
+            j += 1
+        }
+        if needle[j] == 0 {
+            return &haystack[i]
+        }
+        i += 1
+    }
+    return null
+}

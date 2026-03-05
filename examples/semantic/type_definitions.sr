@@ -1,4 +1,4 @@
-package type_definitions
+package main
 
 // Semantic Example: Type Definitions
 
@@ -8,9 +8,8 @@ Point :: struct {
     y: f64,
 }
 
-// 2. Tuple-like Type Alias: A named alias for a tuple type.
-// Can be used for simple, fixed-size collections.
-Color :: (u8, u8, u8)
+// 2. Simple Struct Alias: A named struct for simple, fixed-size collections.
+Color :: struct { r: u8, g: u8, b: u8 }
 
 // 3. C-Style Enums: A set of named integer constants.
 // Useful for simple states or flags.
@@ -35,11 +34,12 @@ Shape :: variant {
     Point, // Can hold a unit-like variant
 }
 
-// The main entry point is defined as a variable (:=)
-main := proc() {
+io :: import "std/io"
+
+main :: proc() {
     // Using the defined types
     p := Point{ x: 10.5, y: 20.0 }
-    c := Color(255, 128, 0)
+    c := Color{ r: 255.(u8), g: 128.(u8), b: 0.(u8) }
     
     read_access := FileAccess.Read
     status := HttpCode.NotFound
@@ -47,13 +47,13 @@ main := proc() {
     s1 := Shape.Circle{ radius: 5.0 }
     s2 := Shape.Rectangle{ width: 10.0, height: 4.0 }
 
-    print("Created a Point at x=", p.x)
-    print("Created a Color with red=", c.0)
-    print("File access mode is: ", read_access.(int)) // Cast enum to int
-    print("HTTP status code is: ", status.%u16) // Cast to underlying type
+    io.println("Created a Point at x=%f", p.x)
+    io.println("Created a Color with red=%d", c.r)
+    io.println("File access mode is: %d", read_access.(i32))
+    io.println("HTTP status code is: %d", status.(u16))
     
     match s1 {
-        Shape.Circle{radius} => print("Shape is a circle with radius ", radius),
-        _ => print("Some other shape"),
+        Shape.Circle{radius} => io.println("Shape is a circle with radius %f", radius),
+        _ => io.println("Some other shape", 0),
     }
 }

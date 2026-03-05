@@ -1,0 +1,26 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/atanhf.c.
+
+libm :: import "libc/src/math/libm_internal"
+
+atanhf :: proc(x: f32) f32 {
+    u := libm.asuint(x)
+    s := u >> 31
+    y: f32
+
+    u &= 0x7fffffff
+    y = libm.asfloat(u)
+
+    if u < 0x3f800000 - (1 << 23) {
+        if u < 0x3f800000 - (32 << 23) {
+            if u < (1 << 23) { libm.fp_force_evalf(y * y) }
+        } else {
+            y = 0.5f * log1pf(2.0f * y + 2.0f * y * y / (1.0f - y))
+        }
+    } else {
+        y = 0.5f * log1pf(2.0f * (y / (1.0f - y)))
+    }
+
+    return if s != 0 { -y } else { y }
+}

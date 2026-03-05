@@ -1,0 +1,22 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/strerror_r.c.
+
+strerror_mod :: import "libc/src/string/strerror"
+strlen_mod :: import "libc/src/string/strlen"
+memcpy_mod :: import "libc/src/string/memcpy"
+errno_mod :: import "libc/include/errno"
+
+strerror_r :: proc(err: i32, buf: *u8, buflen: usize) i32 {
+    msg := strerror_mod.strerror(err)
+    l := strlen_mod.strlen(msg)
+    if l >= buflen {
+        if buflen != 0 {
+            _ = memcpy_mod.memcpy(buf.^*void, msg.^*const void, buflen - 1)
+            buf[buflen - 1] = 0
+        }
+        return errno_mod.ERANGE
+    }
+    _ = memcpy_mod.memcpy(buf.^*void, msg.^*const void, l + 1)
+    return 0
+}

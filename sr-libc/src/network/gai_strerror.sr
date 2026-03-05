@@ -1,0 +1,23 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/gai_strerror.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <netdb.h>
+// #include <locale_impl.h>
+
+__lctrans_mod :: import "libc/src/locale/__lctrans"
+
+__gai_msgs :: "Invalid flags\x00Name does not resolve\x00Try again\x00Non-recoverable error\x00Name has no usable address\x00Unrecognized address family or invalid length\x00Unrecognized socket type\x00Unrecognized service\x00Unknown error\x00Out of memory\x00System error\x00Overflow\x00\x00Unknown error"
+
+gai_strerror :: proc(ecode: i32) *const u8 {
+    s := __gai_msgs.^*u8
+    e := ecode + 1
+    while e != 0 && s[0] != 0 {
+        e -= 1
+        while s[0] != 0 { s = (&s[1]).^*u8 }
+        s = (&s[1]).^*u8
+    }
+    if s[0] == 0 { s = (&s[1]).^*u8 }
+    return __lctrans_mod.__lctrans_cur(s)
+}

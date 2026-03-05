@@ -1,0 +1,27 @@
+package libc
+
+// Derived from musl-1.2.5/src/misc/getauxval.c
+
+errno_h :: import "libc/include/errno"
+libc_mod :: import "libc/src/internal/libc"
+
+AT_HWCAP :: 16
+AT_SECURE :: 23
+
+__getauxval :: proc(item: u64) u64 {
+    if item == AT_SECURE { return libc_mod.__libc.secure.(u64) }
+    auxv := libc_mod.__libc.auxv
+    if auxv == null {
+        errno_h.errno().* = errno_h.ENOENT
+        return 0
+    }
+    i: usize = 0
+    while (auxv + i).* != 0 {
+        if (auxv + i).* == item.(usize) { return (auxv + i + 1).*.(u64) }
+        i += 2
+    }
+    errno_h.errno().* = errno_h.ENOENT
+    return 0
+}
+
+getauxval :: proc(item: u64) u64 { return __getauxval(item) }

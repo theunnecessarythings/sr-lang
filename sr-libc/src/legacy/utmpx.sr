@@ -1,0 +1,44 @@
+package libc
+
+// Derived from musl-1.2.5/src/legacy/utmpx.c
+
+errno_h :: import "libc/include/errno"
+utmpx_h :: import "libc/include/utmpx"
+
+endutxent :: proc() void {}
+
+setutxent :: proc() void {}
+
+getutxent :: proc() *utmpx_h.utmpx {
+    errno_h.errno().* = errno_h.ENOSYS
+    return null
+}
+
+getutxid :: proc(ut: *const utmpx_h.utmpx) *utmpx_h.utmpx {
+    _ = ut
+    errno_h.errno().* = errno_h.ENOSYS
+    return null
+}
+
+getutxline :: proc(ut: *const utmpx_h.utmpx) *utmpx_h.utmpx {
+    _ = ut
+    errno_h.errno().* = errno_h.ENOSYS
+    return null
+}
+
+pututxline :: proc(ut: *const utmpx_h.utmpx) *utmpx_h.utmpx {
+    _ = ut
+    errno_h.errno().* = errno_h.ENOSYS
+    return null
+}
+
+updwtmpx :: proc(f: *const u8, u: *const utmpx_h.utmpx) void {
+    _ = f
+    _ = u
+}
+
+__utmpxname :: proc(f: *const u8) i32 {
+    _ = f
+    errno_h.errno().* = errno_h.ENOSYS
+    return -1
+}

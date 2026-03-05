@@ -1,0 +1,7 @@
+package libc
+
+// Derived from musl-1.2.5/src/ctype/toupper.c
+
+basic :: import "libc/src/ctype/ctype_basic"
+
+toupper :: basic.toupper

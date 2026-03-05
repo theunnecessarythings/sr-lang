@@ -1,0 +1,37 @@
+package main
+
+io :: import "std/io"
+
+WorkErr :: error {Fail, NotFound}
+
+might_fail :: proc(flag: bool) WorkErr ! i32 {
+    errdefer io.print("errdefer ran\n")
+
+    if !flag { return WorkErr.Fail }
+
+    defer io.print("defer ran\n")
+    return 123
+}
+
+main :: proc() {
+    // Question: How do we propagate errors?
+    // Answer: Use `catch` to handle them in-place (main cannot return errors yet).
+    result := might_fail(true) catch {
+        io.print("unexpected error\n")
+        0
+    }
+    io.println("result=%d", result)
+
+    // Question: How do we handle errors?
+    // Answer: Use `catch`.
+    r2 := might_fail(false) catch |err| {
+        _ = err
+        io.print("caught error\n")
+        0
+    }
+
+    io.println("r2=%d", r2)
+
+    r3 := might_fail(false) catch 7
+    io.println("r3=%d", r3)
+}

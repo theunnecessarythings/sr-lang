@@ -1,0 +1,32 @@
+package libc
+
+// Derived from musl-1.2.5/src/locale/wcsxfrm.c
+
+// C locale transform: identity copy.
+
+wcslen_local :: fn(s: *const wchar_t) usize {
+    i: usize = 0
+    while s[i] != 0 {
+        i += 1
+    }
+    return i
+}
+
+__wcsxfrm_l :: proc(dest: *wchar_t, src: *const wchar_t, n: usize, loc: locale_t) usize {
+    _ = loc
+    len := wcslen_local(src)
+    if dest != null && n != 0 {
+        i: usize = 0
+        limit := if len < (n - 1) { len } else { n - 1 }
+        while i < limit {
+            dest[i] = src[i]
+            i += 1
+        }
+        dest[i] = 0
+    }
+    return len
+}
+
+wcsxfrm :: proc(dest: *wchar_t, src: *const wchar_t, n: usize) usize {
+    return __wcsxfrm_l(dest, src, n, null)
+}

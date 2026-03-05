@@ -1,0 +1,20 @@
+package libc
+
+// Minimal x86_64 entrypoint. Aligns stack and calls _start_c with stack pointer.
+// Mirrors musl crt_arch.h behavior, without _DYNAMIC handling (bootstrap only).
+
+crt1_mod :: import "libc/crt/crt1"
+
+@[export_name="_start_c_impl"]
+_start_c_impl :: proc(sp: *usize) void {
+    crt1_mod._start_c(sp)
+}
+
+@[export_name="_start"]
+_start :: proc() noreturn asm {
+    xor %rbp, %rbp
+    mov %rsp, %rdi
+    andq $$-16, %rsp
+    call _start_c_impl
+    ud2
+}

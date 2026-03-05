@@ -1,0 +1,48 @@
+package libc
+
+// Derived from musl-1.2.5/src/ipc/semctl.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/sem.h>
+// #include <stdarg.h>
+// #include <endian.h>
+// #include <syscall.h>
+// #include <ipc.h>
+
+stdarg_mod :: import "libc/include/stdarg"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+ipc :: import "libc/src/ipc/ipc_impl"
+
+semctl :: proc(id: i32, num: i32, cmd: i32, /* TODO */ ...) i32 {
+    arg_val: usize = 0
+    c := cmd & ~ipc.IPC_TIME64
+
+    switch c {
+        SETVAL => {
+            ap: stdarg_mod.va_list
+            stdarg_mod.va_start(&ap)
+            v := stdarg_mod.va_arg(i32, &ap)
+            stdarg_mod.va_end(&ap)
+            arg_val = v.(usize)
+        },
+        GETALL => fallthrough,
+        SETALL => fallthrough,
+        IPC_SET => fallthrough,
+        IPC_INFO => fallthrough,
+        SEM_INFO => fallthrough,
+        (IPC_STAT & ~ipc.IPC_TIME64) => fallthrough,
+        (SEM_STAT & ~ipc.IPC_TIME64) => fallthrough,
+        (SEM_STAT_ANY & ~ipc.IPC_TIME64) => {
+            ap: stdarg_mod.va_list
+            stdarg_mod.va_start(&ap)
+            p := stdarg_mod.va_arg(*void, &ap)
+            stdarg_mod.va_end(&ap)
+            arg_val = p.^usize
+        },
+        else => {},
+    }
+
+    r := sc.syscall4_ret(nums.SYS_semctl.(i64), id.(i64), num.(i64), ipc.IPC_CMD(cmd).(i64), arg_val.(i64))
+    return r.(i32)
+}

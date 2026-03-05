@@ -1,0 +1,10 @@
+package libc
+
+FNM_NOESCAPE :: 1
+FNM_PATHNAME :: 2
+FNM_PERIOD :: 4
+FNM_CASEFOLD :: 8
+
+FNM_NOMATCH :: 1
+
+fnmatch :: proc(pattern: *const u8, str: *const u8, flags: i32) i32

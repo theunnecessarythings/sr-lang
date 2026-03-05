@@ -1,0 +1,36 @@
+package main
+
+io :: import "std/io"
+
+Color :: enum { Red, Green, Blue }
+
+main :: proc() {
+    // Question: Can if be used as an expression?
+    // Answer: Yes, both branches return a value.
+    x := -2
+    sign := if x > 0 { "pos" } else { "neg" }
+    io.println("sign=%s", sign)
+
+    // Question: Can a block return a value?
+    // Answer: Yes, blocks are expressions.
+    total := {
+        tmp := 10
+        tmp + 5
+    }
+    io.println("total=%d", total)
+
+    // Question: How do we branch on multiple cases?
+    // Answer: Use match.
+    c := Color.Green
+    match c {
+        Color.Red => io.print("red\n"),
+        Color.Green => io.print("green\n"),
+        Color.Blue => io.print("blue\n"),
+    }
+
+    // Question: How do we mark impossible paths?
+    // Answer: Use `unreachable`.
+    if false {
+        unreachable
+    }
+}

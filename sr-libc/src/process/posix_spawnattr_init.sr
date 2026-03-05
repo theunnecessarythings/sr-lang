@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/process/posix_spawnattr_init.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <spawn.h>
+
+posix_spawnattr_init :: proc(attr: *posix_spawnattr_t) i32 {
+    attr.* = {}
+    return 0
+}

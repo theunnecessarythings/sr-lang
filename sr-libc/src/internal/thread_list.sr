@@ -1,0 +1,32 @@
+package libc
+
+atomic :: import "libc/src/internal/atomic"
+pthread_impl :: import "libc/src/internal/pthread_impl"
+wait_mod :: import "libc/src/thread/__wait"
+lock_mod :: import "libc/src/internal/lock"
+
+tl_lock_count: i32 = 0
+tl_lock_waiters: i32 = 0
+
+__tl_lock :: proc() void {
+    tid := pthread_impl.__pthread_self().tid
+    val := pthread_impl.__thread_list_lock[0]
+    if val == tid {
+        tl_lock_count += 1
+        return
+    }
+    while true {
+        val = atomic.a_cas(&pthread_impl.__thread_list_lock[0], 0, tid)
+        if val == 0 { break }
+        wait_mod.__wait(&pthread_impl.__thread_list_lock[0], &tl_lock_waiters, val, 0)
+    }
+}
+
+__tl_unlock :: proc() void {
+    if tl_lock_count != 0 {
+        tl_lock_count -= 1
+        return
+    }
+    atomic.a_store(&pthread_impl.__thread_list_lock[0], 0)
+    if tl_lock_waiters != 0 { lock_mod.__wake(null, 1, 0) }
+}

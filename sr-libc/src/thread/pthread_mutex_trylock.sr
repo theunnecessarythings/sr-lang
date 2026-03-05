@@ -1,0 +1,88 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_mutex_trylock.c
+
+mutex_int :: import "libc/src/thread/pthread_mutex_internal"
+atomic :: import "libc/src/internal/atomic"
+errno_mod :: import "libc/include/errno"
+pthread_impl :: import "libc/src/internal/pthread_impl"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+FUTEX_UNLOCK_PI :: 7
+
+__pthread_mutex_trylock_owner :: proc(m: *alltypes.pthread_mutex_t) i32 {
+    old: i32
+    own: i32
+    typ := mutex_int.m_type(m).*
+    self := pthread_impl.__pthread_self()
+    tid := self.tid
+
+    old = mutex_int.m_lock(m).*
+    own = old & 0x3fffffff
+    if own == tid {
+        if (typ & 8) != 0 && mutex_int.m_count(m).* < 0 {
+            old &= 0x40000000
+            mutex_int.m_count(m).* = 0
+            goto success
+        }
+        if (typ & 3) == mutex_int.PTHREAD_MUTEX_RECURSIVE {
+            if mutex_int.m_count(m).*.(u32) >= 0x7fffffff { return errno_mod.EAGAIN }
+            mutex_int.m_count(m).* += 1
+            return 0
+        }
+    }
+    if own == 0x3fffffff { return errno_mod.ENOTRECOVERABLE }
+    if own != 0 || (old != 0 && (typ & 4) == 0) { return errno_mod.EBUSY }
+
+    if (typ & 128) != 0 {
+        if self.robust_list.off == 0 {
+            self.robust_list.off = (mutex_int.m_lock(m).^usize - mutex_int.m_next(m).^usize).(i64)
+            _ = sc.syscall3(nums.SYS_set_robust_list.(i64), (&self.robust_list).^usize.(i64), (3 * sizeof(i64)).(i64), 0)
+        }
+        if mutex_int.m_waiters(m).* != 0 { tid |= 0x80000000 }
+        self.robust_list.pending = (&mutex_int.m_next(m)).^*void
+    }
+    tid |= old & 0x40000000
+
+    if atomic.a_cas(mutex_int.m_lock(m), old, tid) != old {
+        self.robust_list.pending = null
+        if (typ & 12) == 12 && mutex_int.m_waiters(m).* != 0 { return errno_mod.ENOTRECOVERABLE }
+        return errno_mod.EBUSY
+    }
+
+success:
+    if (typ & 8) != 0 && mutex_int.m_waiters(m).* != 0 {
+        priv := (typ & 128) ^ 128
+        _ = sc.syscall3(nums.SYS_futex.(i64), mutex_int.m_lock(m).^usize.(i64), (FUTEX_UNLOCK_PI | priv).(i64), 0)
+        self.robust_list.pending = null
+        return if (typ & 4) != 0 { errno_mod.ENOTRECOVERABLE } else { errno_mod.EBUSY }
+    }
+
+    next := self.robust_list.head
+    mutex_int.m_next(m).* = next.^*void
+    mutex_int.m_prev(m).* = (&self.robust_list.head).^*void
+    if next != (&self.robust_list.head).^*void {
+        ((next.^usize - sizeof(*void)).(usize).^**void).* = (&mutex_int.m_next(m)).^*void
+    }
+    self.robust_list.head = (&mutex_int.m_next(m)).^*void
+    self.robust_list.pending = null
+
+    if old != 0 {
+        mutex_int.m_count(m).* = 0
+        return errno_mod.EOWNERDEAD
+    }
+
+    return 0
+}
+
+__pthread_mutex_trylock :: proc(m: *alltypes.pthread_mutex_t) i32 {
+    if (mutex_int.m_type(m).* & 15) == mutex_int.PTHREAD_MUTEX_NORMAL {
+        return atomic.a_cas(mutex_int.m_lock(m), 0, errno_mod.EBUSY) & errno_mod.EBUSY
+    }
+    return __pthread_mutex_trylock_owner(m)
+}
+
+pthread_mutex_trylock :: proc(m: *alltypes.pthread_mutex_t) i32 {
+    return __pthread_mutex_trylock(m)
+}

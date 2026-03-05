@@ -1,0 +1,56 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/__rem_pio2f.c.
+
+libm :: import "libc/src/math/libm_internal"
+large :: import "libc/src/math/rem_pio2_large"
+
+EPS :: 2.2204460492503131e-16
+toint :: 1.5 / EPS
+pio4 :: 0x1.921fb6p-1
+invpio2 :: 6.36619772367581382433e-01
+pio2_1 :: 1.57079631090164184570e+00
+pio2_1t :: 1.58932547735281966916e-08
+
+__rem_pio2f :: proc(x: f32, y: *f64) i32 {
+    u: u32 = libm.asuint(x)
+    tx: [1]f64
+    ty: [1]f64
+    fn: f64
+    ix: u32
+    n: i32
+    sign: i32
+    e0: i32
+
+    ix = u & 0x7fffffff
+    if ix < 0x4dc90fdb {
+        fn = x.(f64) * invpio2 + toint - toint
+        n = fn.(i32)
+        y[0] = x.(f64) - fn * pio2_1 - fn * pio2_1t
+        if y[0] < -pio4 {
+            n -= 1
+            fn -= 1.0
+            y[0] = x.(f64) - fn * pio2_1 - fn * pio2_1t
+        } else if y[0] > pio4 {
+            n += 1
+            fn += 1.0
+            y[0] = x.(f64) - fn * pio2_1 - fn * pio2_1t
+        }
+        return n
+    }
+    if ix >= 0x7f800000 {
+        y[0] = x.(f64) - x.(f64)
+        return 0
+    }
+    sign = (u >> 31).(i32)
+    e0 = ((ix >> 23).(i32)) - (0x7f + 23)
+    u = ix - (e0.(u32) << 23)
+    tx[0] = libm.asfloat(u).(f64)
+    n = large.__rem_pio2_large(&tx[0], &ty[0], e0, 1, 0)
+    if sign != 0 {
+        y[0] = -ty[0]
+        return -n
+    }
+    y[0] = ty[0]
+    return n
+}

@@ -1,0 +1,7 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/ferror.c.
+
+impl :: import "libc/src/stdio/stdio_impl"
+
+ferror :: proc(f: *alltypes.FILE) i32 { return ((f.flags & impl.F_ERR.(u32)) != 0).(i32) }

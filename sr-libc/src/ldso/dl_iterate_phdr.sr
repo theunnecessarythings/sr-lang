@@ -1,0 +1,37 @@
+package libc
+
+// Derived from musl-1.2.5/src/ldso/dl_iterate_phdr.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <elf.h>
+// #include <link.h>
+// #include <pthread_impl.h>
+// #include <libc.h>
+
+// TODO: Manual translation needed - no functions detected
+// Original C code:
+/*
+#include <elf.h>
+#include <link.h>
+#include "pthread_impl.h"
+#include "libc.h"
+
+#define AUX_CNT 38
+
+extern weak hidden const size_t _DYNAMIC[];
+
+static int static_dl_iterate_phdr(int(*callback)(struct dl_phdr_info *info, size_t size, void *data), void *data)
+{
+	unsigned char *p;
+	ElfW(Phdr) *phdr, *tls_phdr=0;
+	size_t base = 0;
+	size_t n;
+	struct dl_phdr_info info;
+	size_t i, aux[AUX_CNT] = {0};
+
+	for (i=0; libc.auxv[i]; i+=2)
+		if (libc.auxv[i]<AUX_CNT) aux[libc.auxv[i]] = libc.auxv[i+1];
+
+	for
+...
+*/

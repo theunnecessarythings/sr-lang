@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/setfsuid.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+setfsuid :: proc(uid: uid_t) i32 {
+    r := sc.syscall1_ret(nums.SYS_setfsuid.(i64), uid.(i64))
+    return r.(i32)
+}

@@ -1,0 +1,19 @@
+package libc
+
+// Derived from musl-1.2.5/src/mman/munmap.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+__vm_wait :: proc() {}
+
+ptr_arg :: proc(p: ?*void) i64 {
+    return (if p != null { (p?).^usize } else { 0.(usize) }).(i64)
+}
+
+__munmap :: proc(start: ?*void, len: usize) i32 {
+    __vm_wait()
+    return sc.syscall2_ret(nums.SYS_munmap.(i64), ptr_arg(start), len.(i64)).(i32)
+}
+
+munmap :: __munmap

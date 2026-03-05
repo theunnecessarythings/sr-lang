@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_rwlockattr_init.c
+
+string_h :: import "libc/src/string"
+
+pthread_rwlockattr_init :: proc(a: *pthread_rwlockattr_t) i32 {
+    _ = string_h.memset(a.^*void, 0, sizeof(pthread_rwlockattr_t))
+    return 0
+}

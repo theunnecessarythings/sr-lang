@@ -1,5 +1,7 @@
 package main
 
+io :: import "std/io"
+
 // Postfix Cast Operators
 
 main::proc() {
@@ -31,5 +33,13 @@ main::proc() {
   // Returns an optional type. It will be `null` if the cast fails (i.e., out of range).
   checked_cast: ?i8 = big_int.?i8 // This will be null, as 99999 doesn't fit in an i8
   successful_checked_cast: ?i8 = (100).?i8 // This will be Some(100)
+
+  io.println("my_float=%f", my_float)
+  io.println("cast_to_int=%d", cast_to_int)
+  io.println("bits_as_float=%f", bits_as_float)
+  io.println("saturated_to_i8=%d", saturated_to_i8)
+  io.println("wrapped_add=%d", wrapped_add)
+  io.println("checked_cast=%d", checked_cast orelse 0)
+  io.println("successful_checked_cast=%d", successful_checked_cast orelse 0)
 
 }

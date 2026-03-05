@@ -1,0 +1,23 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_detach.c
+
+atomic :: import "libc/src/internal/atomic"
+pthread_impl :: import "libc/src/internal/pthread_impl"
+cancel_mod :: import "libc/src/thread/pthread_setcancelstate"
+join_mod :: import "libc/src/thread/pthread_join"
+
+__pthread_detach :: proc(t: alltypes.pthread_t) i32 {
+    td := t.^*pthread_impl.pthread
+    if atomic.a_cas(&td.detach_state, pthread_impl.DT_JOINABLE, pthread_impl.DT_DETACHED) != pthread_impl.DT_JOINABLE {
+        cs: i32
+        _ = cancel_mod.__pthread_setcancelstate(cancel_mod.PTHREAD_CANCEL_DISABLE, &cs)
+        _ = join_mod.__pthread_join(t, null)
+        _ = cancel_mod.__pthread_setcancelstate(cs, null)
+    }
+    return 0
+}
+
+pthread_detach :: proc(t: alltypes.pthread_t) i32 {
+    return __pthread_detach(t)
+}

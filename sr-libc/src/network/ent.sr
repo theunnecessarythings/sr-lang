@@ -1,0 +1,19 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/ent.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <netdb.h>
+
+sethostent :: proc(x: i32) void {
+    _ = x
+}
+
+gethostent :: proc() *hostent { return null }
+
+getnetent :: proc() *netent { return null }
+
+endhostent :: proc() void {}
+
+setnetent :: sethostent
+endnetent :: endhostent

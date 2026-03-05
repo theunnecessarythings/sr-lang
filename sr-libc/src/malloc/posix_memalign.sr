@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/malloc/posix_memalign.c
+
+errno_h :: import "libc/include/errno"
+aligned_alloc_mod :: import "libc/src/malloc/mallocng/aligned_alloc"
+
+posix_memalign :: proc(res: **void, align: usize, len: usize) i32 {
+    if res == null { return errno_h.EINVAL }
+    if align < sizeof(*void) || (align & (align - 1)) != 0 {
+        return errno_h.EINVAL
+    }
+    p := aligned_alloc_mod.aligned_alloc(align, len)
+    if p == null { return errno_h.ENOMEM }
+    res.* = p
+    return 0
+}

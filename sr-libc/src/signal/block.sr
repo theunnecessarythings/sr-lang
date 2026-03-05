@@ -1,0 +1,23 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/block.c
+
+sigfill_mod :: import "libc/src/signal/sigfillset"
+sigprocmask_mod :: import "libc/src/signal/sigprocmask"
+alltypes :: import "libc/include/alltypes"
+
+__block_all_sigs :: proc(set: *alltypes.sigset_t) void {
+    mask: alltypes.sigset_t
+    _ = sigfill_mod.sigfillset(&mask)
+    _ = sigprocmask_mod.sigprocmask(2, &mask, set.(?*alltypes.sigset_t))
+}
+
+__block_app_sigs :: proc(set: *alltypes.sigset_t) void {
+    __block_all_sigs(set)
+}
+
+__restore_sigs :: proc(set: ?*alltypes.sigset_t) void {
+    if set != null {
+        _ = sigprocmask_mod.sigprocmask(2, set, null.(?*alltypes.sigset_t))
+    }
+}

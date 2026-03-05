@@ -1,0 +1,336 @@
+package libc
+
+// Derived from musl-1.2.5/src/malloc/mallocng/malloc.c
+
+meta_mod :: import "libc/src/malloc/mallocng/meta"
+glue :: import "libc/src/malloc/mallocng/glue"
+atomic :: import "libc/src/internal/atomic"
+mman :: import "libc/src/mman/mmap"
+mman_i :: import "libc/include/sys/mman"
+
+small_cnt_value :: proc(sc: i32, idx: i32) u8 {
+    if sc == 0 { return 30 }
+    if sc == 1 {
+        if idx == 0 { return 31 }
+        return 15
+    }
+    if sc == 2 {
+        if idx == 0 { return 20 }
+        return 10
+    }
+    if sc == 3 {
+        if idx == 0 { return 31 }
+        if idx == 1 { return 15 }
+        return 7
+    }
+    if sc == 4 {
+        if idx == 0 { return 25 }
+        if idx == 1 { return 12 }
+        return 6
+    }
+    if sc == 5 {
+        if idx == 0 { return 21 }
+        if idx == 1 { return 10 }
+        return 5
+    }
+    if sc == 6 {
+        if idx == 0 { return 18 }
+        if idx == 1 { return 8 }
+        return 4
+    }
+    if sc == 7 {
+        if idx == 0 { return 31 }
+        if idx == 1 { return 15 }
+        return 7
+    }
+    if idx == 0 { return 28 }
+    if idx == 1 { return 14 }
+    return 6
+}
+
+med_cnt_value :: proc(sc: i32) u8 {
+    sel := sc & 3
+    if sel == 0 { return 28 }
+    if sel == 1 { return 24 }
+    if sel == 2 { return 20 }
+    return 32
+}
+
+alloc_meta :: proc() *meta_mod.meta {
+    m: *meta_mod.meta
+    p: *u8
+
+    if meta_mod.ctx.init_done == 0 {
+        meta_mod.ctx.secret = glue.get_random_secret()
+        meta_mod.ctx.init_done = 1
+    }
+
+    pagesize := meta_mod.ctx.pagesize
+    if pagesize < 4096 { pagesize = 4096 }
+
+    m = meta_mod.dequeue_head(&meta_mod.ctx.free_meta_head)
+    if m.^usize != 0 { return m }
+
+    if meta_mod.ctx.avail_meta_count == 0 {
+        need_unprotect := 1
+
+        if meta_mod.ctx.avail_meta_area_count == 0 and meta_mod.ctx.brk != -1 {
+            new_brk := meta_mod.ctx.brk + pagesize
+            need_guard := 0
+            if meta_mod.ctx.brk == 0 {
+                need_guard = 1
+                meta_mod.ctx.brk = glue.brk(0)
+                meta_mod.ctx.brk += -meta_mod.ctx.brk & (pagesize - 1)
+                new_brk = meta_mod.ctx.brk + 2 * pagesize
+            }
+            if glue.brk(new_brk) != new_brk {
+                meta_mod.ctx.brk = -1
+            } else {
+                if need_guard != 0 {
+                    _ = mman.mmap(meta_mod.ctx.brk.^*void, pagesize, 0, mman_i.MAP_ANON | mman_i.MAP_PRIVATE | mman_i.MAP_FIXED, -1, 0)
+                }
+                meta_mod.ctx.brk = new_brk
+                meta_mod.ctx.avail_meta_areas = (new_brk - pagesize).^*u8
+                meta_mod.ctx.avail_meta_area_count = pagesize >> 12
+                need_unprotect = 0
+            }
+        }
+
+        if meta_mod.ctx.avail_meta_area_count == 0 {
+            n: usize = 2 << meta_mod.ctx.meta_alloc_shift
+            p = mman.mmap(null, n * pagesize, 0, mman_i.MAP_PRIVATE | mman_i.MAP_ANON, -1, 0)?.^*u8
+            if p.^usize == mman_i.MAP_FAILED.^usize { return (0.(usize)).^*meta_mod.meta }
+            meta_mod.ctx.avail_meta_areas = (p.^usize + pagesize).(usize).^*u8
+            meta_mod.ctx.avail_meta_area_count = (n - 1) * (pagesize >> 12)
+            meta_mod.ctx.meta_alloc_shift += 1
+        }
+
+        p = meta_mod.ctx.avail_meta_areas
+        if (p.^usize & (pagesize - 1)) != 0 { need_unprotect = 0 }
+
+        meta_mod.ctx.avail_meta_area_count -= 1
+        meta_mod.ctx.avail_meta_areas = (p.^usize + 4096).(usize).^*u8
+
+        area_ptr := p.^*meta_mod.meta_area
+        if meta_mod.ctx.meta_area_tail.^usize != 0 {
+            meta_mod.ctx.meta_area_tail.next = area_ptr
+        } else {
+            meta_mod.ctx.meta_area_head = area_ptr
+        }
+        meta_mod.ctx.meta_area_tail = area_ptr
+        meta_mod.ctx.meta_area_tail.check = meta_mod.ctx.secret
+
+        nslots := (4096 - sizeof(meta_mod.meta_area)) / sizeof(meta_mod.meta)
+        meta_mod.ctx.meta_area_tail.nslots = nslots.(i32)
+        meta_mod.ctx.avail_meta_count = nslots
+        meta_mod.ctx.avail_meta = (&meta_mod.ctx.meta_area_tail.slots[0])
+    }
+
+    meta_mod.ctx.avail_meta_count -= 1
+    m = meta_mod.ctx.avail_meta
+    meta_mod.ctx.avail_meta = (meta_mod.ctx.avail_meta.^usize + sizeof(meta_mod.meta).(usize)).(usize).^*meta_mod.meta
+
+    m.prev = (0.(usize)).^*meta_mod.meta
+    m.next = (0.(usize)).^*meta_mod.meta
+    return m
+}
+
+try_avail :: proc(pm: **meta_mod.meta) u32 {
+    m := pm.*
+    if m.^usize == 0 { return 0 }
+
+    mask := m.avail_mask.(u32)
+    if mask == 0 {
+        if m.freed_mask == 0 {
+            meta_mod.dequeue(pm, m)
+            m = pm.*
+            if m.^usize == 0 { return 0 }
+        } else {
+            m = m.next
+            pm.* = m
+        }
+
+        mask = m.freed_mask.(u32)
+        mask = meta_mod.activate_group(m)
+    }
+
+    first := mask & (0 - mask)
+    m.avail_mask = (mask - first).(i32)
+    return first
+}
+
+alloc_group :: proc(sc: i32, req: usize) *meta_mod.meta {
+    size := meta_mod.UNIT * glue.size_classes[sc.(usize)].(usize)
+    i: i32 = 0
+    cnt: i32 = 0
+    p: *u8
+
+    m := alloc_meta()
+    if m.^usize == 0 { return (0.(usize)).^*meta_mod.meta }
+
+    usage := meta_mod.ctx.usage_by_class[sc.(usize)]
+    pagesize := meta_mod.ctx.pagesize
+    active_idx: i32
+
+    if sc < 9 {
+        while i < 2 and (4 * small_cnt_value(sc, i).(usize) > usage) {
+            i += 1
+        }
+        cnt = small_cnt_value(sc, i).(i32)
+    } else {
+        cnt = med_cnt_value(sc).(i32)
+        while (cnt & 1) == 0 and (4 * cnt.(usize) > usage) {
+            cnt >>= 1
+        }
+        while size * cnt.(usize) >= 65536 * meta_mod.UNIT {
+            cnt >>= 1
+        }
+    }
+
+    if cnt == 1 and size * cnt.(usize) + meta_mod.UNIT <= pagesize / 2 {
+        cnt = 2
+    }
+
+    if size * cnt.(usize) + meta_mod.UNIT > pagesize / 2 {
+        nosmall := meta_mod.is_bouncing(sc)
+        meta_mod.account_bounce(sc)
+        meta_mod.step_seq()
+
+        if (sc & 1) == 0 and sc < 32 {
+            usage += meta_mod.ctx.usage_by_class[(sc + 1).(usize)]
+        }
+
+        if 4 * cnt.(usize) > usage and nosmall == 0 {
+            if (sc & 3) == 1 and size * cnt.(usize) > 8 * pagesize {
+                cnt = 2
+            } else {
+                if (sc & 3) == 2 and size * cnt.(usize) > 4 * pagesize {
+                    cnt = 3
+                } else {
+                    if (sc & 3) == 0 and size * cnt.(usize) > 8 * pagesize {
+                        cnt = 3
+                    } else {
+                        if (sc & 3) == 0 and size * cnt.(usize) > 2 * pagesize {
+                            cnt = 5
+                        }
+                    }
+                }
+            }
+        }
+
+        needed := size * cnt.(usize) + meta_mod.UNIT
+        needed += -needed & (pagesize - 1)
+
+        if nosmall == 0 and cnt <= 7 {
+            req2 := req + meta_mod.IB + meta_mod.UNIT
+            req2 += -req2 & (pagesize - 1)
+            if req2 < size + meta_mod.UNIT or (req2 >= 4 * pagesize and 2 * cnt.(usize) > usage) {
+                cnt = 1
+                needed = req2
+            }
+        }
+
+        p = mman.mmap(null, needed, mman_i.PROT_READ | mman_i.PROT_WRITE, mman_i.MAP_PRIVATE | mman_i.MAP_ANON, -1, 0)?.^*u8
+        if p.^usize == mman_i.MAP_FAILED.^usize {
+            meta_mod.free_meta(m)
+            return (0.(usize)).^*meta_mod.meta
+        }
+
+        meta_mod.meta_set_maplen(m, needed >> 12)
+        meta_mod.ctx.mmap_counter += 1
+        active_idx = ((4096 - meta_mod.UNIT) / size - 1).(i32)
+        if active_idx > cnt - 1 { active_idx = cnt - 1 }
+        if active_idx < 0 { active_idx = 0 }
+    } else {
+        j := meta_mod.size_to_class(meta_mod.UNIT + cnt.(usize) * size - meta_mod.IB)
+        idx := alloc_slot(j, meta_mod.UNIT + cnt.(usize) * size - meta_mod.IB)
+        if idx < 0 {
+            meta_mod.free_meta(m)
+            return (0.(usize)).^*meta_mod.meta
+        }
+
+        g := meta_mod.ctx.active[j.(usize)]
+        p = meta_mod.enframe(g, idx, meta_mod.UNIT * glue.size_classes[j.(usize)].(usize) - meta_mod.IB, meta_mod.ctx.mmap_counter.(i32))
+        meta_mod.meta_set_maplen(m, 0)
+        ((p.^usize - 3).(usize).^*u8).* = (((p.^usize - 3).(usize).^*u8).* & 31) | ((6.(u8)) << 5)
+
+        k: i32 = 0
+        while k <= cnt {
+            ((p.^usize + meta_mod.UNIT + k.(usize) * size - 4).(usize).^*u8).* = 0
+            k += 1
+        }
+
+        active_idx = cnt - 1
+    }
+
+    meta_mod.ctx.usage_by_class[sc.(usize)] += cnt.(usize)
+    m.avail_mask = ((2 << active_idx) - 1).(i32)
+    m.freed_mask = ((2 << (cnt - 1)) - 1 - m.avail_mask).(i32)
+    m.mem = p.^*meta_mod.group
+    m.mem.meta = m
+    m.mem.active_idx = active_idx.(u8)
+    meta_mod.meta_set_last_idx(m, (cnt - 1).(usize))
+    meta_mod.meta_set_freeable(m, 1)
+    meta_mod.meta_set_sizeclass(m, sc.(usize))
+    return m
+}
+
+alloc_slot :: proc(sc: i32, req: usize) i32 {
+    first := try_avail(&meta_mod.ctx.active[sc.(usize)])
+    if first != 0 { return atomic.a_ctz_32(first) }
+
+    g := alloc_group(sc, req)
+    if g.^usize == 0 { return -1 }
+
+    g.avail_mask -= 1
+    meta_mod.queue(&meta_mod.ctx.active[sc.(usize)], g)
+    return 0
+}
+
+MMAP_THRESHOLD :: 131052
+
+malloc :: proc(n: usize) ?*void {
+    if n >= MMAP_THRESHOLD {
+        needed := n + meta_mod.IB + meta_mod.UNIT
+        p: *u8 = mman.mmap(null, needed, mman_i.PROT_READ | mman_i.PROT_WRITE, mman_i.MAP_PRIVATE | mman_i.MAP_ANON, -1, 0)?.^*u8
+        if p.^usize == mman_i.MAP_FAILED.^usize { return null }
+
+        glue.wrlock()
+        meta_mod.step_seq()
+        g := alloc_meta()
+        if g.^usize == 0 {
+            glue.unlock()
+            _ = mman.munmap(p.^*void, needed)
+            return null
+        }
+
+        g.mem = p.^*meta_mod.group
+        g.mem.meta = g
+        meta_mod.meta_set_last_idx(g, 0)
+        meta_mod.meta_set_freeable(g, 1)
+        meta_mod.meta_set_sizeclass(g, 63)
+        meta_mod.meta_set_maplen(g, (needed + 4095) / 4096)
+        g.avail_mask = 0
+        g.freed_mask = 0
+
+        meta_mod.ctx.mmap_counter += 1
+        idx: i32 = 0
+        ctr := meta_mod.ctx.mmap_counter.(i32)
+        glue.unlock()
+        return meta_mod.enframe(g, idx, n, ctr).^?*void
+    }
+
+    sc := meta_mod.size_to_class(n)
+    glue.rdlock()
+    idx := alloc_slot(sc, n)
+    if idx < 0 {
+        glue.unlock()
+        return null
+    }
+
+    g := meta_mod.ctx.active[sc.(usize)]
+    ctr := meta_mod.ctx.mmap_counter.(i32)
+    glue.unlock()
+
+    return meta_mod.enframe(g, idx, n, ctr).^?*void
+}

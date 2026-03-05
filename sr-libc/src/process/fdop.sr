@@ -1,0 +1,20 @@
+package libc
+
+// Derived from musl-1.2.5/src/process/fdop.h
+
+FDOP_CLOSE :: 1
+FDOP_DUP2 :: 2
+FDOP_OPEN :: 3
+FDOP_CHDIR :: 4
+FDOP_FCHDIR :: 5
+
+fdop :: struct {
+    next: *fdop,
+    prev: *fdop,
+    cmd: i32,
+    fd: i32,
+    srcfd: i32,
+    oflag: i32,
+    mode: mode_t,
+    path: [0]u8,
+}

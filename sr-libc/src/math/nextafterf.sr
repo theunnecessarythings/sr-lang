@@ -1,0 +1,31 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/nextafterf.c.
+
+libm :: import "libc/src/math/libm_internal"
+basic :: import "libc/src/math/basic"
+
+nextafterf :: proc(x: f32, y: f32) f32 {
+    ux := x.^u32
+    uy := y.^u32
+    ax: u32
+    ay: u32
+    e: u32
+
+    if basic.isnanf(x) != 0 or basic.isnanf(y) != 0 { return x + y }
+    if ux == uy { return y }
+    ax = ux & 0x7fffffff
+    ay = uy & 0x7fffffff
+    if ax == 0 {
+        if ay == 0 { return y }
+        ux = (uy & 0x80000000) | 1
+    } else if ax > ay or ((ux ^ uy) & 0x80000000) != 0 {
+        ux -= 1
+    } else {
+        ux += 1
+    }
+    e = ux & 0x7f800000
+    if e == 0x7f800000 { libm.fp_force_evalf(x + x) }
+    if e == 0 { libm.fp_force_evalf(x * x + (ux.^f32) * (ux.^f32)) }
+    return ux.^f32
+}

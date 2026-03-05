@@ -1,0 +1,48 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/getpwent.c
+
+pwd_h :: import "libc/include/pwd"
+errno_h :: import "libc/include/errno"
+fopen_mod :: import "libc/src/stdio/fopen"
+fclose_mod :: import "libc/src/stdio/fclose"
+rewind_mod :: import "libc/src/stdio/rewind"
+getpwent_a :: import "libc/src/passwd/getpwent_a"
+getpw_a :: import "libc/src/passwd/getpw_a"
+
+__pw_file: *alltypes.FILE = null
+__pw_line: [1024]u8
+__pw_res: pwd_h.passwd
+
+setpwent :: proc() void {
+    if __pw_file == null {
+        __pw_file = fopen_mod.fopen("/etc/passwd", "r")
+        return
+    }
+    rewind_mod.rewind(__pw_file)
+}
+
+getpwent :: proc() *pwd_h.passwd {
+    if __pw_file == null {
+        __pw_file = fopen_mod.fopen("/etc/passwd", "r")
+        if __pw_file == null { return null }
+    }
+    res: *pwd_h.passwd = null
+    r := getpwent_a.__getpwent_a(__pw_file, &__pw_res, &__pw_line[0], 1024, &res)
+    if r != 0 { return null }
+    return res
+}
+
+getpwuid :: proc(uid: uid_t) *pwd_h.passwd {
+    res: *pwd_h.passwd = null
+    r := getpw_a.__getpw_a(null, uid, &__pw_res, &__pw_line[0], 1024, &res)
+    if r != 0 { errno_h.errno().* = r; return null }
+    return res
+}
+
+getpwnam :: proc(name: *const u8) *pwd_h.passwd {
+    res: *pwd_h.passwd = null
+    r := getpw_a.__getpw_a(name, 0xffffffff, &__pw_res, &__pw_line[0], 1024, &res)
+    if r != 0 { errno_h.errno().* = r; return null }
+    return res
+}

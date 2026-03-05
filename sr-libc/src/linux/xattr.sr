@@ -1,0 +1,66 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/xattr.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+getxattr :: proc(path: *const u8, name: *const u8, value: *void, size: usize) isize {
+    r := sc.syscall4_ret(nums.SYS_getxattr.(i64), path.^usize.(i64), name.^usize.(i64), value.^usize.(i64), size.(i64))
+    return r.(isize)
+}
+
+lgetxattr :: proc(path: *const u8, name: *const u8, value: *void, size: usize) isize {
+    r := sc.syscall4_ret(nums.SYS_lgetxattr.(i64), path.^usize.(i64), name.^usize.(i64), value.^usize.(i64), size.(i64))
+    return r.(isize)
+}
+
+fgetxattr :: proc(filedes: i32, name: *const u8, value: *void, size: usize) isize {
+    r := sc.syscall4_ret(nums.SYS_fgetxattr.(i64), filedes.(i64), name.^usize.(i64), value.^usize.(i64), size.(i64))
+    return r.(isize)
+}
+
+listxattr :: proc(path: *const u8, list: *u8, size: usize) isize {
+    r := sc.syscall3_ret(nums.SYS_listxattr.(i64), path.^usize.(i64), list.^usize.(i64), size.(i64))
+    return r.(isize)
+}
+
+llistxattr :: proc(path: *const u8, list: *u8, size: usize) isize {
+    r := sc.syscall3_ret(nums.SYS_llistxattr.(i64), path.^usize.(i64), list.^usize.(i64), size.(i64))
+    return r.(isize)
+}
+
+flistxattr :: proc(filedes: i32, list: *u8, size: usize) isize {
+    r := sc.syscall3_ret(nums.SYS_flistxattr.(i64), filedes.(i64), list.^usize.(i64), size.(i64))
+    return r.(isize)
+}
+
+setxattr :: proc(path: *const u8, name: *const u8, value: *const void, size: usize, flags: i32) i32 {
+    r := sc.syscall5_ret(nums.SYS_setxattr.(i64), path.^usize.(i64), name.^usize.(i64), value.^usize.(i64), size.(i64), flags.(i64))
+    return r.(i32)
+}
+
+lsetxattr :: proc(path: *const u8, name: *const u8, value: *const void, size: usize, flags: i32) i32 {
+    r := sc.syscall5_ret(nums.SYS_lsetxattr.(i64), path.^usize.(i64), name.^usize.(i64), value.^usize.(i64), size.(i64), flags.(i64))
+    return r.(i32)
+}
+
+fsetxattr :: proc(filedes: i32, name: *const u8, value: *const void, size: usize, flags: i32) i32 {
+    r := sc.syscall5_ret(nums.SYS_fsetxattr.(i64), filedes.(i64), name.^usize.(i64), value.^usize.(i64), size.(i64), flags.(i64))
+    return r.(i32)
+}
+
+removexattr :: proc(path: *const u8, name: *const u8) i32 {
+    r := sc.syscall2_ret(nums.SYS_removexattr.(i64), path.^usize.(i64), name.^usize.(i64))
+    return r.(i32)
+}
+
+lremovexattr :: proc(path: *const u8, name: *const u8) i32 {
+    r := sc.syscall2_ret(nums.SYS_lremovexattr.(i64), path.^usize.(i64), name.^usize.(i64))
+    return r.(i32)
+}
+
+fremovexattr :: proc(fd: i32, name: *const u8) i32 {
+    r := sc.syscall2_ret(nums.SYS_fremovexattr.(i64), fd.(i64), name.^usize.(i64))
+    return r.(i32)
+}

@@ -1,0 +1,122 @@
+package libc
+
+// Derived from musl-1.2.5/include/resolv.h (subset used by musl).
+
+MAXNS :: 3
+MAXDFLSRCH :: 3
+MAXDNSRCH :: 6
+LOCALDOMAINPARTS :: 2
+
+RES_TIMEOUT :: 5
+MAXRESOLVSORT :: 10
+RES_MAXNDOTS :: 15
+RES_MAXRETRANS :: 30
+RES_MAXRETRY :: 5
+RES_DFLRETRY :: 2
+RES_MAXTIME :: 65535
+
+__res_state :: struct {
+    retrans: i32,
+    retry: i32,
+    options: usize,
+    nscount: i32,
+    nsaddr_list: [MAXNS]sockaddr_in,
+    id: u16,
+    dnsrch: [MAXDNSRCH + 1]*u8,
+    defdname: [256]u8,
+    pfcode: usize,
+    ndots: u32,
+    nsort: u32,
+    ipv6_unavail: u32,
+    unused: u32,
+    sort_list: [MAXRESOLVSORT]struct { addr: in_addr, mask: u32 },
+    qhook: *void,
+    rhook: *void,
+    res_h_errno: i32,
+    _vcsock: i32,
+    _flags: u32,
+    _u: union {
+        pad: [52]u8,
+        _ext: struct {
+            nscount: u16,
+            nsmap: [MAXNS]u16,
+            nssocks: [MAXNS]i32,
+            nscount6: u16,
+            nsinit: u16,
+            nsaddrs: [MAXNS]*sockaddr_in6,
+            _initstamp: [2]u32,
+        },
+    },
+}
+
+res_state :: *__res_state
+
+__RES :: 19960801
+
+_PATH_RESCONF :: "/etc/resolv.conf"
+
+res_sym :: struct {
+    number: i32,
+    name: *u8,
+    humanname: *u8,
+}
+
+RES_F_VC :: 0x00000001
+RES_F_CONN :: 0x00000002
+RES_F_EDNS0ERR :: 0x00000004
+
+RES_EXHAUSTIVE :: 0x00000001
+
+RES_INIT :: 0x00000001
+RES_DEBUG :: 0x00000002
+RES_AAONLY :: 0x00000004
+RES_USEVC :: 0x00000008
+RES_PRIMARY :: 0x00000010
+RES_IGNTC :: 0x00000020
+RES_RECURSE :: 0x00000040
+RES_DEFNAMES :: 0x00000080
+RES_STAYOPEN :: 0x00000100
+RES_DNSRCH :: 0x00000200
+RES_INSECURE1 :: 0x00000400
+RES_INSECURE2 :: 0x00000800
+RES_NOALIASES :: 0x00001000
+RES_USE_INET6 :: 0x00002000
+RES_ROTATE :: 0x00004000
+RES_NOCHECKNAME :: 0x00008000
+RES_KEEPTSIG :: 0x00010000
+RES_BLAST :: 0x00020000
+RES_USEBSTRING :: 0x00040000
+RES_NOIP6DOTINT :: 0x00080000
+RES_USE_EDNS0 :: 0x00100000
+RES_SNGLKUP :: 0x00200000
+RES_SNGLKUPREOP :: 0x00400000
+RES_USE_DNSSEC :: 0x00800000
+
+RES_DEFAULT :: (RES_RECURSE | RES_DEFNAMES | RES_DNSRCH | RES_NOIP6DOTINT)
+
+RES_PRF_STATS :: 0x00000001
+RES_PRF_UPDATE :: 0x00000002
+RES_PRF_CLASS :: 0x00000004
+RES_PRF_CMD :: 0x00000008
+RES_PRF_QUES :: 0x00000010
+RES_PRF_ANS :: 0x00000020
+RES_PRF_AUTH :: 0x00000040
+RES_PRF_ADD :: 0x00000080
+RES_PRF_HEAD1 :: 0x00000100
+RES_PRF_HEAD2 :: 0x00000200
+RES_PRF_TTLID :: 0x00000400
+RES_PRF_HEADX :: 0x00000800
+RES_PRF_QUERY :: 0x00001000
+RES_PRF_REPLY :: 0x00002000
+RES_PRF_INIT :: 0x00004000
+
+__res_state :: proc() * __res_state
+res_init :: proc() i32
+res_query :: proc(dname: *const u8, class: i32, type: i32, answer: *u8, anslen: i32) i32
+res_querydomain :: proc(name: *const u8, domain: *const u8, class: i32, type: i32, answer: *u8, anslen: i32) i32
+res_search :: proc(name: *const u8, class: i32, type: i32, answer: *u8, anslen: i32) i32
+res_mkquery :: proc(op: i32, dname: *const u8, class: i32, type: i32, data: *const u8, datalen: i32, newrr: *const u8, buf: *u8, buflen: i32) i32
+res_send :: proc(msg: *const u8, msglen: i32, answer: *u8, anslen: i32) i32
+dn_comp :: proc(src: *const u8, dst: *u8, space: i32, dnptrs: **u8, lastdnptr: **u8) i32
+dn_expand :: proc(base: *const u8, end: *const u8, src: *const u8, dest: *u8, space: i32) i32
+dn_skipname :: proc(s: *const u8, end: *const u8) i32

@@ -1,0 +1,19 @@
+package libc
+
+// Derived from musl-1.2.5/src/locale/wcscoll.c
+
+// C locale collation: simple lexicographic compare.
+
+__wcscoll_l :: proc(l: *const wchar_t, r: *const wchar_t, locale: locale_t) i32 {
+    _ = locale
+    i: usize = 0
+    while l[i] != 0 and r[i] != 0 {
+        if l[i] != r[i] { return l[i].(i32) - r[i].(i32) }
+        i += 1
+    }
+    return l[i].(i32) - r[i].(i32)
+}
+
+wcscoll :: proc(l: *const wchar_t, r: *const wchar_t) i32 {
+    return __wcscoll_l(l, r, null)
+}

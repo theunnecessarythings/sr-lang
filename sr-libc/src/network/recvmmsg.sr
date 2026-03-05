@@ -1,0 +1,21 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/recvmmsg.c (syscall path)
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+sysconf_mod :: import "libc/src/conf/sysconf"
+
+recvmmsg :: proc(fd: i32, msgvec: *mmsghdr, vlen: u32, flags: u32, timeout: *timespec) i32 {
+    v := vlen
+    if v > sysconf_mod.IOV_MAX.(u32) { v = sysconf_mod.IOV_MAX.(u32) }
+    i: u32 = 0
+    while i < v {
+        msgvec[i.(usize)].msg_hdr.__pad1 = 0
+        msgvec[i.(usize)].msg_hdr.__pad2 = 0
+        i += 1
+    }
+    t := if timeout == null { 0 } else { timeout.^usize.(i64) }
+    r := sc.syscall5_ret(nums.SYS_recvmmsg.(i64), fd.(i64), msgvec.^usize.(i64), v.(i64), flags.(i64), t)
+    return r.(i32)
+}

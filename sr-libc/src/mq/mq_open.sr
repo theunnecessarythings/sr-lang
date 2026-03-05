@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/mq/mq_open.c (syscall wrapper).
+
+mq_h :: import "libc/include/mqueue"
+nums :: import "libc/include/syscall"
+sc :: import "libc/src/syscall/syscall"
+
+mq_open :: proc(name: *const u8, flags: i32, mode: mode_t, attr: *const mq_h.mq_attr) mq_h.mqd_t {
+    r := sc.syscall4_ret(
+        nums.SYS_mq_open.(i64),
+        name.^usize.(i64),
+        flags.(i64),
+        mode.(i64),
+        attr.^usize.(i64),
+    )
+    return r.(i32)
+}

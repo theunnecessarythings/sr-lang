@@ -1,0 +1,7 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/cnd_destroy.c
+
+cnd_destroy :: proc(c: *cnd_t) void {
+    // For private condition variables this is a no-op.
+}

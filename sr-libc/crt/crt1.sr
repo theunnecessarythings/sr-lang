@@ -1,0 +1,23 @@
+package libc
+
+// Minimal crt1 for sr-libc (x86_64, bootstrap-only).
+// TODO: provide real _start in arch/x86_64 using asm and proper stack alignment.
+
+libc_start_mod :: import "libc/src/env/__libc_start_main"
+
+// User entrypoint shim injected by compiler in --sr-libc mode.
+__sr_entry_main :: extern fn(argc: i32, argv: **u8, envp: **u8) i32
+
+// Dummy init/fini placeholders (weak in musl)
+_init :: proc() {}
+_fini :: proc() {}
+
+// _start_c expects the initial stack pointer (argc at sp[0])
+@[export_name="_start_c"]
+_start_c :: proc(sp: *usize) void {
+    argc := sp.*
+    sp_u := sp.^usize
+    argv_u := sp_u + sizeof(usize).(usize)
+    argv := argv_u.^**u8
+    _ = libc_start_mod.__libc_start_main(__sr_entry_main, argc.(i32), argv, _init, _fini, _fini)
+}

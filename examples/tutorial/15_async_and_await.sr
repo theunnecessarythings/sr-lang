@@ -1,0 +1,27 @@
+package main
+
+io :: import "std/io"
+
+User :: struct { id: i32, name: string }
+
+fetch_user :: async proc(id: i32) User {
+    io.println("fetch_user(%d)", id)
+    return User{ id: id, name: "Ada" }
+}
+
+fetch_friends :: async proc(user: User) []User {
+    io.println("friends for %s", user.name)
+    return [User{ id: 2, name: "Bea" }, User{ id: 3, name: "Cy" }]
+}
+
+get_friends :: async proc(id: i32) []User {
+    u := fetch_user(id).await
+    return fetch_friends(u).await
+}
+
+main :: proc() {
+    // Question: How do we wait on an async call?
+    // Answer: Use `.await`.
+    friends := get_friends(1).await
+    io.println("count=%d", friends.len)
+}

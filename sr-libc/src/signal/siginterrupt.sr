@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/siginterrupt.c
+
+sig_h :: import "libc/include/signal"
+sigaction_mod :: import "libc/src/signal/sigaction"
+
+siginterrupt :: proc(sig: i32, flag: i32) i32 {
+    sa: sig_h.sigaction
+    if sigaction_mod.__sigaction(sig, null, &sa) < 0 { return -1 }
+    if flag != 0 {
+        sa.sa_flags &= ~sig_h.SA_RESTART.(u64)
+    } else {
+        sa.sa_flags |= sig_h.SA_RESTART.(u64)
+    }
+    return sigaction_mod.__sigaction(sig, &sa, null)
+}

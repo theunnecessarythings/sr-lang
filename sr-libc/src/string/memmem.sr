@@ -1,0 +1,26 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/memmem.c (portable fallback).
+
+memcmp_mod :: import "libc/src/string/memcmp"
+
+memmem :: proc(haystack: *const void, hlen: usize, needle: *const void, nlen: usize) ?*void {
+    if nlen == 0 { return haystack.^?*void }
+    if hlen < nlen { return null }
+
+    h := haystack.^*const u8
+    n := needle.^*const u8
+    first := n[0]
+
+    i: usize = 0
+    end := hlen - nlen
+    while i <= end {
+        if h[i] == first {
+            if memcmp_mod.memcmp((&h[i]).^*const void, n.^*const void, nlen) == 0 {
+                return (&h[i]).^?*void
+            }
+        }
+        i += 1
+    }
+    return null
+}

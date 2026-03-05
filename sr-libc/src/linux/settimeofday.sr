@@ -1,0 +1,22 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/settimeofday.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+settimeofday :: proc(tv: ?*const timeval, tz: ?*const timezone) i32 {
+    tvp := if tv == null { 0 } else { tv.^usize }
+    tzp := if tz == null { 0 } else { tz.^usize }
+    r := sc.syscall2_ret(nums.SYS_settimeofday.(i64), tvp.(i64), tzp.(i64))
+    return r.(i32)
+}
+
+// clock_settime for CLOCK_REALTIME uses settimeofday
+clock_settime :: proc(clock: i32, timespec: *const timespec) i32 {
+    if clock != 0 { // CLOCK_REALTIME == 0
+        return -1
+    }
+    tv := timeval{ tv_sec: timespec.*.tv_sec, tv_usec: timespec.*.tv_nsec / 1000 }
+    return settimeofday(&tv, null)
+}

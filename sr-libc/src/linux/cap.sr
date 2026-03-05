@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/cap.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+capset :: proc(hdrp: *void, datap: *void) i32 {
+    r := sc.syscall2_ret(nums.SYS_capset.(i64), hdrp.^usize.(i64), datap.^usize.(i64))
+    return r.(i32)
+}
+
+capget :: proc(hdrp: *void, datap: *void) i32 {
+    r := sc.syscall2_ret(nums.SYS_capget.(i64), hdrp.^usize.(i64), datap.^usize.(i64))
+    return r.(i32)
+}

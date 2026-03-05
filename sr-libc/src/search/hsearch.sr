@@ -1,0 +1,152 @@
+package libc
+
+// Derived from musl-1.2.5/src/search/hsearch.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <stdlib.h>
+// #include <string.h>
+// #include <search.h>
+
+calloc_mod :: import "libc/src/malloc/calloc"
+free_mod :: import "libc/src/malloc/free"
+strcmp_mod :: import "libc/src/string/strcmp"
+
+MINSIZE :: 8
+MAXSIZE :: ((~0).(usize) / 2 + 1)
+
+htab: hsearch_data
+
+keyhash :: proc(k: *u8) usize {
+    p := k
+    h: usize = 0
+    while p.* != 0 {
+        h = 31 * h + p.*.(usize)
+        p = (p.^usize + 1).(usize).^*u8
+    }
+    return h
+}
+
+resize :: proc(nel: usize, htab: *hsearch_data) i32 {
+    newsize: usize = 0
+    oldsize := htab.__tab.mask + 1
+    oldtab := htab.__tab.entries
+
+    n := nel
+    if n > MAXSIZE { n = MAXSIZE }
+    newsize = MINSIZE
+    while newsize < n { newsize *= 2 }
+
+    htab.__tab.entries = calloc_mod.calloc(newsize, sizeof(ENTRY)).(^*ENTRY)
+    if htab.__tab.entries == null {
+        htab.__tab.entries = oldtab
+        return 0
+    }
+    htab.__tab.mask = newsize - 1
+    if oldtab == null { return 1 }
+
+    idx: usize = 0
+    while idx < oldsize {
+        e := (oldtab.^usize + idx * sizeof(ENTRY)).(usize).^*ENTRY
+        if e.key != null {
+            i := keyhash(e.key)
+            j: usize = 1
+            while true {
+                newe := (htab.__tab.entries.^usize + (i & htab.__tab.mask) * sizeof(ENTRY)).(usize).^*ENTRY
+                if newe.key == null {
+                    newe.* = e.*
+                    break
+                }
+                i += j
+                j += 1
+            }
+        }
+        idx += 1
+    }
+    free_mod.free(oldtab.^*void)
+    return 1
+}
+
+hcreate :: proc(nel: usize) i32 {
+    return __hcreate_r(nel, &htab)
+}
+
+hdestroy :: proc() void {
+    __hdestroy_r(&htab)
+}
+
+lookup :: proc(key: *u8, hash: usize, htab: *hsearch_data) *ENTRY {
+    i := hash
+    j: usize = 1
+    while true {
+        e := (htab.__tab.entries.^usize + (i & htab.__tab.mask) * sizeof(ENTRY)).(usize).^*ENTRY
+        if e.key == null || strcmp_mod.strcmp(e.key, key) == 0 {
+            return e
+        }
+        i += j
+        j += 1
+    }
+}
+
+hsearch :: proc(item: ENTRY, action: ACTION) *ENTRY {
+    e: *ENTRY = null
+    _ = __hsearch_r(item, action, &e, &htab)
+    return e
+}
+
+__hcreate_r :: proc(nel: usize, htab: *hsearch_data) i32 {
+    htab.__tab = calloc_mod.calloc(1, sizeof(__tab)).(^*__tab)
+    if htab.__tab == null { return 0 }
+    r := resize(nel, htab)
+    if r == 0 {
+        free_mod.free(htab.__tab.^*void)
+        htab.__tab = null
+    }
+    return r
+}
+
+hcreate_r :: proc(nel: usize, htab: *hsearch_data) i32 {
+    return __hcreate_r(nel, htab)
+}
+
+__hdestroy_r :: proc(htab: *hsearch_data) void {
+    if htab.__tab != null {
+        free_mod.free(htab.__tab.entries.^*void)
+    }
+    free_mod.free(htab.__tab.^*void)
+    htab.__tab = null
+}
+
+hdestroy_r :: proc(htab: *hsearch_data) void {
+    __hdestroy_r(htab)
+}
+
+__hsearch_r :: proc(item: ENTRY, action: ACTION, retval: **ENTRY, htab: *hsearch_data) i32 {
+    hash := keyhash(item.key)
+    e := lookup(item.key, hash, htab)
+
+    if e.key != null {
+        retval.* = e
+        return 1
+    }
+    if action == ACTION.FIND {
+        retval.* = null
+        return 0
+    }
+    e.* = item
+    htab.__tab.used += 1
+    if htab.__tab.used > htab.__tab.mask - htab.__tab.mask / 4 {
+        if resize(2 * htab.__tab.used, htab) == 0 {
+            htab.__tab.used -= 1
+            e.key = null
+            retval.* = null
+            return 0
+        }
+        e = lookup(item.key, hash, htab)
+    }
+    retval.* = e
+    return 1
+}
+
+hsearch_r :: proc(item: ENTRY, action: ACTION, retval: **ENTRY, htab: *hsearch_data) i32 {
+    return __hsearch_r(item, action, retval, htab)
+}

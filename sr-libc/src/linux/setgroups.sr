@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/setgroups.c (simplified syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+setgroups :: proc(count: usize, list: *const gid_t) i32 {
+    r := sc.syscall2_ret(nums.SYS_setgroups.(i64), count.(i64), list.^usize.(i64))
+    return r.(i32)
+}

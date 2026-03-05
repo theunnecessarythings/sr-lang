@@ -1,8 +1,8 @@
-package literals
+package main
 
 // Literals
 
-literals::proc() {
+main :: proc() {
   // Integer literals
   int1 := 123
   int2 := 0x_FF_00
@@ -16,9 +16,21 @@ literals::proc() {
   // Character and string literals
   char1 := 'a'
   str1 := "Hello, world!\n"
-  raw_str := r#"This is a raw string."# 
+  raw_str := r#"This is a raw string."#
 
   // Boolean literals
   true_val := true
   false_val := false
+
+  _ = int1
+  _ = int2
+  _ = int3
+  _ = int4
+  _ = float1
+  _ = float2
+  _ = char1
+  _ = str1
+  _ = raw_str
+  _ = true_val
+  _ = false_val
 }

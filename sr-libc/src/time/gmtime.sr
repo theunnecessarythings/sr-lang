@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/time/gmtime.c
+
+alltypes :: import "libc/include/alltypes"
+
+__secs_to_tm :: extern proc(i64, *alltypes.tm) i32
+
+gmtime :: proc(t: *i64) *alltypes.tm {
+    tm: alltypes.tm  // Static buffer
+    _ = __secs_to_tm(t.*, &tm)
+    tm.tm_isdst = 0
+    return &tm
+}

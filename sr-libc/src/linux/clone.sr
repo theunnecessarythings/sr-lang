@@ -1,0 +1,34 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/clone.c (simplified, fixed-arg wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+err :: import "libc/include/errno"
+types :: import "libc/include/sys/types"
+
+clone :: proc(func: fn(?*void) i32, stack: ?*void, flags: i32, arg: ?*void, ptid: ?*types.alltypes.pid_t, tls: ?*void, ctid: ?*types.alltypes.pid_t) i32 {
+    if stack == null {
+        errp := err.__errno_location()
+        errp.* = err.EINVAL
+        return -1
+    }
+
+    ptid_ptr := if ptid == null { 0.(usize) } else { (ptid?).^usize }
+    ctid_ptr := if ctid == null { 0.(usize) } else { (ctid?).^usize }
+    tls_ptr := if tls == null { 0.(usize) } else { (tls?).^usize }
+
+    s_ptr := stack?
+    s_usize := s_ptr.^usize
+    s_i64 := s_usize.(i64)
+
+    r := sc.syscall5(nums.SYS_clone.(i64), flags.(i64), s_i64, ptid_ptr.(i64), ctid_ptr.(i64), tls_ptr.(i64))
+    if r < 0 {
+        return sc.__syscall_ret(r).(i32)
+    }
+    if r == 0 {
+        status := func(arg)
+        _ = sc.syscall1(nums.SYS_exit.(i64), status.(i64))
+    }
+    return r.(i32)
+}

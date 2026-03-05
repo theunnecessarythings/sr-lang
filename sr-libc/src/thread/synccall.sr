@@ -1,0 +1,114 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/synccall.c
+
+pthread_impl :: import "libc/src/internal/pthread_impl"
+sem_init_mod :: import "libc/src/thread/sem_init"
+sem_post_mod :: import "libc/src/thread/sem_post"
+sem_wait_mod :: import "libc/src/thread/sem_wait"
+sem_destroy_mod :: import "libc/src/thread/sem_destroy"
+sig_block :: import "libc/src/signal/block"
+sigaction_mod :: import "libc/src/signal/sigaction"
+sig_h :: import "libc/include/signal"
+string_h :: import "libc/src/string"
+cancel_mod :: import "libc/src/thread/pthread_setcancelstate"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+errno_mod :: import "libc/include/errno"
+libc_mod :: import "libc/src/internal/libc"
+tl_mod :: import "libc/src/thread/pthread_create"
+
+target_tid: i32
+callback: *proc(*void) void
+context: *void
+target_sem: sem_t
+caller_sem: sem_t
+exit_sem: sem_t
+
+dummy_0 :: proc() void {}
+
+dummy :: proc(p: *void) void {}
+
+handler :: proc(sig: i32) void {
+    if pthread_impl.__pthread_self().tid != target_tid { return }
+    old_errno := errno_mod.__errno_location().*
+    _ = sem_post_mod.sem_post(&caller_sem)
+    _ = sem_wait_mod.sem_wait(&target_sem)
+    callback(context)
+    _ = sem_post_mod.sem_post(&caller_sem)
+    _ = sem_wait_mod.sem_wait(&exit_sem)
+    _ = sem_post_mod.sem_post(&caller_sem)
+    errno_mod.__errno_location().* = old_errno
+}
+
+__synccall :: proc(func: *proc(*void) void, ctx: *void) void {
+    oldmask: alltypes.sigset_t
+    cs: i32
+    i: i32
+    r: i32
+    sa: sig_h.sigaction
+    self := pthread_impl.__pthread_self()
+    td := self
+    count: i32 = 0
+
+    sig_block.__block_app_sigs(&oldmask)
+    tl_mod.__tl_lock()
+    sig_block.__block_all_sigs(null)
+    _ = cancel_mod.__pthread_setcancelstate(cancel_mod.PTHREAD_CANCEL_DISABLE, &cs)
+
+    _ = sem_init_mod.sem_init(&target_sem, 0, 0)
+    _ = sem_init_mod.sem_init(&caller_sem, 0, 0)
+    _ = sem_init_mod.sem_init(&exit_sem, 0, 0)
+
+    if libc_mod.__libc.threads_minus_1 == 0 ||
+       sc.syscall0(nums.SYS_gettid.(i64)).(i32) != self.tid {
+        goto single_threaded
+    }
+
+    callback = func
+    context = ctx
+
+    sa.sa_flags = (sig_h.SA_RESTART | sig_h.SA_ONSTACK).(u64)
+    sa.sa_handler = handler
+    _ = string_h.memset(&sa.sa_mask, -1, sizeof(alltypes.sigset_t))
+    _ = sigaction_mod.__libc_sigaction(pthread_impl.SIGSYNCCALL, &sa, null)
+
+    td = self.next
+    while td != self {
+        target_tid = td.tid
+        while true {
+            r = (-sc.syscall2(nums.SYS_tkill.(i64), td.tid.(i64), pthread_impl.SIGSYNCCALL.(i64))).(i32)
+            if r != errno_mod.EAGAIN { break }
+        }
+        if r != 0 {
+            callback = func = dummy
+            break
+        }
+        _ = sem_wait_mod.sem_wait(&caller_sem)
+        count += 1
+        td = td.next
+    }
+    target_tid = 0
+
+    for i = 0; i < count; i += 1 {
+        _ = sem_post_mod.sem_post(&target_sem)
+        _ = sem_wait_mod.sem_wait(&caller_sem)
+    }
+
+    sa.sa_handler = sig_h.SIG_IGN
+    _ = sigaction_mod.__libc_sigaction(pthread_impl.SIGSYNCCALL, &sa, null)
+
+single_threaded:
+    func(ctx)
+
+    for i = 0; i < count; i += 1 { _ = sem_post_mod.sem_post(&exit_sem) }
+    for i = 0; i < count; i += 1 { _ = sem_wait_mod.sem_wait(&caller_sem) }
+
+    _ = sem_destroy_mod.sem_destroy(&caller_sem)
+    _ = sem_destroy_mod.sem_destroy(&target_sem)
+    _ = sem_destroy_mod.sem_destroy(&exit_sem)
+
+    _ = cancel_mod.__pthread_setcancelstate(cs, null)
+    tl_mod.__tl_unlock()
+    sig_block.__restore_sigs(&oldmask)
+}

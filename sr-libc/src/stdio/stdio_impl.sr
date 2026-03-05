@@ -1,0 +1,26 @@
+package libc
+
+// Derived from musl-1.2.5/src/internal/stdio_impl.h (partial).
+
+_stdio :: import "libc/include/stdio"
+
+alltypes :: import "libc/include/alltypes"
+
+F_PERM :: 1
+F_NORD :: 4
+F_NOWR :: 8
+F_EOF :: 16
+F_ERR :: 32
+F_SVB :: 64
+F_APP :: 128
+
+UNGET :: 8
+
+__lockfile :: proc(f: ?*alltypes.FILE) i32 {
+    _ = f
+    return 1
+}
+
+__unlockfile :: proc(f: ?*alltypes.FILE) void {
+    _ = f
+}

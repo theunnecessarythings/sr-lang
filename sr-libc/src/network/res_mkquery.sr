@@ -1,0 +1,57 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/res_mkquery.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <resolv.h>
+// #include <string.h>
+// #include <time.h>
+
+alltypes :: import "libc/include/alltypes"
+memset_mod :: import "libc/src/string/memset"
+memcpy_mod :: import "libc/src/string/memcpy"
+strnlen_mod :: import "libc/src/string/strnlen"
+
+__clock_gettime :: extern proc(i32, *alltypes.timespec) i32
+CLOCK_REALTIME :: 0
+
+__res_mkquery :: proc(op: i32, dname: *const u8, class: i32, type: i32, data: *const u8, datalen: i32, newrr: *const u8, buf: *u8, buflen: i32) i32 {
+    _ = data
+    _ = datalen
+    _ = newrr
+    q: [280]u8
+    ts: alltypes.timespec
+    l := strnlen_mod.strnlen(dname, 255)
+
+    if l != 0 && dname[l - 1] == '.'.(u8) { l -= 1 }
+    if l != 0 && dname[l - 1] == '.'.(u8) { return -1 }
+
+    n := (17 + l + if l != 0 { 1 } else { 0 }).(i32)
+    if l > 253 || buflen < n || op > 15 || class > 255 || type > 255 { return -1 }
+
+    _ = memset_mod.memset(&q[0], 0, n.(usize))
+    q[2] = (op * 8 + 1).(u8)
+    q[3] = 32
+    q[5] = 1
+    _ = memcpy_mod.memcpy((&q[13]).^*void, dname.^*const void, l)
+    i: usize = 13
+    while q[i] != 0 {
+        j := i
+        while q[j] != 0 && q[j] != '.'.(u8) { j += 1 }
+        if (j - i - 1).(u32) > 62 { return -1 }
+        q[i - 1] = (j - i).(u8)
+        i = j + 1
+    }
+    q[i + 1] = type.(u8)
+    q[i + 3] = class.(u8)
+
+    _ = __clock_gettime(CLOCK_REALTIME, &ts)
+    id := (ts.tv_nsec + ts.tv_nsec / 65536) & 0xffff
+    q[0] = (id / 256).(u8)
+    q[1] = id.(u8)
+
+    _ = memcpy_mod.memcpy(buf.^*void, &q[0], n.(usize))
+    return n
+}
+
+res_mkquery :: __res_mkquery

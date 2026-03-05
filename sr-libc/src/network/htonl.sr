@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/htonl.c
+
+htonl :: proc(n: u32) u32 {
+    // x86-64 is little endian, need to byte swap
+    return ((n & 0xFF) << 24) | 
+           ((n & 0xFF00) << 8) | 
+           ((n & 0xFF0000) >> 8) | 
+           ((n & 0xFF000000) >> 24)
+}

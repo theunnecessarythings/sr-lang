@@ -1,0 +1,32 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/res_query.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <resolv.h>
+// #include <netdb.h>
+
+netdb_h :: import "libc/include/netdb"
+h_errno_mod :: import "libc/src/network/h_errno"
+
+res_query :: proc(name: *const u8, class: i32, type: i32, dest: *u8, len: i32) i32 {
+    q: [280]u8
+    ql := __res_mkquery(0, name, class, type, null, 0, null, &q[0], 280)
+    if ql < 0 { return ql }
+    r := __res_send(&q[0], ql, dest, len)
+    if r < 12 {
+        h_errno_mod.h_errno().* = netdb_h.TRY_AGAIN
+        return -1
+    }
+    if (dest[3] & 15) == 3 {
+        h_errno_mod.h_errno().* = netdb_h.HOST_NOT_FOUND
+        return -1
+    }
+    if (dest[3] & 15) == 0 && dest[6] == 0 && dest[7] == 0 {
+        h_errno_mod.h_errno().* = netdb_h.NO_DATA
+        return -1
+    }
+    return r
+}
+
+res_search :: res_query

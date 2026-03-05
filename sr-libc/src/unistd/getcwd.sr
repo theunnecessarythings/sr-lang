@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/getcwd.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+getcwd :: proc(buf: *u8, size: usize) ?*u8 {
+    r := sc.syscall2_ret(nums.SYS_getcwd.(i64), buf.^usize.(i64), size.(i64))
+    if r < 0 { return null }
+    return buf
+}

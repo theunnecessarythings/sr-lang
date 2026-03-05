@@ -1,0 +1,40 @@
+package libc
+
+// Derived from musl-1.2.5/include/sys/wait.h
+
+alltypes :: import "libc/include/alltypes"
+res :: import "libc/include/sys/resource"
+sig :: import "libc/include/signal"
+
+idtype_t :: i32
+P_ALL :: 0
+P_PID :: 1
+P_PGID :: 2
+P_PIDFD :: 3
+
+wait :: proc(status: ?*i32) alltypes.pid_t
+waitpid :: proc(pid: alltypes.pid_t, status: ?*i32, options: i32) alltypes.pid_t
+waitid :: proc(type: idtype_t, id: id_t, info: *sig.siginfo_t, options: i32) i32
+
+wait3 :: proc(status: ?*i32, options: i32, usage: ?*res.rusage) alltypes.pid_t
+wait4 :: proc(pid: alltypes.pid_t, status: ?*i32, options: i32, usage: ?*res.rusage) alltypes.pid_t
+
+WNOHANG :: 1
+WUNTRACED :: 2
+WSTOPPED :: 2
+WEXITED :: 4
+WCONTINUED :: 8
+WNOWAIT :: 0x1000000
+
+__WNOTHREAD :: 0x20000000
+__WALL :: 0x40000000
+__WCLONE :: 0x80000000
+
+WEXITSTATUS :: proc(s: i32) i32 { return (s & 0xff00) >> 8 }
+WTERMSIG :: proc(s: i32) i32 { return s & 0x7f }
+WSTOPSIG :: proc(s: i32) i32 { return WEXITSTATUS(s) }
+WCOREDUMP :: proc(s: i32) i32 { return s & 0x80 }
+WIFEXITED :: proc(s: i32) bool { return WTERMSIG(s) == 0 }
+WIFSTOPPED :: proc(s: i32) bool { return (((s & 0xffff) * 0x10001u32) >> 8) > 0x7f00 }
+WIFSIGNALED :: proc(s: i32) bool { return ((s & 0xffff) - 1u32) < 0xffu32 }
+WIFCONTINUED :: proc(s: i32) bool { return s == 0xffff }

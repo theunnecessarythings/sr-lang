@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/sched/sched_yield.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sched.h>
+// #include <syscall.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+sched_yield :: proc() i32 {
+    return sc.syscall0_ret(nums.SYS_sched_yield.(i64)).(i32)
+}

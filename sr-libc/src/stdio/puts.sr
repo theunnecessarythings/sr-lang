@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/puts.c.
+
+puts :: proc(s: *const u8) i32 {
+    if fputs(s, stdout) != 0 { return EOF }
+    if fputc(10, stdout) == EOF { return EOF }
+    return 0
+}

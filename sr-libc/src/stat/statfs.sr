@@ -1,0 +1,17 @@
+package libc
+
+// Derived from musl-1.2.5/src/stat/statvfs.c (statfs syscall path).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+statfs_mod :: import "libc/include/sys/statfs"
+
+statfs :: proc(path: *const u8, buf: *statfs_mod.statfs) i32 {
+    r := sc.syscall2_ret(nums.SYS_statfs.(i64), path.^usize.(i64), buf.^usize.(i64))
+    return r.(i32)
+}
+
+fstatfs :: proc(fd: i32, buf: *statfs_mod.statfs) i32 {
+    r := sc.syscall2_ret(nums.SYS_fstatfs.(i64), fd.(i64), buf.^usize.(i64))
+    return r.(i32)
+}

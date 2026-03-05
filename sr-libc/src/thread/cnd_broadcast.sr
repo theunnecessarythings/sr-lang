@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/cnd_broadcast.c
+
+cond_mod :: import "libc/src/thread/pthread_cond_timedwait"
+
+thrd_success :: 0
+
+cnd_broadcast :: proc(c: *cnd_t) i32 {
+    _ = cond_mod.__private_cond_signal(c.^*pthread_cond_t, -1)
+    return thrd_success
+}

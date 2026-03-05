@@ -1,0 +1,35 @@
+package main
+
+io :: import "std/io"
+
+main :: proc() {
+    // Question: What numeric literals exist?
+    // Answer: decimal, hex, octal, binary, floats, and complex.
+    dec := 1_000_000
+    hex := 0xFF_EE
+    oct := 0o755
+    bin := 0b1010_0101
+
+    f1 := 3.14
+    f2 := 1.0e-3
+
+    c1: complex(f32) = (1.5 + 2.5i).(complex(f32))
+
+    // Question: How do we cast?
+    // Answer: Postfix cast operators.
+    as_i32: i32 = dec.(i32)
+    bits: u32 = 0x40490FDB
+    as_f32: f32 = bits.^f32
+
+    big: i64 = 99999
+    sat: i8 = big.|i8
+    wrap: u8 = (250 + 10).%u8
+    checked: ?i8 = big.?i8
+
+    io.println("%d %d %d %d", dec, hex, oct, bin)
+    io.println("%f %f", f1, f2)
+    io.println("%d %f", as_i32, as_f32)
+    io.println("%d %d", sat, wrap)
+    _ = c1
+    _ = checked
+}

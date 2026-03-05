@@ -1,0 +1,27 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/acoshl.c (f128 path).
+
+basic :: import "libc/src/math/basic"
+
+LN2 :: 0.693147180559945309417232121458176568
+
+acoshl :: proc(x: f128) f128 {
+    bits := x.^u128
+    exp := ((bits >> 112) & 0x7fff).(i32)
+    sign := ((bits >> 127) & 1) != 0
+
+    if exp < 0x3fff + 1 {
+        return log1pl(x - 1.0 + sqrtl((x - 1.0) * (x - 1.0) + 2.0 * (x - 1.0)))
+    }
+
+    if exp < 0x3fff + 32 {
+        return logl(2.0 * x - 1.0 / (x + sqrtl(x * x - 1.0)))
+    }
+
+    if sign {
+        return (x - x) / (x - x)
+    }
+
+    return logl(x) + LN2
+}

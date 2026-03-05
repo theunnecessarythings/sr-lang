@@ -1,0 +1,19 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/thrd_create.c
+
+create_mod :: import "libc/src/thread/pthread_create"
+errno_mod :: import "libc/include/errno"
+
+thrd_success :: 0
+thrd_nomem :: 3
+thrd_error :: 2
+
+thrd_create :: proc(thr: *thrd_t, func: thrd_start_t, arg: *void) i32 {
+    ret := create_mod.__pthread_create(thr.^*alltypes.pthread_t, create_mod.__ATTRP_C11_THREAD, func.(^*proc(*void) *void), arg)
+    switch ret {
+        0 => { return thrd_success }
+        errno_mod.EAGAIN => { return thrd_nomem }
+        else => { return thrd_error }
+    }
+}

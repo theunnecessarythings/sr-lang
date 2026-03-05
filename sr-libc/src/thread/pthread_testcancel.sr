@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_testcancel.c
+
+__testcancel :: proc() void {}
+
+__pthread_testcancel :: proc() void {
+    __testcancel()
+}
+
+pthread_testcancel :: proc() void {
+    __pthread_testcancel()
+}

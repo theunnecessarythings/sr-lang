@@ -1,0 +1,133 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/dn_comp.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <string.h>
+// #include <resolv.h>
+
+memcmp_mod :: import "libc/src/string/memcmp"
+memcpy_mod :: import "libc/src/string/memcpy"
+strnlen_mod :: import "libc/src/string/strnlen"
+
+getoffs :: proc(offs: *i16, base: *const u8, s: *const u8) i32 {
+    i: i32 = 0
+    p := s
+    while true {
+        while (p[0] & 0xc0) != 0 {
+            if (p[0] & 0xc0) != 0xc0 { return 0 }
+            p = (&base[(((p[0] & 0x3f).(usize) << 8) | p[1].(usize))]).^*u8
+        }
+        if p[0] == 0 { return i }
+        if (p.^usize - base.^usize) >= 0x4000 { return 0 }
+        offs[i.(usize)] = (p.^usize - base.^usize).(i16)
+        i += 1
+        p = (&p[(p[0] + 1).(usize)]).^*u8
+    }
+}
+
+getlens :: proc(lens: *u8, s: *const u8, l: i32) i32 {
+    i: i32 = 0
+    j: i32 = 0
+    k: i32 = 0
+    while true {
+        while j < l && s[j.(usize)] != '.'.(u8) { j += 1 }
+        if (j - k - 1).(u32) > 62 { return 0 }
+        lens[i.(usize)] = (j - k).(u8)
+        i += 1
+        if j == l { return i }
+        k = j + 1
+        j = k
+    }
+}
+
+match :: proc(offset: *i32, base: *const u8, dn: *const u8, end: *const u8, lens: *const u8, nlen: i32) i32 {
+    offs: [128]i16
+    noff := getoffs(&offs[0], base, dn)
+    if noff == 0 { return 0 }
+    m: i32 = 0
+    n := nlen
+    e := end
+    while true {
+        n -= 1
+        noff -= 1
+        l := lens[n.(usize)].(i32)
+        o := offs[noff.(usize)].(i32)
+        e = (e.^usize - l.(usize)).(usize).^*u8
+        if l != base[o.(usize)].(i32) || memcmp_mod.memcmp((&base[(o + 1).(usize)]).^*const void, e.^*const void, l.(usize)) != 0 {
+            return m
+        }
+        offset.* = o
+        m += l
+        if n != 0 { m += 1 }
+        if n == 0 || noff == 0 { return m }
+        e = (e.^usize - 1).(usize).^*u8
+    }
+}
+
+dn_comp :: proc(src: *const u8, dst: *u8, space: i32, dnptrs: **u8, lastdnptr: **u8) i32 {
+    m: i32 = 0
+    offset: i32 = 0
+    bestlen: i32 = 0
+    bestoff: i32 = 0
+    lens: [127]u8
+
+    l := strnlen_mod.strnlen(src, 255)
+    if l != 0 && src[l - 1] == '.'.(u8) { l -= 1 }
+    if l > 253 || space <= 0 { return -1 }
+    if l == 0 {
+        dst[0] = 0
+        return 1
+    }
+
+    end := (&src[l]).^*u8
+    n := getlens(&lens[0], src, l.(i32))
+    if n == 0 { return -1 }
+
+    if dnptrs != null && dnptrs[0] != null {
+        p := (&dnptrs[1]).^**u8
+        while p[0] != null {
+            m = match(&offset, dnptrs[0], p[0], end, &lens[0], n)
+            if m > bestlen {
+                bestlen = m
+                bestoff = offset
+                if m == l.(i32) { break }
+            }
+            p = (&p[1]).^**u8
+        }
+    }
+
+    extra := if (bestlen - 1) < (l.(i32) - 1) { 1 } else { 0 }
+    if space < (l.(i32) - bestlen + 2 + extra) { return -1 }
+
+    _ = memcpy_mod.memcpy((&dst[1]).^*void, src.^*const void, (l.(i32) - bestlen).(usize))
+    i: i32 = 0
+    j: i32 = 0
+    while i < (l.(i32) - bestlen) {
+        dst[i.(usize)] = lens[j.(usize)]
+        i += lens[j.(usize)].(i32) + 1
+        j += 1
+    }
+
+    if bestlen != 0 {
+        dst[i.(usize)] = (0xc0 | (bestoff >> 8)).(u8)
+        i += 1
+        dst[i.(usize)] = bestoff.(u8)
+        i += 1
+    } else {
+        dst[i.(usize)] = 0
+        i += 1
+    }
+
+    if i > 2 && lastdnptr != null && dnptrs != null && dnptrs[0] != null {
+        p := dnptrs
+        while p[0] != null { p = (&p[1]).^**u8 }
+        if (p.^usize + sizeof(*u8)) < lastdnptr.^usize {
+            p[0] = dst
+            p = (&p[1]).^**u8
+            p[0] = null
+        }
+    }
+
+    return i
+}

@@ -1,0 +1,64 @@
+package libc
+
+// Derived from musl-1.2.5/src/passwd/getgrent_a.c
+
+errno_h :: import "libc/include/errno"
+grp_h :: import "libc/include/grp"
+pwf :: import "libc/src/passwd/pwf"
+fgets_mod :: import "libc/src/stdio/fgets"
+ferror_mod :: import "libc/src/stdio/ferror"
+
+__getgrent_a :: proc(f: *alltypes.FILE, gr: *grp_h.group, line: *u8, size: usize, mem: *u8, nmem: usize, res: **grp_h.group) i32 {
+    if f == null || gr == null || line == null || mem == null || res == null {
+        return errno_h.EINVAL
+    }
+
+    s := fgets_mod.fgets(line, size.(i32), f)
+    if s == null {
+        res.* = null
+        return if ferror_mod.ferror(f) != 0 { errno_h.EIO } else { 0 }
+    }
+
+    p := line
+    gr.gr_name = p
+    p = pwf.split_field(p)
+    gr.gr_passwd = p
+    p = pwf.split_field(p)
+    gr.gr_gid = pwf.atou(p).(gid_t)
+    p = pwf.split_field(p)
+    pwf.strip_newline(p)
+
+    // parse members list into mem buffer (array of *u8)
+    max_ptrs := nmem / sizeof(*u8)
+    if max_ptrs == 0 { return errno_h.ERANGE }
+    mem_ptrs := mem.^**u8
+    count: usize = 0
+
+    if p[0] == 0 {
+        (memv.^*usize)[0] = 0
+        gr.gr_mem = memv.^**u8
+        res.* = gr
+        return 0
+    }
+
+    tok := p
+    while true {
+        if count + 1 >= max_ptrs { return errno_h.ERANGE }
+        mem_ptrs[count] = tok
+        count += 1
+        q := tok
+        while q[0] != 0 && q[0] != ',' {
+            q = (q.^usize + 1).(usize).^*u8
+        }
+        if q[0] == ',' {
+            q[0] = 0
+            tok = (q.^usize + 1).(usize).^*u8
+            continue
+        }
+        break
+    }
+    mem_ptrs[count] = null
+    gr.gr_mem = mem_ptrs
+    res.* = gr
+    return 0
+}

@@ -1,0 +1,21 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/sendmmsg.c
+
+sysconf_mod :: import "libc/src/conf/sysconf"
+sendmsg_mod :: import "libc/src/network/sendmsg"
+
+sendmmsg :: proc(fd: i32, msgvec: *mmsghdr, vlen: u32, flags: u32) i32 {
+    v := vlen
+    if v > sysconf_mod.IOV_MAX.(u32) { v = sysconf_mod.IOV_MAX.(u32) }
+    if v == 0 { return 0 }
+
+    i: u32 = 0
+    while i < v {
+        r := sendmsg_mod.sendmsg(fd, &msgvec[i.(usize)].msg_hdr, flags.(i32))
+        if r < 0 { return if i != 0 { i.(i32) } else { -1 } }
+        msgvec[i.(usize)].msg_len = r.(u32)
+        i += 1
+    }
+    return i.(i32)
+}

@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/fprintf.c.
+
+stdarg_mod :: import "libc/include/stdarg"
+
+fprintf :: proc(f: *alltypes.FILE, fmt: *const u8, args: any) i32 {
+    ap: stdarg_mod.va_list
+    stdarg_mod.va_start(&ap)
+    ret := vfprintf(f, fmt, ap)
+    stdarg_mod.va_end(&ap)
+    return ret
+}

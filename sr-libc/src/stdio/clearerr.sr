@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/clearerr.c.
+
+impl :: import "libc/src/stdio/stdio_impl"
+
+clearerr :: proc(f: *alltypes.FILE) void {
+    f.flags = f.flags & ~(impl.F_EOF.(u32) | impl.F_ERR.(u32))
+}

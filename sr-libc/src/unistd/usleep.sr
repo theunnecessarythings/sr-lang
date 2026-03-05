@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/usleep.c
+
+nanosleep_mod :: import "libc/src/unistd/nanosleep"
+alltypes :: import "libc/include/alltypes"
+
+usleep :: proc(useconds: u32) i32 {
+    tv: alltypes.timespec
+    tv.tv_sec = (useconds / 1000000).(i64)
+    tv.tv_nsec = ((useconds % 1000000) * 1000).(i64)
+    return nanosleep_mod.nanosleep(&tv, &tv)
+}

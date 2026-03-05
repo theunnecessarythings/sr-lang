@@ -1,0 +1,91 @@
+package libc
+
+// Derived from musl-1.2.5/include/stdio.h (partial).
+
+alltypes :: import "libc/include/alltypes"
+
+// Constants
+EOF :: -1
+
+SEEK_SET :: 0
+SEEK_CUR :: 1
+SEEK_END :: 2
+
+_IOFBF :: 0
+_IOLBF :: 1
+_IONBF :: 2
+
+BUFSIZ :: 1024
+FILENAME_MAX :: 4096
+FOPEN_MAX :: 1000
+TMP_MAX :: 10000
+L_tmpnam :: 20
+L_ctermid :: 20
+
+fpos_t :: struct { __opaque: [16]u8 }
+
+@[export_name="stdin"]
+stdin: ?*alltypes.FILE
+@[export_name="stdout"]
+stdout: ?*alltypes.FILE
+@[export_name="stderr"]
+stderr: ?*alltypes.FILE
+
+fopen :: proc(path: *const u8, mode: *const u8) *alltypes.FILE
+freopen :: proc(path: ?*const u8, mode: *const u8, f: *alltypes.FILE) *alltypes.FILE
+fclose :: proc(f: *alltypes.FILE) i32
+
+remove :: proc(path: *const u8) i32
+rename :: proc(old: *const u8, new: *const u8) i32
+
+feof :: proc(f: *alltypes.FILE) i32
+ferror :: proc(f: *alltypes.FILE) i32
+fflush :: proc(f: ?*alltypes.FILE) i32
+clearerr :: proc(f: *alltypes.FILE) void
+
+fseek :: proc(f: *alltypes.FILE, off: i64, whence: i32) i32
+ftell :: proc(f: *alltypes.FILE) i64
+fseeko :: proc(f: *alltypes.FILE, off: i64, whence: i32) i32
+ftello :: proc(f: *alltypes.FILE) i64
+rewind :: proc(f: *alltypes.FILE) void
+
+fread :: proc(dest: *void, size: usize, nmemb: usize, f: *alltypes.FILE) usize
+fwrite :: proc(src: *const void, size: usize, nmemb: usize, f: *alltypes.FILE) usize
+
+fgetc :: proc(f: *alltypes.FILE) i32
+getc :: proc(f: *alltypes.FILE) i32
+getchar :: proc() i32
+ungetc :: proc(c: i32, f: *alltypes.FILE) i32
+
+fputc :: proc(c: i32, f: *alltypes.FILE) i32
+putc :: proc(c: i32, f: *alltypes.FILE) i32
+putchar :: proc(c: i32) i32
+
+fgets :: proc(s: *u8, n: i32, f: *alltypes.FILE) ?*u8
+fputs :: proc(s: *const u8, f: *alltypes.FILE) i32
+puts :: proc(s: *const u8) i32
+
+printf :: proc(fmt: *const u8, any) i32
+fprintf :: proc(f: *alltypes.FILE, fmt: *const u8, any) i32
+sprintf :: proc(s: *u8, fmt: *const u8, any) i32
+snprintf :: proc(s: *u8, n: usize, fmt: *const u8, any) i32
+
+vprintf :: proc(fmt: *const u8, ap: alltypes.va_list) i32
+vfprintf :: proc(f: *alltypes.FILE, fmt: *const u8, ap: alltypes.va_list) i32
+vsprintf :: proc(s: *u8, fmt: *const u8, ap: alltypes.va_list) i32
+vsnprintf :: proc(s: *u8, n: usize, fmt: *const u8, ap: alltypes.va_list) i32
+
+scanf :: proc(fmt: *const u8, any) i32
+fscanf :: proc(f: *alltypes.FILE, fmt: *const u8, any) i32
+sscanf :: proc(s: *const u8, fmt: *const u8, any) i32
+
+vscanf :: proc(fmt: *const u8, ap: alltypes.va_list) i32
+vfscanf :: proc(f: *alltypes.FILE, fmt: *const u8, ap: alltypes.va_list) i32
+vsscanf :: proc(s: *const u8, fmt: *const u8, ap: alltypes.va_list) i32
+
+setvbuf :: proc(f: *alltypes.FILE, buf: ?*u8, mode: i32, size: usize) i32
+setbuf :: proc(f: *alltypes.FILE, buf: ?*u8) void
+setlinebuf :: proc(f: *alltypes.FILE) void
+
+fdopen :: proc(fd: i32, mode: *const u8) *alltypes.FILE
+fileno :: proc(f: *alltypes.FILE) i32

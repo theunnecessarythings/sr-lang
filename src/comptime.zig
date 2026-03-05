@@ -54,7 +54,7 @@ pub const ValueKind = enum(u8) {
 pub const ValueRows = struct {
     pub const Void = struct {};
     pub const Int = struct { value: i128 };
-    pub const Float = struct { value: f64 };
+    pub const Float = struct { value: f128 };
     pub const Bool = struct { value: bool };
     pub const String = struct { value: []const u8 };
 
@@ -416,14 +416,14 @@ pub const SpecializationRequest = struct {
 // Helper: Builtin Type Map
 // =============================
 
-const BuiltinTypeTag = enum { Bool, I8, I16, I32, I64, U8, U16, U32, U64, F32, F64, Usize, Char, String, Void, Any, Code };
+const BuiltinTypeTag = enum { Bool, I8, I16, I32, I64, U8, U16, U32, U64, F32, F64, F128, Usize, Char, String, Void, Any, Code };
 
 const builtin_type_map = std.StaticStringMap(BuiltinTypeTag).initComptime(.{
-    .{ "bool", .Bool }, .{ "i8", .I8 },         .{ "i16", .I16 },   .{ "i32", .I32 },
-    .{ "i64", .I64 },   .{ "u8", .U8 },         .{ "u16", .U16 },   .{ "u32", .U32 },
-    .{ "u64", .U64 },   .{ "f32", .F32 },       .{ "f64", .F64 },   .{ "usize", .Usize },
-    .{ "char", .Char }, .{ "string", .String }, .{ "void", .Void }, .{ "any", .Any },
-    .{ "Code", .Code },
+    .{ "bool", .Bool },   .{ "i8", .I8 },     .{ "i16", .I16 },       .{ "i32", .I32 },
+    .{ "i64", .I64 },     .{ "u8", .U8 },     .{ "u16", .U16 },       .{ "u32", .U32 },
+    .{ "u64", .U64 },     .{ "f32", .F32 },   .{ "f64", .F64 },       .{ "f128", .F128 },
+    .{ "usize", .Usize }, .{ "char", .Char }, .{ "string", .String }, .{ "void", .Void },
+    .{ "any", .Any },     .{ "Code", .Code },
 });
 
 pub fn builtinTypeId(ts: *types.TypeStore, name: []const u8) ?types.TypeId {
@@ -440,6 +440,7 @@ pub fn builtinTypeId(ts: *types.TypeStore, name: []const u8) ?types.TypeId {
         .U64 => ts.tU64(),
         .F32 => ts.tF32(),
         .F64 => ts.tF64(),
+        .F128 => ts.tF128(),
         .Usize => ts.tUsize(),
         .Char => ts.tU32(),
         .String => ts.tString(),

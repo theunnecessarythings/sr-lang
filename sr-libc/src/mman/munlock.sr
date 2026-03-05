@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/mman/munlock.c
+
+syscall :: import "libc/src/syscall"
+
+SYS_munlock :: 150
+
+munlock :: proc(addr: *const void, len: usize) i32 {
+    return syscall.syscall2(SYS_munlock, addr.(u64), len).(i32)
+}

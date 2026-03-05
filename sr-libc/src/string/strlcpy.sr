@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/strlcpy.c.
+
+strlcpy :: proc(dst: *u8, src: *const u8, size: usize) usize {
+    i: usize = 0
+    if size != 0 {
+        while i + 1 < size and src[i] != 0 {
+            dst[i] = src[i]
+            i += 1
+        }
+        if size > 0 {
+            dst[i] = 0
+        }
+    }
+    while src[i] != 0 { i += 1 }
+    return i
+}

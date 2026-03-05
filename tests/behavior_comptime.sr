@@ -15,7 +15,6 @@ test "behavior: comptime block" {
 test "behavior: comptime assertion" {
     comptime {
         io.assert(1 + 1 == 2, "Comptime assertion failed")
-        io.print("Comptime assertion OK\n")
     }
 
     io.print("Runtime after comptime\n")

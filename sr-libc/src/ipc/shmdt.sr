@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/ipc/shmdt.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/shm.h>
+// #include <syscall.h>
+// #include <ipc.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+shmdt :: proc(addr: *const void) i32 {
+    return sc.syscall1_ret(nums.SYS_shmdt.(i64), addr.^usize.(i64)).(i32)
+}

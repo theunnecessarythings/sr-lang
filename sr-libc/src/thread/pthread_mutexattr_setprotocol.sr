@@ -1,0 +1,37 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_mutexattr_setprotocol.c
+
+atomic :: import "libc/src/internal/atomic"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+errno_mod :: import "libc/include/errno"
+attr_int :: import "libc/src/thread/pthread_attr_internal"
+
+FUTEX_LOCK_PI :: 6
+
+check_pi_result: i32 = -1
+
+pthread_mutexattr_setprotocol :: proc(a: *pthread_mutexattr_t, protocol: i32) i32 {
+    switch protocol {
+        attr_int.PTHREAD_PRIO_NONE => {
+            a.__attr &= ~8u32
+            return 0
+        }
+        attr_int.PTHREAD_PRIO_INHERIT => {
+            r := check_pi_result
+            if r < 0 {
+                lk: i32 = 0
+                r = (-sc.syscall4(nums.SYS_futex.(i64), (&lk).^usize.(i64), FUTEX_LOCK_PI.(i64), 0, 0)).(i32)
+                atomic.a_store((&check_pi_result).^*i32, r)
+            }
+            if r != 0 { return r }
+            a.__attr |= 8u32
+            return 0
+        }
+        attr_int.PTHREAD_PRIO_PROTECT => {
+            return errno_mod.ENOTSUP
+        }
+        else => { return errno_mod.EINVAL }
+    }
+}

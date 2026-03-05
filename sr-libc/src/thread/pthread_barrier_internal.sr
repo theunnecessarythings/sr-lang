@@ -1,0 +1,25 @@
+package libc
+
+// Internal layout helpers for pthread barrier (musl-compatible).
+
+pthread_barrier_u :: union {
+    __i: [4]i32,
+    __vi: [5]i32,
+    __p: [4]*void,
+    __opaque: [32]u8,
+}
+
+pthread_barrier_internal :: struct {
+    __u: pthread_barrier_u,
+}
+
+bar_internal :: fn(b: *pthread_barrier_t) *pthread_barrier_internal {
+    return b.^*pthread_barrier_internal
+}
+
+bar_lock :: fn(b: *pthread_barrier_t) *i32 { return &bar_internal(b).__u.__vi[0] }
+bar_waiters :: fn(b: *pthread_barrier_t) *i32 { return &bar_internal(b).__u.__vi[1] }
+bar_limit :: fn(b: *pthread_barrier_t) *i32 { return &bar_internal(b).__u.__i[2] }
+bar_count :: fn(b: *pthread_barrier_t) *i32 { return &bar_internal(b).__u.__vi[3] }
+bar_waiters2 :: fn(b: *pthread_barrier_t) *i32 { return &bar_internal(b).__u.__vi[4] }
+bar_inst :: fn(b: *pthread_barrier_t) **void { return &bar_internal(b).__u.__p[3] }

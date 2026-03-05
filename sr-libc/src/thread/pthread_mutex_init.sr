@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_mutex_init.c
+
+string_h :: import "libc/src/string"
+mutex_int :: import "libc/src/thread/pthread_mutex_internal"
+
+pthread_mutex_init :: proc(m: *alltypes.pthread_mutex_t, a: *const pthread_mutexattr_t) i32 {
+    _ = string_h.memset(m.^*void, 0, sizeof(alltypes.pthread_mutex_t))
+    if a != null {
+        mutex_int.m_type(m).* = a.__attr.(i32)
+    }
+    return 0
+}

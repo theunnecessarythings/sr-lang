@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/fenv/riscv32/fenv-sf.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <../fenv.c>
+
+// TODO: Manual translation needed - no functions detected
+// Original C code:
+/*
+#ifndef __riscv_flen
+#include "../fenv.c"
+#endif
+
+...
+*/

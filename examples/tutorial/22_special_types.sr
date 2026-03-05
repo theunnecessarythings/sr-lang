@@ -1,0 +1,25 @@
+package main
+
+io :: import "std/io"
+
+// Special types: simd, tensor, noreturn.
+
+never_returns :: proc() noreturn {
+    unreachable
+}
+
+main :: proc() {
+    // Question: What is a SIMD vector type?
+    // Answer: Use simd(T, N).
+    v: simd(f32, 4) = [1.0, 2.0, 3.0, 4.0]
+    _ = v
+
+    // Question: What is a tensor type?
+    // Answer: Use tensor(T, D1, D2, ...).
+    t: tensor(i32, 2, 2) = [[1, 2], [3, 4]]
+    io.println("t00=%d", t[0][0])
+
+    // Question: What does noreturn mean?
+    // Answer: The function never returns.
+    _ = never_returns
+}

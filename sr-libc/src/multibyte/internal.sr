@@ -1,0 +1,31 @@
+package libc
+
+// Derived from musl-1.2.5/src/multibyte/internal.c and internal.h.
+
+alltypes :: import "libc/include/alltypes"
+
+SA: u8 = 0xc2
+SB: u8 = 0xf4
+
+CODEUNIT :: proc(c: u8) alltypes.wchar_t { return ((0xdfff).(i32) & c.(i8).(i32)).(alltypes.wchar_t) }
+IS_CODEUNIT :: proc(c: alltypes.wchar_t) bool { return (c.(u32) - 0xdf80) < 0x80 }
+
+bittab: [51]u32 = [
+    0xc0000002,0xc0000003,0xc0000004,0xc0000005,0xc0000006,0xc0000007,
+    0xc0000008,0xc0000009,0xc000000a,0xc000000b,0xc000000c,0xc000000d,0xc000000e,0xc000000f,
+    0xc0000010,0xc0000011,0xc0000012,0xc0000013,0xc0000014,0xc0000015,0xc0000016,0xc0000017,
+    0xc0000018,0xc0000019,0xc000001a,0xc000001b,0xc000001c,0xc000001d,0xc000001e,0xc000001f,
+    0xff000000,0xff000001,0xff000002,0xff000003,0xff000004,0xff000005,0xff000006,0xff000007,
+    0xff000008,0xff000009,0xff00000a,0xff00000b,0xff00000c,0xff00000d,0xff00000e,0xff00000f,
+    0xfffc0000,0xfffc0001,0xfffc0002,0xfffc0003,0xfffc0004,
+]
+
+bittab_get :: proc(i: usize) u32 {
+    return bittab[i]
+}
+
+// OOB check: (((b>>3)-0x10) | ((b>>3)+((c)>>26))) & ~7
+OOB :: proc(c: u32, b: u8) bool {
+    x := ((((b >> 3).(i32) - 0x10) | ((b >> 3).(i32) + ((c >> 26).(i32)))) & (-8).(i32))
+    return x != 0
+}

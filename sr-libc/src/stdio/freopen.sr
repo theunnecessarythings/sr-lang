@@ -1,0 +1,59 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/freopen.c (simplified).
+
+fcntl_consts :: import "libc/include/fcntl"
+fcntl_mod :: import "libc/src/fcntl/fcntl"
+unistd :: import "libc/include/unistd"
+impl :: import "libc/src/stdio/stdio_impl"
+
+freopen :: proc(path: ?*const u8, mode: *const u8, f: *alltypes.FILE) *alltypes.FILE {
+    fl := __fmodeflags(mode)
+
+    if f == null { return null }
+
+    _ = __lockfile(f)
+    _ = fflush(f)
+
+    if path == null {
+        if (fl & fcntl_consts.O_CLOEXEC) != 0 {
+            _ = fcntl_mod.fcntl(f.fd, fcntl_consts.F_SETFD, fcntl_consts.FD_CLOEXEC.(usize))
+        }
+        fl = fl & ~(fcntl_consts.O_CREAT | fcntl_consts.O_EXCL | fcntl_consts.O_CLOEXEC)
+        if fcntl_mod.fcntl(f.fd, fcntl_consts.F_SETFL, fl.(usize)) < 0 {
+            _ = __unlockfile(f)
+            _ = fclose(f)
+            return null
+        }
+    } else {
+        f2 := fopen(path?, mode)
+        if f2 == null {
+            _ = __unlockfile(f)
+            _ = fclose(f)
+            return null
+        }
+        if f2.fd == f.fd {
+            f2.fd = -1
+        } else {
+            if unistd.dup3(f2.fd, f.fd, (fl & fcntl_consts.O_CLOEXEC)) < 0 {
+                _ = fclose(f2)
+                _ = __unlockfile(f)
+                _ = fclose(f)
+                return null
+            }
+        }
+
+        f.flags = (f.flags & impl.F_PERM.(u32)) | f2.flags
+        f.read = f2.read
+        f.write = f2.write
+        f.seek = f2.seek
+        f.close = f2.close
+
+        _ = fclose(f2)
+    }
+
+    f.mode = 0
+    f.locale = null
+    _ = __unlockfile(f)
+    return f
+}

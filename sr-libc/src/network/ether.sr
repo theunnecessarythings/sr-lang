@@ -1,0 +1,72 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/ether.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <stdlib.h>
+// #include <netinet/ether.h>
+// #include <stdio.h>
+
+strtoul_mod :: import "libc/src/stdlib/strtol"
+
+sprintf :: extern proc(*u8, *const u8, ...) i32
+
+ether_aton_r :: proc(x: *const u8, p_a: *ether_addr) *ether_addr {
+    a: ether_addr
+    y: *u8 = null
+    ii: i32 = 0
+    p := x
+    while ii < 6 {
+        if ii != 0 {
+            if p[0] != ':'.(u8) { return null }
+            p = (&p[1]).^*u8
+        }
+        n := strtoul_mod.strtoul(p, &y, 16)
+        p = y
+        if n > 0xff { return null }
+        a.ether_addr_octet[ii.(usize)] = n.(u8)
+        ii += 1
+    }
+    if p[0] != 0 { return null }
+    p_a.* = a
+    return p_a
+}
+
+ether_aton :: proc(x: *const u8) *ether_addr {
+    static_a: ether_addr
+    return ether_aton_r(x, &static_a)
+}
+
+ether_ntoa_r :: proc(p_a: *const ether_addr, x: *u8) *u8 {
+    y := x
+    ii: i32 = 0
+    while ii < 6 {
+        if ii == 0 {
+            x = (x.^usize + sprintf(x, "%.2X", p_a.ether_addr_octet[ii.(usize)]).(usize)).(usize).^*u8
+        } else {
+            x = (x.^usize + sprintf(x, ":%.2X", p_a.ether_addr_octet[ii.(usize)]).(usize)).(usize).^*u8
+        }
+        ii += 1
+    }
+    return y
+}
+
+ether_ntoa :: proc(p_a: *const ether_addr) *u8 {
+    static_x: [18]u8
+    return ether_ntoa_r(p_a, &static_x[0])
+}
+
+ether_line :: proc(l: *const u8, e: *ether_addr, hostname: *u8) i32 {
+    _ = l; _ = e; _ = hostname
+    return -1
+}
+
+ether_ntohost :: proc(hostname: *u8, e: *const ether_addr) i32 {
+    _ = hostname; _ = e
+    return -1
+}
+
+ether_hostton :: proc(hostname: *const u8, e: *ether_addr) i32 {
+    _ = hostname; _ = e
+    return -1
+}

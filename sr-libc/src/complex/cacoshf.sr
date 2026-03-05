@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/cacoshf.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+cacoshf :: proc(z: complex(f32)) complex(f32) {
+    zineg := signbitf(z.imag) != 0
+    z = cacosf(z)
+    if zineg {
+        return impl.cmplxf(z.imag, -z.real)
+    }
+    return impl.cmplxf(-z.imag, z.real)
+}

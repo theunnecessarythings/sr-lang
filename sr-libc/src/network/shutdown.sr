@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/shutdown.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sys/socket.h>
+// #include <syscall.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+shutdown :: proc(fd: i32, how: i32) i32 {
+    r := sc.syscall2_ret(nums.SYS_shutdown.(i64), fd.(i64), how.(i64))
+    return r.(i32)
+}

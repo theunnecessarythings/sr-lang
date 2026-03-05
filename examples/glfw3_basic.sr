@@ -22,8 +22,7 @@ main :: proc() {
     glfw.glfwWindowHint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
     glfw.glfwWindowHint(glfw.OPENGL_FORWARD_COMPAT, glfw.TRUE)
     // Create a windowed mode window and its OpenGL context
-    window := glfw.glfwCreateWindow(640, 480, "Hello GLFW", 0.^*void, 0.^*void)
-    if window.^i64 == 0 {
+    window := glfw.glfwCreateWindow(640, 480, "Hello GLFW".ptr, null, null) orelse {
         fmt.println("Failed to create GLFW window\n")
         description: *i8 = undefined
         errorCode := glfw.glfwGetError(&description)

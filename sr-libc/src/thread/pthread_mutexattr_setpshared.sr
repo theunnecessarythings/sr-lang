@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_mutexattr_setpshared.c
+
+errno_mod :: import "libc/include/errno"
+
+pthread_mutexattr_setpshared :: proc(a: *pthread_mutexattr_t, pshared: i32) i32 {
+    if pshared > 1 { return errno_mod.EINVAL }
+    a.__attr &= ~128u32
+    a.__attr |= (pshared.(u32) << 7)
+    return 0
+}

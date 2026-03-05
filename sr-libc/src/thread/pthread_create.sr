@@ -1,0 +1,359 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_create.c
+
+pthread_impl :: import "libc/src/internal/pthread_impl"
+atomic :: import "libc/src/internal/atomic"
+wait_mod :: import "libc/src/thread/__wait"
+lock_mod :: import "libc/src/internal/lock"
+libc_mod :: import "libc/src/internal/libc"
+stdio_ofl :: import "libc/src/stdio/ofl"
+stdin_mod :: import "libc/src/stdio/stdin"
+stdout_mod :: import "libc/src/stdio/stdout"
+stderr_mod :: import "libc/src/stdio/stderr"
+sig_block :: import "libc/src/signal/block"
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+errno_mod :: import "libc/include/errno"
+mmap_mod :: import "libc/src/mman/mmap"
+mman_h :: import "libc/include/sys/mman"
+mprotect_mod :: import "libc/src/mman/mprotect"
+munmap_mod :: import "libc/src/mman/munmap"
+string_h :: import "libc/src/string/memset"
+ptc_lock :: import "libc/src/thread/lock_ptc"
+tls_mod :: import "libc/src/thread/tls"
+membarrier_mod :: import "libc/src/linux/membarrier"
+rwlock_mod :: import "libc/src/thread/pthread_rwlock_rdlock"
+tsd_mod :: import "libc/src/thread/pthread_key_create"
+vmlock_mod :: import "libc/src/thread/vmlock"
+unmapself_mod :: import "libc/src/thread/unmapself"
+clone_mod :: import "libc/src/thread/clone"
+sig_h :: import "libc/include/signal"
+attr_int :: import "libc/src/thread/pthread_attr_internal"
+default_attr :: import "libc/src/thread/default_attr"
+mutex_int :: import "libc/src/thread/pthread_mutex_internal"
+exit_mod :: import "libc/src/exit/exit"
+dlerr_mod :: import "libc/src/ldso/dlerror"
+alltypes :: import "libc/include/alltypes"
+tl_list :: import "libc/src/internal/thread_list"
+
+__ATTRP_C11_THREAD :: (-1).(usize).^*alltypes.pthread_attr_t
+_NSIG :: 65
+
+dummy_0 :: proc() void {}
+
+__do_orphaned_stdio_locks :: proc() void {}
+
+__pthread_exit :: proc(result: ?*void) void {
+    self := pthread_impl.__pthread_self()
+    set: alltypes.sigset_t
+
+    self.*.canceldisable = 1
+    self.*.cancelasync = 0
+    self.*.result = result
+
+    while self.*.cancelbuf != null {
+        cb := (self.*.cancelbuf?).^*pthread_impl.__ptcb
+        f := cb.*.__f
+        x := cb.*.__x
+        self.*.cancelbuf = cb.*.__next.^*void
+        f(x)
+    }
+
+    tsd_mod.__pthread_tsd_run_dtors()
+
+    sig_block.__block_app_sigs(&set)
+
+    state := atomic.a_cas(&self.*.detach_state, pthread_impl.DT_JOINABLE, pthread_impl.DT_EXITING)
+
+    if (state == pthread_impl.DT_DETACHED) and (self.*.map_base != null) {
+        vmlock_mod.__vm_wait()
+    }
+
+    lock_mod.__lock(&self.*.killlock[0])
+    tl_list.__tl_lock()
+
+    if self.*.next == self {
+        tl_list.__tl_unlock()
+        lock_mod.__unlock(&self.*.killlock[0])
+        self.*.detach_state = state
+        sig_block.__restore_sigs(&set)
+        exit_mod.exit(0)
+    }
+
+    self.*.tid = 0
+    lock_mod.__unlock(&self.*.killlock[0])
+
+    vmlock_mod.__vm_lock()
+    M_NEXT_OFFSET := mutex_int.m_next(null.(?*alltypes.pthread_mutex_t)).^usize
+    rp: ?*void = null
+    while true {
+        rp = self.*.robust_list.head
+        if (rp == null) or (rp.^usize == (&self.*.robust_list.head).^usize) { break }
+        m_val := ((rp?).^usize - M_NEXT_OFFSET)
+        m := m_val.^*alltypes.pthread_mutex_t
+        waiters := mutex_int.m_waiters(m).*
+        priv := (mutex_int.m_type(m).* & 128) ^ 128
+        self.*.robust_list.pending = rp
+        self.*.robust_list.head = (rp.^*const ?*void).*
+        cont := atomic.a_swap(mutex_int.m_lock(m), 0x40000000)
+        self.*.robust_list.pending = null
+        if (cont < 0) or (waiters != 0) {
+            lock_mod.__wake(mutex_int.m_lock(m).^*void, 1, priv)
+        }
+    }
+    vmlock_mod.__vm_unlock()
+
+    __do_orphaned_stdio_locks()
+    dlerr_mod.__dl_thread_cleanup()
+
+    libc_mod.__libc.threads_minus_1 -= 1
+    if libc_mod.__libc.threads_minus_1 == 0 { libc_mod.__libc.need_locks = -1 }
+    (self.*.next?).*.prev = self.*.prev
+    (self.*.prev?).*.next = self.*.next
+    self.*.prev = self
+    self.*.next = self
+
+    if (state == pthread_impl.DT_DETACHED) and (self.*.map_base != null) {
+        sig_block.__block_all_sigs(&set)
+        if self.*.robust_list.off != 0 {
+            _ = sc.syscall2(nums.SYS_set_robust_list.(i64), 0, (3 * sizeof(i64)).(i64))
+        }
+        unmapself_mod.__unmapself(self.*.map_base.^*void, self.*.map_size)
+    }
+
+    atomic.a_store(&self.*.detach_state, pthread_impl.DT_EXITED)
+    lock_mod.__wake((&self.*.detach_state).^*void, 1, 1)
+
+    while true {
+        _ = sc.syscall1(nums.SYS_exit.(i64), 0)
+    }
+}
+
+__tl_sync :: proc(td: alltypes.pthread_t) void {
+    atomic.a_barrier()
+    val := pthread_impl.__thread_list_lock[0]
+    if val == 0 { return }
+    tl_list.__tl_lock()
+    tl_list.__tl_unlock()
+}
+
+start_args :: struct {
+    start_func: fn(?*void) ?*void,
+    start_arg: ?*void,
+    control: i32,
+    sig_mask: alltypes.sigset_t,
+}
+
+start :: proc(p: ?*void) i32 {
+    args := (p?).^*start_args
+    state := args.*.control
+    if state != 0 {
+        if atomic.a_cas(&args.*.control, 1, 2) == 1 {
+            wait_mod.__wait(&args.*.control, null, 2, 1)
+        }
+        if args.*.control != 0 {
+            _ = sc.syscall1(nums.SYS_set_tid_address.(i64), (&args.*.control).^usize.(i64))
+            while true { _ = sc.syscall1(nums.SYS_exit.(i64), 0) }
+        }
+    }
+    _ = sc.syscall4(nums.SYS_rt_sigprocmask.(i64), sig_h.SIG_SETMASK.(i64), (&args.*.sig_mask).^usize.(i64), 0, (_NSIG / 8).(i64))
+    __pthread_exit(args.*.start_func(args.*.start_arg))
+    return 0
+}
+
+start_c11 :: proc(p: ?*void) i32 {
+    args := (p?).^*start_args
+    start_fn := args.*.start_func.^*fn(?*void) i32
+    __pthread_exit(start_fn(args.*.start_arg).(isize).^*void)
+    return 0
+}
+
+init_file_lock :: proc(f: ?*alltypes.FILE) void {
+    if (f?).lock < 0 { (f?).lock = 0 }
+}
+
+ROUND :: proc(x: usize) usize { return (x + PAGE_SIZE - 1) & ((-1.(usize)) ^ (PAGE_SIZE - 1)) }
+
+CLONE_VM :: 0x00000100
+CLONE_FS :: 0x00000200
+CLONE_FILES :: 0x00000400
+CLONE_SIGHAND :: 0x00000800
+CLONE_THREAD :: 0x00010000
+CLONE_SYSVSEM :: 0x00040000
+CLONE_SETTLS :: 0x00080000
+CLONE_PARENT_SETTID :: 0x00100000
+CLONE_CHILD_CLEARTID :: 0x00200000
+CLONE_DETACHED :: 0x00400000
+
+PAGE_SIZE :: 4096
+
+__pthread_create :: proc(res: ?*alltypes.pthread_t, attrp: ?*const alltypes.pthread_attr_t, entry: fn(?*void) ?*void, arg: ?*void) i32 {
+    ret: i32
+    c11 := if attrp == null { false } else { ((attrp?).^usize == __ATTRP_C11_THREAD.^usize) }
+    size: usize
+    guard: usize
+    self: ?*pthread_impl.pthread = null
+    new: ?*pthread_impl.pthread = null
+    map: ?*u8 = null
+    stack: ?*u8 = null
+    tsd: ?*u8 = null
+    stack_limit: ?*u8 = null
+    flags: u32 = (CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM | CLONE_SETTLS | CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | CLONE_DETACHED)
+    attr: alltypes.pthread_attr_t
+    set: alltypes.sigset_t
+
+    if libc_mod.__libc.can_do_threads == 0 { return errno_mod.ENOSYS }
+    self = pthread_impl.__pthread_self()
+    if libc_mod.__libc.threaded == 0 {
+        f_ptr := stdio_ofl.__ofl_lock()
+        f := f_ptr.*
+        while f != null {
+            init_file_lock(f)
+            f = (f?).*.next
+        }
+        stdio_ofl.__ofl_unlock()
+        init_file_lock(stdin_mod.stdin)
+        init_file_lock(stdout_mod.stdout)
+        init_file_lock(stderr_mod.stderr)
+        // Unblock internal signals
+        sigset: alltypes.sigset_t
+        _ = string_h.memset((&sigset).^*void, 0, sizeof(alltypes.sigset_t))
+        sigset.__bits[0] = (3.(u64) << 32)
+        _ = sc.syscall4(nums.SYS_rt_sigprocmask.(i64), sig_h.SIG_UNBLOCK.(i64), (&sigset).^usize.(i64), 0, (_NSIG / 8).(i64))
+        (self?).*.tsd = (&tsd_mod.__pthread_tsd_main[0]).^**void
+        membarrier_mod.__membarrier_init()
+        libc_mod.__libc.threaded = 1
+    }
+    _ = string_h.memset((&attr).^*void, 0, sizeof(alltypes.pthread_attr_t))
+    if (attrp != null) and !c11 { attr = (attrp?).* }
+
+    ptc_lock.__acquire_ptc()
+    if (attrp == null) or c11 {
+        attr_int.attr_stacksize(&attr).* = default_attr.__default_stacksize
+        attr_int.attr_guardsize(&attr).* = default_attr.__default_guardsize
+    }
+
+    if attr_int.attr_stackaddr(&attr).* != 0 {
+        need := libc_mod.__libc.tls_size + tsd_mod.__pthread_tsd_size
+        size = attr_int.attr_stacksize(&attr).*
+        stack_addr := attr_int.attr_stackaddr(&attr).*
+        stack = (stack_addr & ((-1.(usize)) ^ 15.(usize))).^*u8
+        stack_limit = (stack_addr - size).^*u8
+        if (need < size / 8) and (need < 2048) {
+            tsd = (stack?).^usize - tsd_mod.__pthread_tsd_size
+            stack = (tsd?).^usize - libc_mod.__libc.tls_size
+            _ = string_h.memset((stack?).^*void, 0, need)
+        } else {
+            size = ROUND(need)
+        }
+        guard = 0
+    } else {
+        guard = ROUND(attr_int.attr_guardsize(&attr).*)
+        size = guard + ROUND(attr_int.attr_stacksize(&attr).* + libc_mod.__libc.tls_size + tsd_mod.__pthread_tsd_size)
+    }
+
+    if tsd == null {
+        if guard != 0 {
+            map_res := mmap_mod.mmap(null, size, mman_h.PROT_NONE, (mman_h.MAP_PRIVATE | mman_h.MAP_ANON), -1, 0)
+            map = map_res.^*u8
+            if map_res == mman_h.MAP_FAILED { 
+                ptc_lock.__release_ptc()
+                return errno_mod.EAGAIN
+            }
+            if (mprotect_mod.__mprotect((map?).^*void + guard, size - guard, mman_h.PROT_READ | mman_h.PROT_WRITE) != 0) and (errno_mod.errno().* != errno_mod.ENOSYS) {
+                _ = munmap_mod.__munmap((map?).^*void, size)
+                ptc_lock.__release_ptc()
+                return errno_mod.EAGAIN
+            }
+        } else {
+            map_res := mmap_mod.mmap(null, size, (mman_h.PROT_READ | mman_h.PROT_WRITE), (mman_h.MAP_PRIVATE | mman_h.MAP_ANON), -1, 0)
+            map = map_res.^*u8
+            if map_res == mman_h.MAP_FAILED { 
+                ptc_lock.__release_ptc()
+                return errno_mod.EAGAIN
+            }
+        }
+        tsd = (map?).^usize + size - tsd_mod.__pthread_tsd_size
+        if stack == null {
+            stack = (tsd?).^usize - libc_mod.__libc.tls_size
+            stack_limit = (map?).^usize + guard
+        }
+    }
+
+    new = tls_mod.__copy_tls((tsd?).^*u8)
+    (new?).*.map_base = map.^*u8
+    (new?).*.map_size = size
+    (new?).*.stack = (stack?).^*void
+    (new?).*.stack_size = ((stack?).^usize - (stack_limit?).^usize).(usize)
+    (new?).*.guard_size = guard
+    (new?).*.self = new
+    (new?).*.tsd = (tsd?).^**void
+    (new?).*.locale = (&libc_mod.__libc.global_locale).^*void
+    if attr_int.attr_detach(&attr).* != 0 { (new?).*.detach_state = pthread_impl.DT_DETACHED } else { (new?).*.detach_state = pthread_impl.DT_JOINABLE }
+    (new?).*.robust_list.head = null.(?*void)
+    (new?).*.canary = (self?).*.canary
+    (new?).*.sysinfo = (self?).*.sysinfo
+
+    s_val := (stack?).^usize
+    s_val = (s_val - (s_val % sizeof(usize)))
+    s_val = (s_val - sizeof(start_args))
+    stack = s_val.^*u8
+    args := (stack?).^*start_args
+    args.*.start_func = entry
+    args.*.start_arg = arg
+    args.*.control = if attr_int.attr_sched(&attr).* != 0 { 1 } else { 0 }
+
+    sig_block.__block_app_sigs(&set)
+    args.*.sig_mask = set
+    idx2 := (pthread_impl.SIGCANCEL - 1) / 64
+    bit2 := (pthread_impl.SIGCANCEL - 1) % 64
+    args.*.sig_mask.__bits[idx2.(usize)] &= ((-1.(u64)) ^ (1.(u64) << bit2))
+
+    tl_list.__tl_lock()
+    libc_mod.__libc.threads_minus_1 += 1
+    if libc_mod.__libc.threads_minus_1 == 1 { libc_mod.__libc.need_locks = 1 }
+
+    ret = clone_mod.__clone(if c11 { start_c11 } else { start }, (stack?).^*void, flags.(i32), (args).^*void, &(new?).*.tid, ((new?).^usize + sizeof(pthread_impl.pthread)).^*void, (&pthread_impl.__thread_list_lock[0]).^*i32)
+
+    if ret < 0 {
+        ret = -errno_mod.EAGAIN
+    } else if attr_int.attr_sched(&attr).* != 0 {
+        ret = sc.syscall3(nums.SYS_sched_setscheduler.(i64), (new?).*.tid.(i64), attr_int.attr_policy(&attr).*.(i64), (&attr_int.attr_prio(&attr).*).^usize.(i64)).(i32)
+        if atomic.a_swap(&args.*.control, if ret != 0 { 3 } else { 0 }) == 2 {
+            lock_mod.__wake((&args.*.control).^*void, 1, 1)
+        }
+        if ret != 0 {
+            wait_mod.__wait(&args.*.control, null, 3, 0)
+        }
+    }
+
+    if ret >= 0 {
+        (new?).*.next = (self?).*.next
+        (new?).*.prev = self
+        ((new?).*.next?).*.prev = new
+        (self?).*.next = new
+    } else {
+        libc_mod.__libc.threads_minus_1 -= 1
+        if libc_mod.__libc.threads_minus_1 == 0 { libc_mod.__libc.need_locks = 0 }
+    }
+    tl_list.__tl_unlock()
+    sig_block.__restore_sigs(&set)
+    ptc_lock.__release_ptc()
+
+    if ret < 0 {
+        if map != null { _ = munmap_mod.__munmap((map?).^*void, size) }
+        return -ret
+    }
+
+    (res?).* = (new?).^*void
+    return 0
+}
+
+pthread_create :: proc(res: ?*alltypes.pthread_t, attrp: ?*const alltypes.pthread_attr_t, entry: fn(?*void) ?*void, arg: ?*void) i32 {
+    return __pthread_create(res, attrp, entry, arg)
+}
+
+pthread_exit :: proc(result: ?*void) void {
+    __pthread_exit(result)
+}

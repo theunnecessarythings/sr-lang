@@ -2,37 +2,53 @@ package main
 
 // Advanced Features
 
+io :: import "std/io"
+
+Error :: error {Failed}
+
+might_fail :: fn() Error ! i32 {
+    return 7
+}
+
+get_answer :: async fn() i64 {
+    return 42
+}
+
 main::proc() {
 
     // Closure expression
     add_one := |x: i32| i32 { return x + 1 }
 
     // Closure with type inference
-    square := |x| x * x
+    square := |x: i32| i32 { return x * x }
 
     // Using a closure
     result := add_one(5)
+    squared := square(7)
 
     // Async block
-    future_val := async {
-        // do some long-running work
-        return 42
-    }
-
     // Await expression
-    awaited_val := future_val.await
+    awaited_val := get_answer().await
 
     // Error propagation
     // Assumes a function `might_fail` that returns a value or an error.
     // The `!` operator propagates the error.
-    successful_result := might_fail()!
+    successful_result := might_fail() catch 0
 
     // Dereference expression
     // Assumes `ptr` is a pointer.
+    x := 99
+    ptr: *i32 = &x
     value := ptr.*
 
     // Range expressions
     range1 := 1..10
     range2 := 1..=10
+
+    io.println("add_one(5)=%d", result)
+    io.println("square(7)=%d", squared)
+    io.println("awaited=%d", awaited_val)
+    io.println("might_fail()=%d", successful_result)
+    io.println("ptr.*=%d", value)
 
 }

@@ -1,0 +1,31 @@
+package libc
+
+// Derived from musl-1.2.5/include/sys/statfs.h and arch/generic/bits/statfs.h
+
+alltypes :: import "libc/include/alltypes"
+
+fsid_t :: struct {
+    __val: [2]i32,
+}
+
+statfs :: struct {
+    f_type: usize,
+    f_bsize: usize,
+    f_blocks: alltypes.fsblkcnt_t,
+    f_bfree: alltypes.fsblkcnt_t,
+    f_bavail: alltypes.fsblkcnt_t,
+    f_files: alltypes.fsfilcnt_t,
+    f_ffree: alltypes.fsfilcnt_t,
+    f_fsid: fsid_t,
+    f_namelen: usize,
+    f_frsize: usize,
+    f_flags: usize,
+    f_spare: [4]usize,
+}
+
+statfs_fn :: proc(path: *const u8, buf: *statfs) i32
+fstatfs_fn :: proc(fd: i32, buf: *statfs) i32
+
+// public names
+statfs :: statfs_fn
+fstatfs :: fstatfs_fn

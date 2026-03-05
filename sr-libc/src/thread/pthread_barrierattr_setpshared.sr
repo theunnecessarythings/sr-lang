@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_barrierattr_setpshared.c
+
+errno_mod :: import "libc/include/errno"
+
+INT_MIN :: -2147483648
+
+pthread_barrierattr_setpshared :: proc(a: *pthread_barrierattr_t, pshared: i32) i32 {
+    if pshared > 1 { return errno_mod.EINVAL }
+    a.__attr = if pshared != 0 { INT_MIN.(u32) } else { 0 }
+    return 0
+}

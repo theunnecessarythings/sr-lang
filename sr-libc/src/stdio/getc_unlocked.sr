@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/getc_unlocked.c and macros
+
+getc_unlocked :: proc(f: *alltypes.FILE) i32 {
+    if f.rpos != f.rend {
+        c := f.rpos.*
+        f.rpos = f.rpos + 1
+        return c.(i32)
+    }
+    return __uflow(f)
+}
+
+fgetc_unlocked :: getc_unlocked
+_IO_getc_unlocked :: getc_unlocked

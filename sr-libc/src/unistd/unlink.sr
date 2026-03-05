@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/unlink.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+unlink :: proc(path: *const u8) i32 {
+    r := sc.syscall1_ret(nums.SYS_unlink.(i64), path.^usize.(i64))
+    return r.(i32)
+}
+
+unlinkat :: proc(dirfd: i32, path: *const u8, flags: i32) i32 {
+    r := sc.syscall3_ret(nums.SYS_unlinkat.(i64), dirfd.(i64), path.^usize.(i64), flags.(i64))
+    return r.(i32)
+}

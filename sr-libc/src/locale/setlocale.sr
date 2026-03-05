@@ -1,0 +1,44 @@
+package libc
+
+// Derived from musl-1.2.5/src/locale/setlocale.c
+
+string_h :: import "libc/src/string"
+loc_impl :: import "libc/src/locale/locale_impl"
+
+LC_CTYPE :: 0
+LC_NUMERIC :: 1
+LC_TIME :: 2
+LC_COLLATE :: 3
+LC_MONETARY :: 4
+LC_MESSAGES :: 5
+LC_ALL :: 6
+
+setlocale :: proc(cat: i32, name: *const u8) *u8 {
+    if cat < 0 || cat > LC_ALL { return null }
+
+    // Query current locale
+    if name == null {
+        if loc_impl.__current_locale == (&loc_impl.__c_dot_utf8_locale).^*void {
+            return "C.UTF-8"
+        }
+        return "C"
+    }
+
+    // Accept "" as C, POSIX, or C.UTF-8
+    if name[0] == 0 {
+        loc_impl.__current_locale = (&loc_impl.__c_locale).^*void
+        return "C"
+    }
+
+    if string_h.strcmp(name, "C") == 0 || string_h.strcmp(name, "POSIX") == 0 {
+        loc_impl.__current_locale = (&loc_impl.__c_locale).^*void
+        return "C"
+    }
+
+    if string_h.strcmp(name, "C.UTF-8") == 0 {
+        loc_impl.__current_locale = (&loc_impl.__c_dot_utf8_locale).^*void
+        return "C.UTF-8"
+    }
+
+    return null
+}

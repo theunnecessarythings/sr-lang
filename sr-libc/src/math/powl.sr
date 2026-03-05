@@ -1,0 +1,330 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/powl.c (113-bit path).
+
+basic :: import "libc/src/math/basic"
+
+NXT :: 32
+
+P: [4]f128 = [
+    8.3319510773868690346226e-4,
+    4.9000050881978028599627e-1,
+    1.7500123722550302671919e0,
+    1.4000100839971580279335e0,
+]
+
+Q: [3]f128 = [
+    5.2500282295834889175431e0,
+    8.4000598057587009834666e0,
+    4.2000302519914740834728e0,
+]
+
+A: [33]f128 = [
+    1.0000000000000000000000e0,
+    9.7857206208770013448287e-1,
+    9.5760328069857364691013e-1,
+    9.3708381705514995065011e-1,
+    9.1700404320467123175367e-1,
+    8.9735453750155359320742e-1,
+    8.7812608018664974155474e-1,
+    8.5930964906123895780165e-1,
+    8.4089641525371454301892e-1,
+    8.2287773907698242225554e-1,
+    8.0524516597462715409607e-1,
+    7.8799042255394324325455e-1,
+    7.7110541270397041179298e-1,
+    7.5458221379671136985669e-1,
+    7.3841307296974965571198e-1,
+    7.2259040348852331001267e-1,
+    7.0710678118654752438189e-1,
+    6.9195494098191597746178e-1,
+    6.7712777346844636413344e-1,
+    6.6261832157987064729696e-1,
+    6.4841977732550483296079e-1,
+    6.3452547859586661129850e-1,
+    6.2092890603674202431705e-1,
+    6.0762367999023443907803e-1,
+    5.9460355750136053334378e-1,
+    5.8186242938878875689693e-1,
+    5.6939431737834582684856e-1,
+    5.5719337129794626814472e-1,
+    5.4525386633262882960438e-1,
+    5.3357020033841180906486e-1,
+    5.2213689121370692017331e-1,
+    5.1094857432705833910408e-1,
+    5.0000000000000000000000e-1,
+]
+
+B: [17]f128 = [
+    0.0000000000000000000000e0,
+    2.6176170809902549338711e-20,
+    -1.0126791927256478897086e-20,
+    1.3438228172316276937655e-21,
+    1.2207982955417546912101e-20,
+    -6.3084814358060867200133e-21,
+    1.3164426894366316434230e-20,
+    -1.8527916071632873716786e-20,
+    1.8950325588932570796551e-20,
+    1.5564775779538780478155e-20,
+    6.0859793637556860974380e-21,
+    -2.0208749253662532228949e-20,
+    1.4966292219224761844552e-20,
+    3.3540909728056476875639e-21,
+    -8.6987564101742849540743e-22,
+    -1.2327176863327626135542e-20,
+    0.0000000000000000000000e0,
+]
+
+R: [7]f128 = [
+    1.5089970579127659901157e-5,
+    1.5402715328927013076125e-4,
+    1.3333556028915671091390e-3,
+    9.6181291046036762031786e-3,
+    5.5504108664798463044015e-2,
+    2.4022650695910062854352e-1,
+    6.9314718055994530931447e-1,
+]
+
+MEXP :: (NXT * 16384.0)
+MNEXP :: (-NXT * (16384.0 + 64.0))
+LOG2EA :: 0.44269504088896340735992
+
+MAXLOGL :: 1.1356523406294143949492e4
+MINLOGL :: -1.13994985314888605586758e4
+LOGE2L :: 6.9314718055994530941723e-1
+
+huge :: 0x1p10000
+
+LDBL_EPSILON :: 0x1p-112
+LDBL_MANT_DIG :: 113
+LDBL_MIN_EXP :: -16381
+
+BIG_Y :: 2.0 * ((-(LDBL_MIN_EXP).(f128) + LDBL_MANT_DIG.(f128) + 1.0) / LDBL_EPSILON)
+
+polevll :: fn(x: f128, coef: *f128, n: i32) f128 {
+    i: i32 = 1
+    ans := coef[0]
+    while i <= n {
+        ans = ans * x + coef[i.(usize)]
+        i += 1
+    }
+    return ans
+}
+
+p1evll :: fn(x: f128, coef: *f128, n: i32) f128 {
+    i: i32 = 1
+    ans := x + coef[0]
+    while i < n {
+        ans = ans * x + coef[i.(usize)]
+        i += 1
+    }
+    return ans
+}
+
+reducl :: fn(x: f128) f128 {
+    t := x * NXT
+    t = floorl(t)
+    return t / NXT
+}
+
+powil :: fn(x: f128, nn: i32) f128 {
+    if nn == 0 { return 1.0 }
+
+    sign: i32
+    n: i32
+    if nn < 0 {
+        sign = -1
+        n = -nn
+    } else {
+        sign = 1
+        n = nn
+    }
+
+    s := x
+    lx: i32
+    s = frexpl(s, &lx)
+    e := (lx - 1) * n
+
+    if e == 0 or e > 64 or e < -64 {
+        s = (s - 7.0710678118654752e-1) / (s + 7.0710678118654752e-1)
+        s = (2.9142135623730950 * s - 0.5 + lx.(f128)) * nn.(f128) * LOGE2L
+    } else {
+        s = LOGE2L * e.(f128)
+    }
+
+    if s > MAXLOGL { return huge * huge }
+    if s < MINLOGL { return 0x1p-10000 * 0x1p-10000 }
+    if s < -MAXLOGL + 2.0 {
+        x = 1.0 / x
+        sign = -sign
+    }
+
+    y: f128
+    if (n & 1) != 0 { y = x } else { y = 1.0 }
+
+    ww := x
+    n >>= 1
+    while n != 0 {
+        ww = ww * ww
+        if (n & 1) != 0 { y *= ww }
+        n >>= 1
+    }
+
+    if sign < 0 { y = 1.0 / y }
+    return y
+}
+
+powl :: proc(x: f128, y: f128) f128 {
+    i: i32
+    nflg: i32
+    iyflg: i32
+    yoddint: i32
+    e: i32
+    z: f128 = 0.0
+    w: f128 = 0.0
+    W: f128 = 0.0
+    Wa: f128 = 0.0
+    Wb: f128 = 0.0
+    ya: f128 = 0.0
+    yb: f128 = 0.0
+    u: f128 = 0.0
+
+    if basic.isnanl(x) {
+        if !basic.isnanl(y) and y == 0.0 { return 1.0 }
+        return x
+    }
+    if basic.isnanl(y) {
+        if x == 1.0 { return 1.0 }
+        return y
+    }
+    if x == 1.0 { return 1.0 }
+    if y == 0.0 { return 1.0 }
+    if y == 1.0 { return x }
+
+    if basic.fabsl(y) > BIG_Y {
+        if x == -1.0 { return 1.0 }
+        if y == basic.f128_inf {
+            if x > 1.0 or x < -1.0 { return basic.f128_inf }
+            return 0.0
+        }
+        if y == -basic.f128_inf {
+            if x > 1.0 or x < -1.0 { return 0.0 }
+            return basic.f128_inf
+        }
+        if ((x > 1.0 or x < -1.0) == (y > 0.0)) { return huge * huge }
+        return 0x1p-10000 * 0x1p-10000
+    }
+
+    if x == basic.f128_inf {
+        if y > 0.0 { return basic.f128_inf }
+        return 0.0
+    }
+
+    w = floorl(y)
+    iyflg = if w == y { 1 } else { 0 }
+    yoddint = 0
+    if iyflg != 0 {
+        ya = basic.fabsl(y)
+        ya = floorl(0.5 * ya)
+        yb = 0.5 * basic.fabsl(w)
+        if ya != yb { yoddint = 1 }
+    }
+
+    if x == -basic.f128_inf {
+        if y > 0.0 {
+            if yoddint != 0 { return -basic.f128_inf }
+            return basic.f128_inf
+        }
+        if y < 0.0 {
+            if yoddint != 0 { return -0.0 }
+            return 0.0
+        }
+    }
+
+    nflg = 0
+    if x <= 0.0 {
+        if x == 0.0 {
+            if y < 0.0 {
+                if basic.signbitl(x) != 0 and yoddint != 0 { return -1.0 / 0.0 }
+                return 1.0 / 0.0
+            }
+            if basic.signbitl(x) != 0 and yoddint != 0 { return -0.0 }
+            return 0.0
+        }
+        if iyflg == 0 { return (x - x) / (x - x) }
+        if yoddint != 0 { nflg = 1 }
+        x = -x
+    }
+
+    if iyflg != 0 and floorl(x) == x and basic.fabsl(y) < 32768.0 {
+        w = powil(x, y.(i32))
+        return if nflg != 0 { -w } else { w }
+    }
+
+    x = frexpl(x, &i)
+    e = i
+
+    i = 1
+    if x <= A[17] { i = 17 }
+    if x <= A[(i + 8).(usize)] { i += 8 }
+    if x <= A[(i + 4).(usize)] { i += 4 }
+    if x <= A[(i + 2).(usize)] { i += 2 }
+    if x >= A[1] { i = -1 }
+    i += 1
+
+    x -= A[i.(usize)]
+    x -= B[(i / 2).(usize)]
+    x /= A[i.(usize)]
+
+    z = x * x
+    w = x * (z * polevll(x, &P[0], 3) / p1evll(x, &Q[0], 3))
+    w = w - 0.5 * z
+
+    z = LOG2EA * w
+    z += w
+    z += LOG2EA * x
+    z += x
+
+    w = (-i).(f128)
+    w /= NXT
+    w += e.(f128)
+
+    ya = reducl(y)
+    yb = y - ya
+
+    W = z * y + w * yb
+    Wa = reducl(W)
+    Wb = W - Wa
+
+    W = Wa + w * ya
+    Wa = reducl(W)
+    u = W - Wa
+
+    W = Wb + u
+    Wb = reducl(W)
+    w = (Wa + Wb) * NXT
+
+    if w > MEXP { return huge * huge }
+    if w < MNEXP { return 0x1p-10000 * 0x1p-10000 }
+
+    e = w.(i32)
+    Wb = W - Wb
+
+    if Wb > 0.0 {
+        e += 1
+        Wb -= 1.0 / NXT
+    }
+
+    z = Wb * polevll(Wb, &R[0], 6)
+
+    if e < 0 { i = 0 } else { i = 1 }
+    i = e / NXT + i
+    e = NXT * i - e
+    w = A[e.(usize)]
+    z = w * z
+    z = z + w
+    z = scalbnl(z, i)
+
+    if nflg != 0 { z = -z }
+    return z
+}

@@ -1,0 +1,19 @@
+package libc
+
+// Derived from musl-1.2.5/include/sys/timerfd.h
+
+alltypes :: import "libc/include/alltypes"
+
+TFD_CLOEXEC :: 0o2000000
+TFD_NONBLOCK :: 0o4000
+TFD_TIMER_ABSTIME :: 1
+TFD_TIMER_CANCEL_ON_SET :: 2
+
+itimerspec :: struct {
+    it_interval: alltypes.timespec,
+    it_value: alltypes.timespec,
+}
+
+timerfd_create :: proc(clockid: i32, flags: i32) i32
+timerfd_settime :: proc(fd: i32, flags: i32, new_value: *const itimerspec, old_value: ?*itimerspec) i32
+timerfd_gettime :: proc(fd: i32, cur: *itimerspec) i32

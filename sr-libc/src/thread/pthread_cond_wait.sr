@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_cond_wait.c
+
+timedwait_mod :: import "libc/src/thread/pthread_cond_timedwait"
+alltypes :: import "libc/include/alltypes"
+
+pthread_cond_wait :: proc(c: *pthread_cond_t restrict, m: *alltypes.pthread_mutex_t restrict) i32 {
+    return timedwait_mod.pthread_cond_timedwait(c, m, null)
+}

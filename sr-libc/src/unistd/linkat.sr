@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/linkat.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+linkat :: proc(olddirfd: i32, oldpath: *const u8, newdirfd: i32, newpath: *const u8, flags: i32) i32 {
+    r := sc.syscall5_ret(
+        nums.SYS_linkat.(i64),
+        olddirfd.(i64),
+        oldpath.^usize.(i64),
+        newdirfd.(i64),
+        newpath.^usize.(i64),
+        flags.(i64),
+    )
+    return r.(i32)
+}

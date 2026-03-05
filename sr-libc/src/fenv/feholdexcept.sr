@@ -1,0 +1,12 @@
+package libc
+
+// Derived from musl-1.2.5/src/fenv/feholdexcept.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <fenv.h>
+
+feholdexcept :: proc(envp: *fenv_t) i32 {
+    _ = fegetenv(envp)
+    _ = feclearexcept(FE_ALL_EXCEPT)
+    return 0
+}

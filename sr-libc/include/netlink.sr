@@ -1,0 +1,118 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/netlink.h
+
+NETLINK_ROUTE :: 0
+
+nlmsghdr :: struct {
+    nlmsg_len: u32,
+    nlmsg_type: u16,
+    nlmsg_flags: u16,
+    nlmsg_seq: u32,
+    nlmsg_pid: u32,
+}
+
+NLM_F_REQUEST :: 1
+NLM_F_MULTI :: 2
+NLM_F_ACK :: 4
+
+NLM_F_ROOT :: 0x100
+NLM_F_MATCH :: 0x200
+NLM_F_ATOMIC :: 0x400
+NLM_F_DUMP :: (NLM_F_ROOT | NLM_F_MATCH)
+
+NLMSG_NOOP :: 0x1
+NLMSG_ERROR :: 0x2
+NLMSG_DONE :: 0x3
+NLMSG_OVERRUN :: 0x4
+
+RTM_NEWLINK :: 16
+RTM_GETLINK :: 18
+RTM_NEWADDR :: 20
+RTM_GETADDR :: 22
+
+rtattr :: struct {
+    rta_len: u16,
+    rta_type: u16,
+}
+
+rtgenmsg :: struct { rtgen_family: u8 }
+
+ifinfomsg :: struct {
+    ifi_family: u8,
+    __ifi_pad: u8,
+    ifi_type: u16,
+    ifi_index: i32,
+    ifi_flags: u32,
+    ifi_change: u32,
+}
+
+IFLA_ADDRESS :: 1
+IFLA_BROADCAST :: 2
+IFLA_IFNAME :: 3
+IFLA_STATS :: 7
+
+ifaddrmsg :: struct {
+    ifa_family: u8,
+    ifa_prefixlen: u8,
+    ifa_flags: u8,
+    ifa_scope: u8,
+    ifa_index: u32,
+}
+
+IFA_ADDRESS :: 1
+IFA_LOCAL :: 2
+IFA_LABEL :: 3
+IFA_BROADCAST :: 4
+
+NETLINK_ALIGN :: fn(len: usize) usize { return (len + 3) & ~3 }
+
+NLMSG_DATA :: fn(nlh: *nlmsghdr) *void {
+    return (nlh.^usize + sizeof(nlmsghdr)).(usize).^*void
+}
+
+NLMSG_DATALEN :: fn(nlh: *nlmsghdr) usize {
+    return (nlh.nlmsg_len.(usize) - sizeof(nlmsghdr))
+}
+
+NLMSG_DATAEND :: fn(nlh: *nlmsghdr) *u8 {
+    return (nlh.^usize + nlh.nlmsg_len.(usize)).(usize).^*u8
+}
+
+NLMSG_NEXT :: fn(nlh: *nlmsghdr) *nlmsghdr {
+    return (nlh.^usize + NETLINK_ALIGN(nlh.nlmsg_len.(usize))).(usize).^*nlmsghdr
+}
+
+NLMSG_OK :: fn(nlh: *nlmsghdr, end: *void) bool {
+    return (end.^usize - nlh.^usize) >= sizeof(nlmsghdr)
+}
+
+RTA_DATA :: fn(rta: *rtattr) *void {
+    return (rta.^usize + sizeof(rtattr)).(usize).^*void
+}
+
+RTA_DATALEN :: fn(rta: *rtattr) usize {
+    return rta.rta_len.(usize) - sizeof(rtattr)
+}
+
+RTA_DATAEND :: fn(rta: *rtattr) *u8 {
+    return (rta.^usize + rta.rta_len.(usize)).(usize).^*u8
+}
+
+RTA_NEXT :: fn(rta: *rtattr) *rtattr {
+    return (rta.^usize + NETLINK_ALIGN(rta.rta_len.(usize))).(usize).^*rtattr
+}
+
+RTA_OK :: fn(rta: *rtattr, end: *void) bool {
+    return (end.^usize - rta.^usize) >= sizeof(rtattr)
+}
+
+NLMSG_RTA :: fn(nlh: *nlmsghdr, len: usize) *rtattr {
+    return (nlh.^usize + sizeof(nlmsghdr) + NETLINK_ALIGN(len)).(usize).^*rtattr
+}
+
+NLMSG_RTAOK :: fn(rta: *rtattr, nlh: *nlmsghdr) bool {
+    return RTA_OK(rta, NLMSG_DATAEND(nlh).^*void)
+}
+
+__rtnetlink_enumerate :: proc(link_af: i32, addr_af: i32, cb: proc(*void, *nlmsghdr) i32, ctx: *void) i32

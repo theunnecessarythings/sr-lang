@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/getgroups.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+getgroups :: proc(size: i32, list: *gid_t) i32 {
+    r := sc.syscall2_ret(nums.SYS_getgroups.(i64), size.(i64), list.^usize.(i64))
+    return r.(i32)
+}

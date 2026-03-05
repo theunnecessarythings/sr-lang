@@ -1,0 +1,32 @@
+package libc
+
+// Derived from musl-1.2.5/include/poll.h
+
+alltypes :: import "libc/include/alltypes"
+
+@[packed]
+pollfd :: struct {
+    fd: i32,
+    events: i16,
+    revents: i16,
+}
+
+nfds_t :: u64
+
+POLLIN :: 0x0001
+POLLPRI :: 0x0002
+POLLOUT :: 0x0004
+POLLERR :: 0x0008
+POLLHUP :: 0x0010
+POLLNVAL :: 0x0020
+
+POLLRDNORM :: 0x0040
+POLLRDBAND :: 0x0080
+POLLWRNORM :: 0x0100
+POLLWRBAND :: 0x0200
+POLLMSG :: 0x0400
+POLLREMOVE :: 0x1000
+POLLRDHUP :: 0x2000
+
+poll :: proc(fds: *pollfd, n: nfds_t, timeout: i32) i32
+ppoll :: proc(fds: *pollfd, n: nfds_t, ts: *const alltypes.timespec, sigmask: *const alltypes.sigset_t) i32

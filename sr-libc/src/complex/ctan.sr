@@ -1,0 +1,10 @@
+package libc
+
+// Derived from musl-1.2.5/src/complex/ctan.c
+
+impl :: import "libc/src/complex/complex_impl"
+
+ctan :: proc(z: complex(f64)) complex(f64) {
+    z = ctanh(impl.cmplx(-z.imag, z.real))
+    return impl.cmplx(z.imag, -z.real)
+}

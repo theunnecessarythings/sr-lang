@@ -1,0 +1,7 @@
+package libc
+
+// Derived from musl-1.2.5/src/process/wait.c
+
+wait :: proc(status: ?*i32) alltypes.pid_t {
+    return waitpid(-1, status, 0)
+}

@@ -1,0 +1,65 @@
+package libc
+
+// Derived from musl-1.2.5/src/legacy/err.c
+
+errno_h :: import "libc/include/errno"
+strerror_mod :: import "libc/src/string/strerror"
+vfprintf_mod :: import "libc/src/stdio/vfprintf"
+fprintf_mod :: import "libc/src/stdio/fprintf"
+stderr_mod :: import "libc/src/stdio/stderr"
+exit_mod :: import "libc/src/exit/exit"
+stdarg_mod :: import "libc/include/stdarg"
+
+vwarn :: proc(fmt: *const u8, ap: stdarg_mod.va_list) void {
+    if fmt != null {
+        _ = vfprintf_mod.vfprintf(stderr_mod.stderr, fmt, ap)
+        _ = fprintf_mod.fprintf(stderr_mod.stderr, ": %s\n", strerror_mod.strerror(errno_h.errno().*))
+    } else {
+        _ = fprintf_mod.fprintf(stderr_mod.stderr, "%s\n", strerror_mod.strerror(errno_h.errno().*))
+    }
+}
+
+vwarnx :: proc(fmt: *const u8, ap: stdarg_mod.va_list) void {
+    if fmt != null {
+        _ = vfprintf_mod.vfprintf(stderr_mod.stderr, fmt, ap)
+        _ = fprintf_mod.fprintf(stderr_mod.stderr, "\n")
+    }
+}
+
+verr :: proc(status: i32, fmt: *const u8, ap: stdarg_mod.va_list) void {
+    vwarn(fmt, ap)
+    exit_mod.exit(status)
+}
+
+verrx :: proc(status: i32, fmt: *const u8, ap: stdarg_mod.va_list) void {
+    vwarnx(fmt, ap)
+    exit_mod.exit(status)
+}
+
+warn :: proc(fmt: *const u8, /* TODO */ ...) void {
+    ap: stdarg_mod.va_list
+    stdarg_mod.va_start(&ap)
+    vwarn(fmt, ap)
+    stdarg_mod.va_end(&ap)
+}
+
+warnx :: proc(fmt: *const u8, /* TODO */ ...) void {
+    ap: stdarg_mod.va_list
+    stdarg_mod.va_start(&ap)
+    vwarnx(fmt, ap)
+    stdarg_mod.va_end(&ap)
+}
+
+err :: proc(status: i32, fmt: *const u8, /* TODO */ ...) void {
+    ap: stdarg_mod.va_list
+    stdarg_mod.va_start(&ap)
+    verr(status, fmt, ap)
+    stdarg_mod.va_end(&ap)
+}
+
+errx :: proc(status: i32, fmt: *const u8, /* TODO */ ...) void {
+    ap: stdarg_mod.va_list
+    stdarg_mod.va_start(&ap)
+    verrx(status, fmt, ap)
+    stdarg_mod.va_end(&ap)
+}

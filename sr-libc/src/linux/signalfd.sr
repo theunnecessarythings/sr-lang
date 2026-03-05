@@ -1,0 +1,28 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/signalfd.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+err :: import "libc/include/errno"
+alltypes :: import "libc/include/alltypes"
+fcntl_mod :: import "libc/src/fcntl/fcntl"
+fcntl_consts :: import "libc/include/fcntl"
+
+signalfd :: proc(fd: i32, sigs: *const alltypes.sigset_t, flags: i32) i32 {
+    r := sc.syscall4(nums.SYS_signalfd4.(i64), fd.(i64), sigs.^usize.(i64), (sizeof(alltypes.sigset_t)).(i64), flags.(i64))
+    if r != -err.ENOSYS {
+        return sc.__syscall_ret(r).(i32)
+    }
+
+    r = sc.syscall3(nums.SYS_signalfd.(i64), fd.(i64), sigs.^usize.(i64), (sizeof(alltypes.sigset_t)).(i64))
+    if r >= 0 {
+        if (flags & SFD_CLOEXEC) != 0 {
+            _ = fcntl_mod.fcntl(r.(i32), fcntl_consts.F_SETFD, fcntl_consts.FD_CLOEXEC)
+        }
+        if (flags & SFD_NONBLOCK) != 0 {
+            _ = fcntl_mod.fcntl(r.(i32), fcntl_consts.F_SETFL, fcntl_consts.O_NONBLOCK)
+        }
+    }
+    return sc.__syscall_ret(r).(i32)
+}

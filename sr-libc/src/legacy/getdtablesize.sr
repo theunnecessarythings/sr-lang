@@ -1,0 +1,15 @@
+package libc
+
+// Derived from musl-1.2.5/src/legacy/getdtablesize.c
+
+res_h :: import "libc/include/sys/resource"
+getrlimit_mod :: import "libc/src/misc/getrlimit"
+
+getdtablesize :: proc() i32 {
+    rl: res_h.rlimit
+    if getrlimit_mod.getrlimit(res_h.RLIMIT_NOFILE, &rl) != 0 {
+        return 1024
+    }
+    if rl.rlim_cur > 0x7fffffff { return 0x7fffffff }
+    return rl.rlim_cur.(i32)
+}

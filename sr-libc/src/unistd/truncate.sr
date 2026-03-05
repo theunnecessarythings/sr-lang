@@ -1,0 +1,11 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/truncate.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+truncate :: proc(path: *const u8, length: alltypes.off_t) i32 {
+    r := sc.syscall2_ret(nums.SYS_truncate.(i64), path.^usize.(i64), length.(i64))
+    return r.(i32)
+}

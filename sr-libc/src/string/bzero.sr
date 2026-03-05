@@ -1,0 +1,9 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/bzero.c.
+
+memset_mod :: import "libc/src/string/memset"
+
+bzero :: proc(s: *void, n: usize) void {
+    _ = memset_mod.memset(s, 0, n)
+}

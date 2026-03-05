@@ -1,0 +1,14 @@
+package libc
+
+// Environment pointer storage.
+
+__environ: ?**u8 = null
+
+@[export_name="environ"]
+environ :: proc() ?**u8 {
+    return __environ
+}
+
+set_environ :: proc(v: **u8) void {
+    __environ = v
+}

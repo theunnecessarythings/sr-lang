@@ -1,0 +1,7 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdlib/ldiv.c.
+
+ldiv :: proc(num: isize, den: isize) ldiv_t {
+    return ldiv_t{ quot: num / den, rem: num % den }
+}

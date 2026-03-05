@@ -1,0 +1,26 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/inotify.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+inotify_init :: proc() i32 {
+    r := sc.syscall0_ret(nums.SYS_inotify_init.(i64))
+    return r.(i32)
+}
+
+inotify_init1 :: proc(flags: i32) i32 {
+    r := sc.syscall1_ret(nums.SYS_inotify_init1.(i64), flags.(i64))
+    return r.(i32)
+}
+
+inotify_add_watch :: proc(fd: i32, pathname: *const u8, mask: u32) i32 {
+    r := sc.syscall3_ret(nums.SYS_inotify_add_watch.(i64), fd.(i64), pathname.^usize.(i64), mask.(i64))
+    return r.(i32)
+}
+
+inotify_rm_watch :: proc(fd: i32, wd: i32) i32 {
+    r := sc.syscall2_ret(nums.SYS_inotify_rm_watch.(i64), fd.(i64), wd.(i64))
+    return r.(i32)
+}

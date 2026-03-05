@@ -1,0 +1,23 @@
+package libc
+
+// Derived from musl-1.2.5/src/unistd/link.c (syscall wrapper).
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+link :: proc(existing: *const u8, new: *const u8) i32 {
+    r := sc.syscall2_ret(nums.SYS_link.(i64), existing.^usize.(i64), new.^usize.(i64))
+    return r.(i32)
+}
+
+linkat :: proc(olddir: i32, existing: *const u8, newdir: i32, new: *const u8, flags: i32) i32 {
+    r := sc.syscall5_ret(
+        nums.SYS_linkat.(i64),
+        olddir.(i64),
+        existing.^usize.(i64),
+        newdir.(i64),
+        new.^usize.(i64),
+        flags.(i64),
+    )
+    return r.(i32)
+}

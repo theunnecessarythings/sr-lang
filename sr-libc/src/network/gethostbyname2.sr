@@ -1,0 +1,27 @@
+package libc
+
+// Derived from musl-1.2.5/src/network/gethostbyname2.c
+
+malloc_mod :: import "libc/src/stdlib/malloc"
+free_mod :: import "libc/src/stdlib/free"
+errno_mod :: import "libc/include/errno"
+
+gethostbyname2 :: proc(name: *const u8, af: i32) *hostent {
+    static_h: *hostent = null
+    size: usize = 63
+    res: *hostent
+    err: i32
+
+    while true {
+        free_mod.free(static_h.^*void)
+        size = size + size + 1
+        static_h = malloc_mod.malloc(size).^*hostent
+        if static_h == null {
+            h_errno().* = NO_RECOVERY
+            return null
+        }
+        err = gethostbyname2_r(name, af, static_h, (static_h.^usize + sizeof(hostent)).(usize).^*u8, size - sizeof(hostent), &res, h_errno())
+        if err != errno_mod.ERANGE { break }
+    }
+    return res
+}

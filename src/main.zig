@@ -1,6 +1,7 @@
 const std = @import("std");
 const lib = @import("compiler");
 const lsp = @import("lsp.zig");
+const builtin = @import("builtin");
 
 const Colors = struct {
     pub const reset = "\x1b[0m";
@@ -64,9 +65,56 @@ const CliArgs = struct {
     optimization_level: ?[]const u8 = null,
     tir_prune_unused: bool = true,
     tir_warn_unused: bool = false,
+    use_sr_libc: bool = false,
 
-    const Subcommand = enum { compile, run, check, ast, cst, tir, tir_liveness, help, lex, interpret, mlir, mlir_passes, llvm_passes, test_mode, unknown, repl, pretty_print, json_ast, server, lsp, format };
+    const Subcommand = enum { compile, run, check, ast, cst, tir, tir_liveness, help, lex, interpret, mlir, mlir_passes, llvm_ir, llvm_passes, wasm, test_mode, unknown, repl, pretty_print, json_ast, server, lsp, format };
 };
+
+const SrMainStyle = enum { plain, argc_style };
+
+fn patternBindingName(a: *lib.ast.Ast, pat_opt: lib.ast.OptPatternId) ?[]const u8 {
+    if (pat_opt.isNone()) return null;
+    const pid = pat_opt.unwrap();
+    return switch (a.kind(pid)) {
+        .Binding => a.exprs.strs.get(a.pats.get(.Binding, pid).name),
+        .Path => blk: {
+            const p = a.pats.get(.Path, pid);
+            const segs = a.pats.seg_pool.slice(p.segments);
+            if (segs.len != 1) break :blk null;
+            break :blk a.exprs.strs.get(a.pats.PathSeg.get(segs[0]).name);
+        },
+        else => null,
+    };
+}
+
+fn detectSrMainStyle(gpa: std.mem.Allocator, abs_path: []const u8, src: []const u8) SrMainStyle {
+    var probe_ctx = lib.compile.Context.init(gpa);
+    defer probe_ctx.deinit();
+    probe_ctx.load_imports = false;
+
+    _ = probe_ctx.source_manager.setVirtualSourceByPath(abs_path, src) catch return .argc_style;
+    var probe_pipe = lib.pipeline.Pipeline.init(gpa, &probe_ctx);
+    const res = probe_pipe.run(abs_path, &.{}, .ast, null, null, null) catch return .argc_style;
+
+    const cu = res.compilation_unit orelse return .argc_style;
+    const pkg = cu.packages.getPtr("main") orelse return .argc_style;
+    const unit = pkg.sources.getPtr(abs_path) orelse return .argc_style;
+    const a = unit.ast orelse return .argc_style;
+
+    for (a.exprs.decl_pool.slice(a.unit.decls)) |did| {
+        const decl = a.exprs.Decl.get(did);
+        const name = patternBindingName(a, decl.pattern) orelse continue;
+        if (!std.mem.eql(u8, name, "main")) continue;
+        if (a.kind(decl.value) != .FunctionLit) continue;
+
+        const fnr = a.exprs.get(.FunctionLit, decl.value);
+        const params = a.exprs.param_pool.slice(fnr.params);
+        if (params.len == 0) return .plain;
+        return .argc_style;
+    }
+
+    return .argc_style;
+}
 
 fn printUsage(writer: anytype, exec: []const u8) !void {
     const b = Colors.bold;
@@ -85,7 +133,9 @@ fn printUsage(writer: anytype, exec: []const u8) !void {
     try writer.print("  {s}interpret{s}     Run comptime interpreter.\n", .{ c, r });
     try writer.print("  {s}mlir{s}          Print MLIR representation.\n", .{ c, r });
     try writer.print("  {s}mlir_passes{s}   Run MLIR passes and print.\n", .{ c, r });
+    try writer.print("  {s}llvm-ir{s}       Print LLVM IR.\n", .{ c, r });
     try writer.print("  {s}llvm_passes{s}   Run LLVM passes and print.\n", .{ c, r });
+    try writer.print("  {s}wasm{s}          Emit wasm (freestanding) to out/output.wasm.\n", .{ c, r });
     try writer.print("  {s}pretty-print{s}  Format and print source.\n", .{ c, r });
     try writer.print("  {s}format{s}        Reformat source in-place.\n", .{ c, r });
     try writer.print("  {s}json-ast{s}      Print AST as JSON.\n", .{ c, r });
@@ -103,6 +153,7 @@ fn printUsage(writer: anytype, exec: []const u8) !void {
     try writer.print("  {s}--tir-prune-unused{s}     Prune unused TIR.\n", .{ c, r });
     try writer.print("  {s}--tir-warn-unused{s}      Warn on unused TIR.\n", .{ c, r });
     try writer.print("  {s}-O<level>{s}              Optimization level (0,1,2,3,s,z).\n\n", .{ c, r });
+    try writer.print("  {s}--sr-libc{s}               Use sr-libc (no system libc/CRT).\n\n", .{ c, r });
     try writer.flush();
 }
 
@@ -128,7 +179,7 @@ fn repl(gpa: std.mem.Allocator, err_w: anytype, out_w: anytype) !void {
     defer gpa.free(src);
     std.debug.print("{s}Input:{s}\n{s}\n", .{ Colors.bold, Colors.reset, src });
 
-    const res = try pipeline.run(src, &.{}, .repl, null, null);
+    const res = try pipeline.run(src, &.{}, .repl, null, null, null);
     const main_pkg = res.compilation_unit.?.packages.getPtr("main") orelse return error.NoMainPackage;
     var ent = main_pkg.sources.entries.get(0).value;
 
@@ -178,7 +229,11 @@ fn server(allocator: std.mem.Allocator, _: anytype) !void {
                 try req.respond("No Length\n", .{ .status = .length_required });
                 continue;
             };
-            const body = req.readerExpectNone(&bbuf).readAlloc(allocator, len) catch {
+            const len_u = std.math.cast(usize, len) orelse {
+                try req.respond("Length Too Large\n", .{ .status = .payload_too_large });
+                continue;
+            };
+            const body = req.readerExpectNone(&bbuf).readAlloc(allocator, len_u) catch {
                 try req.respond("Read Fail\n", .{ .status = .bad_request });
                 continue;
             };
@@ -189,7 +244,7 @@ fn server(allocator: std.mem.Allocator, _: anytype) !void {
             var ctx = lib.compile.Context.init(allocator);
             defer ctx.deinit();
             var pipe = lib.pipeline.Pipeline.init(allocator, &ctx);
-            const res = try pipe.run(src, &.{}, .ast, null, null);
+            const res = try pipe.run(src, &.{}, .ast, null, null, null);
 
             if (ctx.diags.anyErrors()) {
                 try req.respond("Errors\n", .{ .status = .bad_request, .extra_headers = &.{.{ .name = "access-control-allow-origin", .value = "*" }} });
@@ -209,7 +264,10 @@ fn server(allocator: std.mem.Allocator, _: anytype) !void {
 
 fn process_file(ctx: *lib.compile.Context, alloc: std.mem.Allocator, file: []const u8, args: *CliArgs, err_w: anytype, out_w: anytype, link: []const []const u8) !void {
     var abuf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_path = std.fs.cwd().realpath(file, &abuf) catch file;
+    const abs_path = if (builtin.os.tag == .emscripten or builtin.os.tag == .wasi)
+        file
+    else
+        std.fs.cwd().realpath(file, &abuf) catch file;
 
     if (args.subcommand == .format or args.subcommand == .pretty_print) {
         const src = try std.fs.cwd().readFileAlloc(alloc, abs_path, 10 << 20);
@@ -233,7 +291,50 @@ fn process_file(ctx: *lib.compile.Context, alloc: std.mem.Allocator, file: []con
     pipe.tir_prune_unused = args.tir_prune_unused;
     pipe.tir_warn_unused = args.tir_warn_unused;
     pipe.debug_info = args.debug_info;
+    pipe.use_sr_libc = args.use_sr_libc;
     lib.codegen.enable_debug_info = args.debug_info;
+
+    if (args.use_sr_libc) {
+        // Inject libc bootstrap import after the package line.
+        const src = try std.fs.cwd().readFileAlloc(alloc, abs_path, 10 << 20);
+        defer alloc.free(src);
+
+        const main_style = detectSrMainStyle(alloc, abs_path, src);
+
+        const inject = if (main_style == .plain)
+            \\libc_bootstrap :: import "libc/bootstrap"
+            \\__sr_entry_main :: fn(argc: i32, argv: **u8, envp: **u8) i32 {
+            \\    _ = argc
+            \\    _ = argv
+            \\    _ = envp
+            \\    main()
+            \\    return 0
+            \\}
+            \\
+        else
+            \\libc_bootstrap :: import "libc/bootstrap"
+            \\__sr_entry_main :: fn(argc: i32, argv: **u8, envp: **u8) i32 {
+            \\    _ = main(argc, argv, envp)
+            \\    return 0
+            \\}
+            \\
+        ;
+        var insert_at: usize = 0;
+        if (std.mem.indexOf(u8, src, "package ")) |pkg_idx| {
+            // Find end of the package line.
+            if (std.mem.indexOfPos(u8, src, pkg_idx, "\n")) |nl| {
+                insert_at = nl + 1;
+            }
+        }
+
+        const merged = if (insert_at == 0)
+            try std.mem.concat(alloc, u8, &.{ inject, src })
+        else
+            try std.mem.concat(alloc, u8, &.{ src[0..insert_at], inject, src[insert_at..] });
+        defer alloc.free(merged);
+        _ = try ctx.source_manager.setVirtualSourceByPath(abs_path, merged);
+        pipe.tir_prune_unused = false;
+    }
 
     var prog_ctx = ProgressContext{ .writer = err_w, .use_colors = !args.no_color, .prev_line_length = 0 };
     var prog_rep = lib.pipeline.ProgressReporter{ .callback = reportProgress, .context = &prog_ctx };
@@ -256,11 +357,14 @@ fn process_file(ctx: *lib.compile.Context, alloc: std.mem.Allocator, file: []con
         .mlir => .mlir,
         .interpret => .interpret,
         .mlir_passes => .passes,
+        .llvm_ir => .llvm_ir,
         .llvm_passes => .llvm_passes,
+        .wasm => .wasm,
         else => unreachable,
     };
+    ctx.source_manager.target_is_wasm = (mode == .wasm);
 
-    const res = pipe.run(abs_path, link, mode, prog_ptr, args.optimization_level) catch |e| {
+    const res = pipe.run(abs_path, link, mode, prog_ptr, args.optimization_level, args.output_path) catch |e| {
         if (use_prog) finalizeProgress(&prog_ctx, &prog_done, true);
         if (ctx.diags.anyErrors()) try ctx.diags.emitStyled(ctx, err_w, !args.no_color);
         return e;
@@ -313,6 +417,10 @@ fn process_file(ctx: *lib.compile.Context, alloc: std.mem.Allocator, file: []con
         },
         .run => lib.compile.run(),
         .test_mode => {
+            if (builtin.os.tag == .emscripten or builtin.os.tag == .wasi) {
+                try err_w.print("{s}Error:{s} test harness not supported on wasm.\n", .{ Colors.red, Colors.reset });
+                return;
+            }
             const status = lib.compile.runWithStatus() catch {
                 try err_w.print("{s}Error:{s} Test harness failed.\n", .{ Colors.red, Colors.reset });
                 return;
@@ -328,7 +436,10 @@ fn process_file(ctx: *lib.compile.Context, alloc: std.mem.Allocator, file: []con
 }
 
 pub fn main() !void {
-    const gpa = std.heap.page_allocator;
+    const gpa = if (builtin.cpu.arch.isWasm())
+        std.heap.c_allocator
+    else
+        std.heap.page_allocator;
     var iter = std.process.args();
     const exec = iter.next().?;
     var args = CliArgs{};
@@ -346,7 +457,9 @@ pub fn main() !void {
         .{ "tir-liveness", .tir_liveness },
         .{ "mlir", .mlir },
         .{ "mlir_passes", .mlir_passes },
+        .{ "llvm-ir", .llvm_ir },
         .{ "llvm_passes", .llvm_passes },
+        .{ "wasm", .wasm },
         .{ "interpret", .interpret },
         .{ "pretty-print", .pretty_print },
         .{ "format", .format },
@@ -367,7 +480,7 @@ pub fn main() !void {
 
     while (iter.next()) |arg| {
         if (std.mem.startsWith(u8, arg, "--")) {
-            if (std.mem.eql(u8, arg, "--output")) args.output_path = iter.next().? else if (std.mem.eql(u8, arg, "--emit-tir")) args.emit_tir = true else if (std.mem.eql(u8, arg, "--emit-mlir")) args.emit_mlir = true else if (std.mem.eql(u8, arg, "--run-mlir")) args.run_mlir = true else if (std.mem.eql(u8, arg, "--no-color")) args.no_color = true else if (std.mem.eql(u8, arg, "--tir-prune-unused")) args.tir_prune_unused = true else if (std.mem.eql(u8, arg, "--tir-warn-unused")) args.tir_warn_unused = true else if (std.mem.eql(u8, arg, "--verbose")) args.verbose = true else if (std.mem.eql(u8, arg, "--debug")) args.debug_info = true else {
+            if (std.mem.eql(u8, arg, "--output")) args.output_path = iter.next().? else if (std.mem.eql(u8, arg, "--emit-tir")) args.emit_tir = true else if (std.mem.eql(u8, arg, "--emit-mlir")) args.emit_mlir = true else if (std.mem.eql(u8, arg, "--run-mlir")) args.run_mlir = true else if (std.mem.eql(u8, arg, "--no-color")) args.no_color = true else if (std.mem.eql(u8, arg, "--tir-prune-unused")) args.tir_prune_unused = true else if (std.mem.eql(u8, arg, "--tir-warn-unused")) args.tir_warn_unused = true else if (std.mem.eql(u8, arg, "--verbose")) args.verbose = true else if (std.mem.eql(u8, arg, "--debug")) args.debug_info = true else if (std.mem.eql(u8, arg, "--sr-libc")) args.use_sr_libc = true else {
                 try err_w.print("{s}Error:{s} Unknown '{s}'\n", .{ Colors.red, Colors.reset, arg });
                 try printUsage(err_w, exec);
                 std.process.exit(1);
@@ -402,8 +515,13 @@ pub fn main() !void {
         return;
     }
     if (args.subcommand == .server) {
-        try server(gpa, err_w);
-        return;
+        if (comptime (builtin.os.tag == .emscripten or builtin.os.tag == .wasi)) {
+            try err_w.print("{s}Error:{s} server mode is not supported on this target\n", .{ Colors.red, Colors.reset });
+            return;
+        } else {
+            try server(gpa, err_w);
+            return;
+        }
     }
     if (args.subcommand == .lsp) {
         try lsp.run(gpa);

@@ -1,0 +1,13 @@
+package libc
+
+// Derived from musl-1.2.5/src/malloc/mallocng/donate.c
+
+donate :: proc(base: *u8, len: usize) void {
+    _ = base
+    _ = len
+}
+
+__malloc_donate :: proc(start: *u8, end: *u8) void {
+    _ = start
+    _ = end
+}

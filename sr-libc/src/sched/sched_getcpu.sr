@@ -1,0 +1,18 @@
+package libc
+
+// Derived from musl-1.2.5/src/sched/sched_getcpu.c (simplified: direct syscall).
+
+// TODO: Convert includes to sr-lang imports
+// #include <errno.h>
+// #include <sched.h>
+// #include <syscall.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+sched_getcpu :: proc() i32 {
+    cpu: u32 = 0
+    r := sc.syscall3(nums.SYS_getcpu.(i64), (&cpu).^usize.(i64), 0, 0)
+    if r == 0 { return cpu.(i32) }
+    return sc.__syscall_ret(r).(i32)
+}

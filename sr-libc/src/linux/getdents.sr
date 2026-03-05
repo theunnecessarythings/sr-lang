@@ -1,0 +1,16 @@
+package libc
+
+// Derived from musl-1.2.5/src/linux/getdents.c
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+getdents :: proc(fd: i32, buf: *dirent, len: usize) i32 {
+    r := sc.syscall3_ret(
+        nums.SYS_getdents.(i64),
+        fd.(i64),
+        buf.^usize.(i64),
+        len.(i64),
+    )
+    return r.(i32)
+}

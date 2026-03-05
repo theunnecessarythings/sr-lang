@@ -1,0 +1,24 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/ungetc.c.
+
+impl :: import "libc/src/stdio/stdio_impl"
+
+ungetc :: proc(c: i32, f: *alltypes.FILE) i32 {
+    if c == EOF { return c }
+
+    _ = __lockfile(f)
+
+    if f.rpos == null { _ = __toread(f) }
+    if f.rpos == null or f.rpos.^usize <= (f.buf.^usize - impl.UNGET) {
+        _ = __unlockfile(f)
+        return EOF
+    }
+
+    f.rpos = f.rpos - 1
+    f.rpos.* = c.(u8)
+    f.flags = f.flags & ~impl.F_EOF.(u32)
+
+    _ = __unlockfile(f)
+    return c & 0xff
+}

@@ -1,0 +1,14 @@
+package libc
+
+// Derived from musl-1.2.5/src/sched/sched_rr_get_interval.c
+
+// TODO: Convert includes to sr-lang imports
+// #include <sched.h>
+// #include <syscall.h>
+
+sc :: import "libc/src/syscall/syscall"
+nums :: import "libc/include/syscall"
+
+sched_rr_get_interval :: proc(pid: alltypes.pid_t, ts: *timespec) i32 {
+    return sc.syscall2_ret(nums.SYS_sched_rr_get_interval.(i64), pid.(i64), ts.^usize.(i64)).(i32)
+}

@@ -5,8 +5,7 @@ package main
 io :: import "std/io"
 
 main :: proc() {
-    io.print0("Hello from std/io")
+    io.print("Hello from std/io", 0)
     io.println("Answer: %d", 42)
-    io.println0("Done")
+    io.print("Done", 0)
 }
-

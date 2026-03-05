@@ -1,0 +1,49 @@
+package libc
+
+// Derived from musl-1.2.5/src/multibyte/wcrtomb.c.
+
+errno_mod :: import "libc/include/errno"
+
+MB_CUR_MAX :: 4
+
+wcrtomb :: proc(s: ?*u8, wc: wchar_t, st: ?*mbstate_t) isize {
+    _ = st
+    if s == null { return 1 }
+    dst := s?
+
+    if wc.(u32) < 0x80 {
+        dst.* = wc.(u8)
+        return 1
+    } else if MB_CUR_MAX == 1 {
+        if (wc.(u32) - 0xdf80) >= 0x80 {
+            errno_mod.__errno_location().* = errno_mod.EILSEQ
+            return -1
+        }
+        dst.* = wc.(u8)
+        return 1
+    } else if wc.(u32) < 0x800 {
+        dst.* = (0xc0 | (wc.(u32) >> 6)).(u8)
+        dst = dst + 1
+        dst.* = (0x80 | (wc.(u32) & 0x3f)).(u8)
+        return 2
+    } else if wc.(u32) < 0xd800 or (wc.(u32) - 0xe000) < 0x2000 {
+        dst.* = (0xe0 | (wc.(u32) >> 12)).(u8)
+        dst = dst + 1
+        dst.* = (0x80 | ((wc.(u32) >> 6) & 0x3f)).(u8)
+        dst = dst + 1
+        dst.* = (0x80 | (wc.(u32) & 0x3f)).(u8)
+        return 3
+    } else if (wc.(u32) - 0x10000) < 0x100000 {
+        dst.* = (0xf0 | (wc.(u32) >> 18)).(u8)
+        dst = dst + 1
+        dst.* = (0x80 | ((wc.(u32) >> 12) & 0x3f)).(u8)
+        dst = dst + 1
+        dst.* = (0x80 | ((wc.(u32) >> 6) & 0x3f)).(u8)
+        dst = dst + 1
+        dst.* = (0x80 | (wc.(u32) & 0x3f)).(u8)
+        return 4
+    }
+
+    errno_mod.__errno_location().* = errno_mod.EILSEQ
+    return -1
+}

@@ -1,0 +1,73 @@
+package libc
+
+// Derived from musl-1.2.5/src/string/strsignal.c (x86_64 Linux mapping).
+
+strsignal :: proc(signum: i32) *const u8 {
+    if signum == 0 { return "Unknown signal".ptr }
+    if signum == 1 { return "Hangup".ptr }
+    if signum == 2 { return "Interrupt".ptr }
+    if signum == 3 { return "Quit".ptr }
+    if signum == 4 { return "Illegal instruction".ptr }
+    if signum == 5 { return "Trace/breakpoint trap".ptr }
+    if signum == 6 { return "Aborted".ptr }
+    if signum == 7 { return "Bus error".ptr }
+    if signum == 8 { return "Arithmetic exception".ptr }
+    if signum == 9 { return "Killed".ptr }
+    if signum == 10 { return "User defined signal 1".ptr }
+    if signum == 11 { return "Segmentation fault".ptr }
+    if signum == 12 { return "User defined signal 2".ptr }
+    if signum == 13 { return "Broken pipe".ptr }
+    if signum == 14 { return "Alarm clock".ptr }
+    if signum == 15 { return "Terminated".ptr }
+    if signum == 16 { return "Stack fault".ptr }
+    if signum == 17 { return "Child process status".ptr }
+    if signum == 18 { return "Continued".ptr }
+    if signum == 19 { return "Stopped (signal)".ptr }
+    if signum == 20 { return "Stopped".ptr }
+    if signum == 21 { return "Stopped (tty input)".ptr }
+    if signum == 22 { return "Stopped (tty output)".ptr }
+    if signum == 23 { return "Urgent I/O condition".ptr }
+    if signum == 24 { return "CPU time limit exceeded".ptr }
+    if signum == 25 { return "File size limit exceeded".ptr }
+    if signum == 26 { return "Virtual timer expired".ptr }
+    if signum == 27 { return "Profiling timer expired".ptr }
+    if signum == 28 { return "Window changed".ptr }
+    if signum == 29 { return "I/O possible".ptr }
+    if signum == 30 { return "Power failure".ptr }
+    if signum == 31 { return "Bad system call".ptr }
+    if signum == 32 { return "RT32".ptr }
+    if signum == 33 { return "RT33".ptr }
+    if signum == 34 { return "RT34".ptr }
+    if signum == 35 { return "RT35".ptr }
+    if signum == 36 { return "RT36".ptr }
+    if signum == 37 { return "RT37".ptr }
+    if signum == 38 { return "RT38".ptr }
+    if signum == 39 { return "RT39".ptr }
+    if signum == 40 { return "RT40".ptr }
+    if signum == 41 { return "RT41".ptr }
+    if signum == 42 { return "RT42".ptr }
+    if signum == 43 { return "RT43".ptr }
+    if signum == 44 { return "RT44".ptr }
+    if signum == 45 { return "RT45".ptr }
+    if signum == 46 { return "RT46".ptr }
+    if signum == 47 { return "RT47".ptr }
+    if signum == 48 { return "RT48".ptr }
+    if signum == 49 { return "RT49".ptr }
+    if signum == 50 { return "RT50".ptr }
+    if signum == 51 { return "RT51".ptr }
+    if signum == 52 { return "RT52".ptr }
+    if signum == 53 { return "RT53".ptr }
+    if signum == 54 { return "RT54".ptr }
+    if signum == 55 { return "RT55".ptr }
+    if signum == 56 { return "RT56".ptr }
+    if signum == 57 { return "RT57".ptr }
+    if signum == 58 { return "RT58".ptr }
+    if signum == 59 { return "RT59".ptr }
+    if signum == 60 { return "RT60".ptr }
+    if signum == 61 { return "RT61".ptr }
+    if signum == 62 { return "RT62".ptr }
+    if signum == 63 { return "RT63".ptr }
+    if signum == 64 { return "RT64".ptr }
+    if signum == 65 { return "Unknown signal".ptr }
+    return "Unknown signal".ptr
+}

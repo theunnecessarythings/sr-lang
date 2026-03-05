@@ -1,0 +1,38 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/tanh.c.
+
+libm :: import "libc/src/math/libm_internal"
+
+
+tanh :: proc(x: f64) f64 {
+    u := libm.asuint64(x)
+    w: u32
+    sign: u32
+    t: f64
+
+    sign = (u >> 63).(u32)
+    u &= 0x7fff_ffff_ffff_ffff
+    x = libm.asdouble(u)
+    w = (u >> 32).(u32)
+
+    if w > 0x3fe193ea {
+        if w > 0x40340000 {
+            t = 1.0 - 0.0 / x
+        } else {
+            t = expm1(2.0 * x)
+            t = 1.0 - 2.0 / (t + 2.0)
+        }
+    } else if w > 0x3fd058ae {
+        t = expm1(2.0 * x)
+        t = t / (t + 2.0)
+    } else if w >= 0x00100000 {
+        t = expm1(-2.0 * x)
+        t = -t / (t + 2.0)
+    } else {
+        libm.fp_force_eval(x.(f32))
+        t = x
+    }
+
+    return if sign != 0 { -t } else { t }
+}

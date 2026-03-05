@@ -1,0 +1,20 @@
+package libc
+
+// Derived from musl-1.2.5/src/signal/sigprocmask.c
+
+nums :: import "libc/include/syscall"
+sc :: import "libc/src/syscall/syscall"
+alltypes :: import "libc/include/alltypes"
+
+sigprocmask :: proc(how: i32, set: ?*const alltypes.sigset_t, old: ?*alltypes.sigset_t) i32 {
+    old_ptr := if old != null { (old?).^usize } else { 0.(usize) }
+    set_ptr := if set != null { (set?).^usize } else { 0.(usize) }
+    r := sc.syscall4_ret(
+        nums.SYS_rt_sigprocmask.(i64),
+        how.(i64),
+        set_ptr.(i64),
+        old_ptr.(i64),
+        sizeof(alltypes.sigset_t).(i64),
+    )
+    return r.(i32)
+}

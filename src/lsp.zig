@@ -71,7 +71,7 @@ const AnalysisCache = struct {
         const file_id = try context.source_manager.setVirtualSourceByPath(path, doc.text);
         var pipeline: lib.pipeline.Pipeline = .init(self.gpa, &context);
 
-        _ = pipeline.run(path, &.{}, .check, null, null) catch |err| switch (err) {
+        _ = pipeline.run(path, &.{}, .check, null, null, null) catch |err| switch (err) {
             error.ParseFailed,
             error.TypeCheckFailed,
             error.LoweringFailed,

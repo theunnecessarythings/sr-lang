@@ -1,0 +1,101 @@
+package libc
+
+// Derived from musl-1.2.5/src/math/remquof.c.
+
+basic :: import "libc/src/math/basic"
+
+remquof :: proc(x: f32, y: f32, quo: *i32) f32 {
+    ux := x.^u32
+    uy := y.^u32
+    ex := ((ux >> 23) & 0xff).(i32)
+    ey := ((uy >> 23) & 0xff).(i32)
+    sx := (ux >> 31).(u32)
+    sy := (uy >> 31).(u32)
+    q: u32
+    i: u32
+    uxi := ux
+
+    quo.* = 0
+    if (uy << 1) == 0 or basic.isnanf(y) != 0 or ex == 0xff { return (x * y) / (x * y) }
+    if (ux << 1) == 0 { return x }
+
+    if ex == 0 {
+        i = uxi << 9
+        while (i >> 31) == 0 {
+            ex -= 1
+            i <<= 1
+        }
+        uxi <<= (-ex + 1).(u32)
+    } else {
+        uxi &= (~0u32) >> 9
+        uxi |= 1u32 << 23
+    }
+    if ey == 0 {
+        i = uy << 9
+        while (i >> 31) == 0 {
+            ey -= 1
+            i <<= 1
+        }
+        uy <<= (-ey + 1).(u32)
+    } else {
+        uy &= (~0u32) >> 9
+        uy |= 1u32 << 23
+    }
+
+    q = 0
+    do_mod := true
+    if ex < ey {
+        if ex + 1 == ey {
+            do_mod = false
+        } else {
+            return x
+        }
+    }
+
+    if do_mod {
+        while ex > ey {
+            i = uxi - uy
+            if (i >> 31) == 0 {
+                uxi = i
+                q += 1
+            }
+            uxi <<= 1
+            q <<= 1
+            ex -= 1
+        }
+        i = uxi - uy
+        if (i >> 31) == 0 {
+            uxi = i
+            q += 1
+        }
+        if uxi == 0 {
+            ex = -30
+        } else {
+            while (uxi >> 23) == 0 {
+                uxi <<= 1
+                ex -= 1
+            }
+        }
+    }
+
+    if ex > 0 {
+        uxi -= 1u32 << 23
+        uxi |= (ex.(u32) << 23)
+    } else {
+        uxi >>= (-ex + 1).(u32)
+    }
+    x = uxi.^f32
+    if sy != 0 { y = -y }
+    if ex == ey or (ex + 1 == ey and (2.0f * x > y or (2.0f * x == y and (q % 2) != 0))) {
+        x -= y
+        q += 1
+    }
+    q &= 0x7fffffff
+    quo.* = if (sx ^ sy) != 0 { -q.(i32) } else { q.(i32) }
+    return if sx != 0 { -x } else { x }
+}
+
+remainderf :: proc(x: f32, y: f32) f32 {
+    q: i32
+    return remquof(x, y, &q)
+}

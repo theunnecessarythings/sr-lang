@@ -1,0 +1,82 @@
+package libc
+
+// Derived from musl-1.2.5/src/multibyte/mbrtowc.c.
+
+alltypes :: import "libc/include/alltypes"
+errno_mod :: import "libc/include/errno"
+internal :: import "libc/src/multibyte/internal"
+
+MB_CUR_MAX :: 4
+
+mbrtowc :: proc(wc: ?*alltypes.wchar_t, src: ?*const u8, n: usize, st: ?*alltypes.mbstate_t) isize {
+    static_state: u32 = 0
+    state_ptr: *u32
+    if st != null {
+        stp := st?
+        state_ptr = &stp.*.__opaque1
+    } else {
+        state_ptr = &static_state
+    }
+    c := state_ptr.*
+    dummy: alltypes.wchar_t = 0
+
+    if src == null {
+        if c != 0 {
+            state_ptr.* = 0
+            errno_mod.__errno_location().* = errno_mod.EILSEQ
+            return (-1).(isize)
+        }
+        return 0.(isize)
+    } else if wc == null {
+        wc = &dummy
+    }
+
+    if n == 0 { return (-2).(isize) }
+
+    s := src?
+    if c == 0 {
+        if s.* < 0x80 {
+            wc?.* = s.*.(alltypes.wchar_t)
+            return if s.* != 0 { 1.(isize) } else { 0.(isize) }
+        }
+        if MB_CUR_MAX == 1 {
+            wc?.* = internal.CODEUNIT(s.*)
+            return 1.(isize)
+        }
+        if s.* < internal.SA or s.* > internal.SB {
+            state_ptr.* = 0
+            errno_mod.__errno_location().* = errno_mod.EILSEQ
+            return (-1).(isize)
+        }
+        c = internal.bittab_get((s.* - internal.SA).(usize))
+        s = (s.^usize + 1).(usize).^*const u8
+        n -= 1
+    }
+
+    if n != 0 {
+        if internal.OOB(c, s.*) {
+            state_ptr.* = 0
+            errno_mod.__errno_location().* = errno_mod.EILSEQ
+            return (-1).(isize)
+        }
+        while true {
+            c = (c << 6) | (s.* - 0x80).(u32)
+            s = (s.^usize + 1).(usize).^*const u8
+            n -= 1
+            if (c & (1.(u32) << 31)) == 0 {
+                state_ptr.* = 0
+                wc?.* = c.(alltypes.wchar_t)
+                return (s.^usize - src?.^usize).(isize)
+            }
+            if n == 0 { break }
+            if (s.* - 0x80) >= 0x40 {
+                state_ptr.* = 0
+                errno_mod.__errno_location().* = errno_mod.EILSEQ
+                return (-1).(isize)
+            }
+        }
+    }
+
+    state_ptr.* = c
+    return (-2).(isize)
+}

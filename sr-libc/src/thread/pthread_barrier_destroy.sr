@@ -1,0 +1,26 @@
+package libc
+
+// Derived from musl-1.2.5/src/thread/pthread_barrier_destroy.c
+
+bar_int :: import "libc/src/thread/pthread_barrier_internal"
+atomic :: import "libc/src/internal/atomic"
+wait_mod :: import "libc/src/thread/__wait"
+vmlock_mod :: import "libc/src/thread/vmlock"
+
+INT_MIN :: -2147483648
+INT_MAX :: 2147483647
+
+pthread_barrier_destroy :: proc(b: *pthread_barrier_t) i32 {
+    if bar_int.bar_limit(b).* < 0 {
+        if bar_int.bar_lock(b).* != 0 {
+            atomic.a_or(bar_int.bar_lock(b), INT_MIN)
+            while true {
+                v := bar_int.bar_lock(b).*
+                if (v & INT_MAX) == 0 { break }
+                wait_mod.__wait(bar_int.bar_lock(b), null, v, 0)
+            }
+        }
+        vmlock_mod.__vm_wait()
+    }
+    return 0
+}

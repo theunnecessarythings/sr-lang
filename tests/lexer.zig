@@ -786,8 +786,11 @@ test "printf call emits closing rparen" {
         \\printf(fmt.(*void), r);
     , &.{
         .identifier, .lparen,
-        .identifier, .dotlparen, .star, .identifier, .rparen,
-        .comma, .identifier, .rparen, .eos,
+        .identifier, .dotlparen,
+        .star,       .identifier,
+        .rparen,     .comma,
+        .identifier, .rparen,
+        .eos,
     });
 }
 

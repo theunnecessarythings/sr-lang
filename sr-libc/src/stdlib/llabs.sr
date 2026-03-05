@@ -1,0 +1,8 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdlib/llabs.c.
+
+llabs :: proc(a: i64) i64 {
+    if a > 0 { return a }
+    return -a
+}

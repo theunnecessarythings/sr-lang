@@ -1,0 +1,37 @@
+package libc
+
+// Derived from musl-1.2.5/src/stdio/fwrite.c.
+
+memcpy_mod :: import "libc/src/string/memcpy"
+
+__fwritex :: proc(s: *const u8, l: usize, f: *alltypes.FILE) usize {
+    i: usize = 0
+    if f.wend == null and __towrite(f) != 0 { return 0 }
+
+    if l > (f.wend.^usize - f.wpos.^usize) { return f.write(f, s, l) }
+
+    if f.lbf >= 0 {
+        i = l
+        while i != 0 and s[i - 1] != 10 { i -= 1 }
+        if i != 0 {
+            n := f.write(f, s, i)
+            if n < i { return n }
+            s = s + i
+            l -= i
+        }
+    }
+
+    _ = memcpy_mod.memcpy(f.wpos.^*void, s.^*const void, l)
+    f.wpos = f.wpos + l
+    return l + i
+}
+
+fwrite :: proc(src: *const void, size: usize, nmemb: usize, f: *alltypes.FILE) usize {
+    l := size * nmemb
+    if size == 0 { return 0 }
+    _ = __lockfile(f)
+    k := __fwritex(src.^*const u8, l, f)
+    _ = __unlockfile(f)
+    if k == l { return nmemb }
+    return k / size
+}
