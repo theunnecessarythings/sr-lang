@@ -31,8 +31,8 @@ const Interval = struct { a: i64, b: i64 };
 const IntSet = struct {
     wildcard: bool = false,
     non_int: bool = false,
-    points: std.ArrayList(i64) = .{},
-    ranges: std.ArrayList(Interval) = .{},
+    points: std.ArrayList(i64) = .empty,
+    ranges: std.ArrayList(Interval) = .empty,
 
     pub fn deinit(self: *IntSet, gpa: std.mem.Allocator) void {
         self.points.deinit(gpa);
@@ -42,8 +42,8 @@ const IntSet = struct {
 
 const IntCoverage = struct {
     wildcard: bool = false,
-    points: std.AutoArrayHashMapUnmanaged(i64, void) = .{},
-    ranges: std.ArrayList(Interval) = .{},
+    points: std.AutoArrayHashMapUnmanaged(i64, void) = .empty,
+    ranges: std.ArrayList(Interval) = .empty,
 
     pub fn deinit(self: *IntCoverage, gpa: std.mem.Allocator) void {
         self.points.deinit(gpa);
@@ -418,7 +418,7 @@ pub fn checkMatch(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.A
     var enum_domain = true;
     var unguarded_count: usize = 0;
 
-    var enum_covered = std.AutoArrayHashMapUnmanaged(ast.StrId, void){};
+    var enum_covered = std.AutoArrayHashMapUnmanaged(ast.StrId, void).empty;
     defer enum_covered.deinit(self.gpa);
     const enum_total = if (subj_kind == .Enum) self.context.type_store.enum_member_pool.slice(self.context.type_store.get(.Enum, subj_ty).members).len else 0;
 
@@ -640,7 +640,7 @@ fn isEnumTagPattern(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId, enum
 }
 
 fn missingBoolMatchCases(self: *Checker, covered_true: bool, covered_false: bool) !?ast.StrId {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(self.gpa);
     if (!covered_true) try buf.appendSlice(self.gpa, "true");
     if (!covered_true and !covered_false) try buf.appendSlice(self.gpa, ", ");
@@ -649,7 +649,7 @@ fn missingBoolMatchCases(self: *Checker, covered_true: bool, covered_false: bool
 }
 
 fn missingEnumMatchCases(self: *Checker, enum_ty: types.TypeId, covered: *std.AutoArrayHashMapUnmanaged(ast.StrId, void)) !?ast.StrId {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(self.gpa);
     const members = self.context.type_store.enum_member_pool.slice(self.context.type_store.get(.Enum, enum_ty).members);
     var first = true;

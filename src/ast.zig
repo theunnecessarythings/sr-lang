@@ -463,7 +463,7 @@ pub fn isTritonLaunchCall(a: *Ast, call: Rows.Call) bool {
 // --- Printers ---
 
 pub const AstPrinter = struct {
-    writer: *std.io.Writer,
+    writer: *std.Io.Writer,
     indent: usize = 0,
     exprs: *ExprStore,
     stmts: *StmtStore,

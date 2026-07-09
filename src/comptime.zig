@@ -183,21 +183,21 @@ pub const ValueStore = struct {
     }
 
     pub fn addStructFields(self: *@This(), fields: []const ValueRows.StructField) cst.RangeOf(StructFieldId) {
-        var ids = std.ArrayList(StructFieldId){};
+        var ids = std.ArrayListUnmanaged(StructFieldId).empty;
         defer ids.deinit(self.gpa);
         for (fields) |f| ids.append(self.gpa, self.StructField.add(self.gpa, f)) catch @panic("OOM");
         return self.struct_field_pool.pushMany(self.gpa, ids.items);
     }
 
     pub fn addMapEntries(self: *@This(), entries: []const ValueRows.MapEntry) cst.RangeOf(MapEntryId) {
-        var ids = std.ArrayList(MapEntryId){};
+        var ids = std.ArrayListUnmanaged(MapEntryId).empty;
         defer ids.deinit(self.gpa);
         for (entries) |e| ids.append(self.gpa, self.MapEntry.add(self.gpa, e)) catch @panic("OOM");
         return self.map_entry_pool.pushMany(self.gpa, ids.items);
     }
 
     pub fn addCodeBindings(self: *@This(), bindings: []const ValueRows.CodeBinding) cst.RangeOf(CodeBindingId) {
-        var ids = std.ArrayList(CodeBindingId){};
+        var ids = std.ArrayListUnmanaged(CodeBindingId).empty;
         defer ids.deinit(self.gpa);
         for (bindings) |b| ids.append(self.gpa, self.CodeBinding.add(self.gpa, b)) catch @panic("OOM");
         return self.code_binding_pool.pushMany(self.gpa, ids.items);

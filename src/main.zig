@@ -14,7 +14,7 @@ const Colors = struct {
 };
 
 const ProgressContext = struct {
-    writer: *std.io.Writer,
+    writer: *std.Io.Writer,
     use_colors: bool,
     prev_line_length: usize,
 };
@@ -87,8 +87,8 @@ fn patternBindingName(a: *lib.ast.Ast, pat_opt: lib.ast.OptPatternId) ?[]const u
     };
 }
 
-fn detectSrMainStyle(gpa: std.mem.Allocator, abs_path: []const u8, src: []const u8) SrMainStyle {
-    var probe_ctx = lib.compile.Context.init(gpa);
+fn detectSrMainStyle(gpa: std.mem.Allocator, io: std.Io, abs_path: []const u8, src: []const u8) SrMainStyle {
+    var probe_ctx = lib.compile.Context.init(gpa, io);
     defer probe_ctx.deinit();
     probe_ctx.load_imports = false;
 
@@ -157,14 +157,15 @@ fn printUsage(writer: anytype, exec: []const u8) !void {
     try writer.flush();
 }
 
-fn repl(gpa: std.mem.Allocator, err_w: anytype, out_w: anytype) !void {
+fn repl(init: std.process.Init, err_w: anytype, out_w: anytype) !void {
+    const gpa = init.gpa;
     try err_w.print("{s}Welcome to the REPL! Type code, Ctrl-D to evaluate.{s}\n", .{ Colors.green, Colors.reset });
-    var ctx = lib.compile.Context.init(gpa);
+    var ctx = lib.compile.Context.init(gpa, init.io);
     defer ctx.deinit();
     var pipeline = lib.pipeline.Pipeline.init(gpa, &ctx);
     var buf: [4096]u8 = undefined;
-    var stdin = std.fs.File.stdin().readerStreaming(&buf);
-    var lines = std.ArrayList([]const u8){};
+    var stdin = std.Io.File.Reader.init(.stdin(), init.io, &buf);
+    var lines = std.ArrayListUnmanaged([]const u8).empty;
     defer lines.deinit(gpa);
 
     while (true) {
@@ -200,20 +201,20 @@ fn repl(gpa: std.mem.Allocator, err_w: anytype, out_w: anytype) !void {
     try out_w.flush();
 }
 
-fn server(allocator: std.mem.Allocator, _: anytype) !void {
-    const addr = try std.net.Address.parseIp4("127.0.0.1", 8000);
-    var tcp = try addr.listen(.{ .reuse_address = true });
-    defer tcp.deinit();
+fn server(allocator: std.mem.Allocator, io: std.Io) !void {
+    const addr = try std.Io.net.IpAddress.parseIp4("127.0.0.1", 8000);
+    var tcp = try addr.listen(io, .{ .reuse_address = true });
+    defer tcp.deinit(io);
     std.debug.print("AST server on http://127.0.0.1:8000\n", .{});
 
     while (true) {
-        var conn = tcp.accept() catch continue;
-        defer conn.stream.close();
+        var conn = tcp.accept(io) catch continue;
+        defer conn.close(io);
         var rbuf: [4096]u8 = undefined;
         var wbuf: [4096]u8 = undefined;
-        var reader = conn.stream.reader(&rbuf);
-        var writer = conn.stream.writer(&wbuf);
-        var http = std.http.Server.init(reader.interface(), &writer.interface);
+        var reader = conn.reader(io, &rbuf);
+        var writer = conn.writer(io, &wbuf);
+        var http = std.http.Server.init(&reader.interface, &writer.interface);
         while (http.reader.state == .ready) {
             var req = http.receiveHead() catch break;
             if (req.head.method == .OPTIONS) {
@@ -241,7 +242,7 @@ fn server(allocator: std.mem.Allocator, _: anytype) !void {
             const src = try allocator.dupeZ(u8, body);
             defer allocator.free(src);
 
-            var ctx = lib.compile.Context.init(allocator);
+            var ctx = lib.compile.Context.init(allocator, io);
             defer ctx.deinit();
             var pipe = lib.pipeline.Pipeline.init(allocator, &ctx);
             const res = try pipe.run(src, &.{}, .ast, null, null, null);
@@ -263,14 +264,14 @@ fn server(allocator: std.mem.Allocator, _: anytype) !void {
 }
 
 fn process_file(ctx: *lib.compile.Context, alloc: std.mem.Allocator, file: []const u8, args: *CliArgs, err_w: anytype, out_w: anytype, link: []const []const u8) !void {
-    var abuf: [std.fs.max_path_bytes]u8 = undefined;
     const abs_path = if (builtin.os.tag == .emscripten or builtin.os.tag == .wasi)
-        file
+        try alloc.dupe(u8, file)
     else
-        std.fs.cwd().realpath(file, &abuf) catch file;
+        std.Io.Dir.cwd().realPathFileAlloc(ctx.source_manager.io, file, alloc) catch try alloc.dupe(u8, file);
+    defer alloc.free(abs_path);
 
     if (args.subcommand == .format or args.subcommand == .pretty_print) {
-        const src = try std.fs.cwd().readFileAlloc(alloc, abs_path, 10 << 20);
+        const src = try std.Io.Dir.cwd().readFileAlloc(ctx.source_manager.io, abs_path, alloc, .limited(10 << 20));
         defer alloc.free(src);
         const zsrc = try std.mem.concatWithSentinel(alloc, u8, &.{src}, 0);
         defer alloc.free(zsrc);
@@ -280,9 +281,9 @@ fn process_file(ctx: *lib.compile.Context, alloc: std.mem.Allocator, file: []con
             try out_w.writeAll(fmt);
             try out_w.flush();
         } else {
-            var f = try std.fs.cwd().createFile(abs_path, .{ .truncate = true });
-            defer f.close();
-            try f.writeAll(fmt);
+            var f = try std.Io.Dir.cwd().createFile(ctx.source_manager.io, abs_path, .{ .truncate = true });
+            defer f.close(ctx.source_manager.io);
+            try f.writeStreamingAll(ctx.source_manager.io, fmt);
         }
         return;
     }
@@ -296,10 +297,15 @@ fn process_file(ctx: *lib.compile.Context, alloc: std.mem.Allocator, file: []con
 
     if (args.use_sr_libc) {
         // Inject libc bootstrap import after the package line.
-        const src = try std.fs.cwd().readFileAlloc(alloc, abs_path, 10 << 20);
+        const f = try std.Io.Dir.cwd().openFile(ctx.source_manager.io, abs_path, .{ .mode = .read_only });
+        defer f.close(ctx.source_manager.io);
+        const stat = try f.stat(ctx.source_manager.io);
+        var file_buf: [1024]u8 = undefined;
+        var f_reader = f.reader(ctx.source_manager.io, &file_buf);
+        const src = try f_reader.interface.readAlloc(alloc, @intCast(stat.size));
         defer alloc.free(src);
 
-        const main_style = detectSrMainStyle(alloc, abs_path, src);
+        const main_style = detectSrMainStyle(alloc, ctx.source_manager.io, abs_path, src);
 
         const inject = if (main_style == .plain)
             \\libc_bootstrap :: import "libc/bootstrap"
@@ -415,13 +421,13 @@ fn process_file(ctx: *lib.compile.Context, alloc: std.mem.Allocator, file: []con
             };
             try out_w.flush();
         },
-        .run => lib.compile.run(),
+        .run => _ = lib.compile.runWithStatus(ctx.source_manager.io) catch {},
         .test_mode => {
             if (builtin.os.tag == .emscripten or builtin.os.tag == .wasi) {
                 try err_w.print("{s}Error:{s} test harness not supported on wasm.\n", .{ Colors.red, Colors.reset });
                 return;
             }
-            const status = lib.compile.runWithStatus() catch {
+            const status = lib.compile.runWithStatus(ctx.source_manager.io) catch {
                 try err_w.print("{s}Error:{s} Test harness failed.\n", .{ Colors.red, Colors.reset });
                 return;
             };
@@ -435,15 +441,25 @@ fn process_file(ctx: *lib.compile.Context, alloc: std.mem.Allocator, file: []con
     if (args.verbose) try err_w.print("{s}Success: {s}.{s}\n", .{ Colors.green, file, Colors.reset });
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     const gpa = if (builtin.cpu.arch.isWasm())
         std.heap.c_allocator
     else
         std.heap.page_allocator;
-    var iter = std.process.args();
+    const ArgsIterator = struct {
+        args: []const [*:0]const u8,
+        index: usize = 0,
+
+        fn next(self: *@This()) ?[]const u8 {
+            if (self.index >= self.args.len) return null;
+            defer self.index += 1;
+            return std.mem.span(self.args[self.index]);
+        }
+    };
+    var iter = ArgsIterator{ .args = init.minimal.args.vector };
     const exec = iter.next().?;
     var args = CliArgs{};
-    var link = std.ArrayList([]const u8){};
+    var link: std.ArrayList([]const u8) = .empty;
     defer link.deinit(gpa);
 
     const cmds = std.StaticStringMap(CliArgs.Subcommand).initComptime(.{
@@ -473,8 +489,8 @@ pub fn main() !void {
 
     var obuf: [1024]u8 = undefined;
     var ebuf: [1024]u8 = undefined;
-    var stdout = std.fs.File.stdout().writer(&obuf);
-    var stderr = std.fs.File.stderr().writer(&ebuf);
+    var stdout = std.Io.File.Writer.init(.stdout(), init.io, &obuf);
+    var stderr = std.Io.File.Writer.init(.stderr(), init.io, &ebuf);
     const out_w = &stdout.interface;
     const err_w = &stderr.interface;
 
@@ -511,7 +527,7 @@ pub fn main() !void {
         return;
     }
     if (args.subcommand == .repl) {
-        try repl(gpa, err_w, out_w);
+        try repl(init, err_w, out_w);
         return;
     }
     if (args.subcommand == .server) {
@@ -519,12 +535,12 @@ pub fn main() !void {
             try err_w.print("{s}Error:{s} server mode is not supported on this target\n", .{ Colors.red, Colors.reset });
             return;
         } else {
-            try server(gpa, err_w);
+            try server(gpa, init.io);
             return;
         }
     }
     if (args.subcommand == .lsp) {
-        try lsp.run(gpa);
+        try lsp.run(gpa, init.io);
         return;
     }
 
@@ -533,7 +549,7 @@ pub fn main() !void {
         std.process.exit(1);
     }
 
-    var ctx = lib.compile.Context.init(gpa);
+    var ctx = lib.compile.Context.init(gpa, init.io);
     defer ctx.deinit();
     process_file(&ctx, gpa, args.filename.?, &args, err_w, out_w, link.items) catch |e| {
         if (ctx.diags.anyErrors()) try ctx.diags.emitStyled(&ctx, err_w, !args.no_color);

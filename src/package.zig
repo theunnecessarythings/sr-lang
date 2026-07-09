@@ -1,5 +1,6 @@
 const std = @import("std");
 const SourceManager = @import("compile.zig").SourceManager;
+const sync = @import("sync.zig");
 const cst = @import("cst.zig");
 const ast = @import("ast.zig");
 const tir = @import("tir.zig");
@@ -13,7 +14,7 @@ const DependencyGraph = std.AutoHashMapUnmanaged(u32, DependencySet);
 pub const CompilationUnit = struct {
     gpa: std.mem.Allocator,
     packages: std.StringArrayHashMapUnmanaged(Package) = .{},
-    mutex: std.Thread.Mutex = .{},
+    mutex: sync.Mutex = .{},
     dependencies: DependencyGraph = .{},
 
     pub fn init(gpa: std.mem.Allocator) CompilationUnit {

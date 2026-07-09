@@ -683,7 +683,7 @@ fn tryMethodPath(self: *Parser, lhs_expr: cst.ExprId) !cst.OptRangeMethodPathSeg
     const ok = try self.collectMethodPathSegments(lhs_expr, &segs);
     if (!ok or segs.items.len < 2) return cst.OptRangeMethodPathSeg.none();
 
-    var ids = std.ArrayListUnmanaged(cst.MethodPathSegId){};
+    var ids: std.ArrayListUnmanaged(cst.MethodPathSegId) = .empty;
     defer ids.deinit(self.gpa);
     try ids.ensureTotalCapacity(self.gpa, segs.items.len);
     for (segs.items) |seg| {
@@ -2768,7 +2768,7 @@ fn parseMlir(self: *Parser) !cst.ExprId {
 }
 
 fn buildMlirPieces(self: *Parser, raw_text: []const u8) !cst.RangeOf(cst.MlirPieceId) {
-    var piece_ids = std.ArrayListUnmanaged(cst.MlirPieceId){};
+    var piece_ids: std.ArrayListUnmanaged(cst.MlirPieceId) = .empty;
     defer piece_ids.deinit(self.gpa);
 
     const addPiece = struct {

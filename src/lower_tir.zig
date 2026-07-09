@@ -48,24 +48,24 @@ gpa: std.mem.Allocator,
 context: *Context,
 pipeline: *Pipeline,
 chk: *checker.Checker,
-lower_context: List(*LowerContext) = .{},
+lower_context: List(*LowerContext) = .empty,
 test_mode: bool = false,
-test_funcs: std.ArrayList(TestFunc) = .{},
+test_funcs: std.ArrayList(TestFunc) = .empty,
 harness_emitted: bool = false,
 entry_pkg_name: StrId,
 entry_pkg_locked: bool = false,
 const_slice_counter: u32 = 0,
-closure_fn_syms: std.AutoArrayHashMapUnmanaged(u32, StrId) = .{},
+closure_fn_syms: std.AutoArrayHashMapUnmanaged(u32, StrId) = .empty,
 
 const TestFunc = struct { sym: StrId, ty: types.TypeId, name: ?ast.StrId };
 
 pub const LowerContext = struct {
-    loop_stack: List(cf.LoopCtx) = .{},
-    expr_type_override_stack: List(ExprTypeOverrideFrame) = .{},
-    pattern_binding_names: List(ast.StrId) = .{},
-    binding_snapshots: List(EnvBindingSnapshot) = .{},
-    mlir_scratch_pieces: List(tir.MlirPieceId) = .{},
-    mlir_scratch_values: List(tir.ValueId) = .{},
+    loop_stack: List(cf.LoopCtx) = .empty,
+    expr_type_override_stack: List(ExprTypeOverrideFrame) = .empty,
+    pattern_binding_names: List(ast.StrId) = .empty,
+    binding_snapshots: List(EnvBindingSnapshot) = .empty,
+    mlir_scratch_pieces: List(tir.MlirPieceId) = .empty,
+    mlir_scratch_values: List(tir.ValueId) = .empty,
 
     gpa: std.mem.Allocator,
     builder: ?*tir.Builder = null,
@@ -119,7 +119,7 @@ pub fn init(gpa: std.mem.Allocator, context: *Context, pipeline: *Pipeline, chk:
         .context = context,
         .pipeline = pipeline,
         .chk = chk,
-        .lower_context = .{},
+        .lower_context = .empty,
         .test_mode = test_mode,
         .entry_pkg_name = context.type_store.strs.intern("main"),
     };
@@ -131,7 +131,7 @@ pub fn deinit(self: *LowerTir) void {
 }
 
 fn throwErr(self: *LowerTir, loc: Loc) anyerror {
-    std.debug.dumpCurrentStackTrace(null);
+    std.debug.dumpCurrentStackTrace(.{});
     try self.context.diags.addError(loc, .tir_lowering_failed, .{});
     return error.LoweringBug;
 }
@@ -568,7 +568,7 @@ fn constInitFromExpr(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, expr_id: 
         const field_decls = self.context.type_store.field_pool.slice(struct_ty.fields);
         const field_inits = a.exprs.sfv_pool.slice(struct_lit.fields);
 
-        var field_const_inits = std.ArrayList(tir.ConstInit){};
+        var field_const_inits = std.ArrayList(tir.ConstInit).empty;
         defer field_const_inits.deinit(self.gpa);
 
         for (field_inits, 0..) |sfv_id, i| {
@@ -582,7 +582,7 @@ fn constInitFromExpr(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, expr_id: 
 }
 
 fn lowerGlobalMlir(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder) !void {
-    var decls = std.ArrayList(ast.DeclId){};
+    var decls = std.ArrayList(ast.DeclId).empty;
     defer decls.deinit(self.gpa);
 
     for (a.exprs.decl_pool.slice(a.unit.decls)) |did| {
@@ -1018,7 +1018,7 @@ fn lowerSyntheticDecls(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Bui
 }
 
 const CallSpecSnapshotGuard = struct {
-    backups: List(struct { raw: u32, prev: ?types.CallSpecialization }) = .{},
+    backups: List(struct { raw: u32, prev: ?types.CallSpecialization }) = .empty,
     applied: bool = false,
 
     fn init(self: *CallSpecSnapshotGuard, gpa: std.mem.Allocator, a: *ast.Ast, syn_did: ast.DeclId) !void {
@@ -1054,7 +1054,7 @@ const CallSpecSnapshotGuard = struct {
 };
 
 const ComptimeExprSnapshotGuard = struct {
-    backups: List(struct { raw: u32, prev: ?comp.ValueId }) = .{},
+    backups: List(struct { raw: u32, prev: ?comp.ValueId }) = .empty,
     applied: bool = false,
 
     fn init(self: *ComptimeExprSnapshotGuard, gpa: std.mem.Allocator, a: *ast.Ast, syn_did: ast.DeclId) !void {
@@ -1094,7 +1094,7 @@ const ComptimeExprSnapshotGuard = struct {
 };
 
 const ComptimeBindingSnapshotGuard = struct {
-    backups: List(struct { name: StrId, prev_ty: ?types.TypeId, prev_val: ?comp.ValueId }) = .{},
+    backups: List(struct { name: StrId, prev_ty: ?types.TypeId, prev_val: ?comp.ValueId }) = .empty,
     applied: bool = false,
 
     fn init(self: *ComptimeBindingSnapshotGuard, gpa: std.mem.Allocator, a: *ast.Ast, syn_did: ast.DeclId) !void {
@@ -2187,7 +2187,7 @@ pub fn methodSymbolName(
             defer self.gpa.free(allocated);
             return self.context.type_store.strs.intern(allocated);
         },
-        else => return err,
+
     };
 
     return self.context.type_store.strs.intern(text);
@@ -2452,12 +2452,12 @@ fn buildVariantItem(
     if (!found) {
         const where: Loc = if (!loc.isNone()) a.exprs.locs.get(loc.unwrap()) else .init(@intCast(a.file_id), 0, 0);
         var msg_buf: [256]u8 = undefined;
-        var fbs = std.io.fixedBufferStream(&msg_buf);
+        var fbs = std.Io.Writer.fixed(&msg_buf);
 
-        fbs.writer().print("tag '{s}' in ", .{a.exprs.strs.get(lname)}) catch {};
-        try self.context.type_store.formatTypeForDiagnostic(ety, types.FormatOptions{}, fbs.writer());
+        fbs.print("tag '{s}' in ", .{a.exprs.strs.get(lname)}) catch {};
+        try self.context.type_store.formatTypeForDiagnostic(ety, types.FormatOptions{}, &fbs);
 
-        const sid = self.context.interner.intern(fbs.getWritten());
+        const sid = self.context.interner.intern(fbs.buffered());
         _ = self.context.diags.addError(where, .tir_variant_tag_not_found, .{self.context.interner.get(sid)}) catch {};
         return error.LoweringBug;
     }
@@ -2906,14 +2906,30 @@ fn lowerTritonLaunch(
     const grid_expr = if (named.get(grid_key)) |g| g else positional.items[1];
     const kernel_args_start: usize = if (named.get(grid_key) != null) 1 else 2;
     const kernel_args = positional.items[kernel_args_start..];
+    var kernel_named_args: List(ast.ExprId) = .empty;
+    defer kernel_named_args.deinit(self.gpa);
+    const block_key = a.exprs.strs.intern("block");
+    const shared_mem_key = a.exprs.strs.intern("shared_mem");
+    const stream_key = a.exprs.strs.intern("stream");
+    const num_warps_key = a.exprs.strs.intern("num_warps");
+    const threads_per_warp_key = a.exprs.strs.intern("threads_per_warp");
+    const num_ctas_key = a.exprs.strs.intern("num_ctas");
+    for (args) |arg| {
+        if (a.kind(arg) != .NamedArg) continue;
+        const na = a.exprs.get(.NamedArg, arg);
+        if (na.name.eq(grid_key) or na.name.eq(block_key) or na.name.eq(shared_mem_key) or na.name.eq(stream_key) or na.name.eq(num_warps_key) or na.name.eq(threads_per_warp_key) or na.name.eq(num_ctas_key)) {
+            continue;
+        }
+        try kernel_named_args.append(self.gpa, na.value);
+    }
 
     const launch_info = a.type_info.getTritonLaunchInfo(id) orelse return error.LoweringBug;
 
     const ptr_void_ty = ts.mkPtr(ts.tVoid(), false);
     const opt_ptr_void_ty = ts.mkOptional(ptr_void_ty);
     const ptr_ptr_void_ty = ts.mkPtr(ptr_void_ty, false);
-    const opt_ptr_ptr_void_ty = ts.mkOptional(ptr_ptr_void_ty);
     const u64_ty = ts.tU64();
+    const usize_ty = ts.tUsize();
     const ptr_u8_const = ts.mkPtr(ts.tU8(), true);
     const kernel_name_str = blk.builder.tirValue(.ConstString, blk, ts.tString(), loc, .{ .text = launch_info.spec_name });
     const kernel_name_ptr = blk.builder.extractField(blk, ptr_u8_const, kernel_name_str, 0, loc);
@@ -2921,36 +2937,55 @@ fn lowerTritonLaunch(
 
     var cur_blk = blk;
 
-    // Build kernel params array [N + 2]*void
-    const params_len = kernel_args.len + 2;
+    // Build kernel params array [runtime positional args + kernel named args + 2 scratch]*void
+    const kernel_param_count = kernel_args.len + kernel_named_args.items.len;
+    const params_len = kernel_param_count + 2;
     const params_array_ty = ts.mkArray(ptr_void_ty, params_len);
-    const params_slot = cur_blk.builder.tirValue(.Alloca, cur_blk, params_array_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
     const params_array_ptr_ty = ts.mkPtr(params_array_ty, false);
-    const params_ptr = cur_blk.builder.tirValue(.CastBit, cur_blk, params_array_ptr_ty, loc, .{ .value = params_slot });
+    const params_size = check_types.typeSize(self.context, params_array_ty);
+    const params_mem = self.callRuntimeAllocPtr(cur_blk, cur_blk.builder.tirValue(.ConstInt, cur_blk, usize_ty, loc, .{ .value = @as(u64, @intCast(params_size)) }), loc);
+    const params_ptr = cur_blk.builder.tirValue(.CastBit, cur_blk, params_array_ptr_ty, loc, .{ .value = params_mem });
     const params_elem_ptr_ty = ts.mkPtr(ptr_void_ty, false);
 
     for (kernel_args, 0..) |arg_id, i| {
         const arg_ty = self.getExprType(ctx, a, arg_id);
         const arg_val = try self.lowerExpr(ctx, a, env, f, cur_blk, arg_id, null, .rvalue);
-        const arg_slot = cur_blk.builder.tirValue(.Alloca, cur_blk, arg_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
+        const arg_ptr_ty = ts.mkPtr(arg_ty, false);
+        const arg_size = check_types.typeSize(self.context, arg_ty);
+        const arg_mem = self.callRuntimeAllocPtr(cur_blk, cur_blk.builder.tirValue(.ConstInt, cur_blk, usize_ty, loc, .{ .value = @as(u64, @intCast(arg_size)) }), loc);
+        const arg_slot = cur_blk.builder.tirValue(.CastBit, cur_blk, arg_ptr_ty, loc, .{ .value = arg_mem });
         _ = cur_blk.builder.tirValue(.Store, cur_blk, arg_ty, loc, .{ .ptr = arg_slot, .value = arg_val, .@"align" = 0 });
         const arg_ptr_void = cur_blk.builder.tirValue(.CastBit, cur_blk, ptr_void_ty, loc, .{ .value = arg_slot });
         const elem_ptr = cur_blk.builder.gep(cur_blk, params_elem_ptr_ty, params_ptr, &.{ cur_blk.builder.gepConst(0), cur_blk.builder.gepConst(@intCast(i)) }, loc);
+        _ = cur_blk.builder.tirValue(.Store, cur_blk, ptr_void_ty, loc, .{ .ptr = elem_ptr, .value = arg_ptr_void, .@"align" = 0 });
+    }
+    for (kernel_named_args.items, 0..) |arg_id, i| {
+        const idx = kernel_args.len + i;
+        const arg_ty = self.getExprType(ctx, a, arg_id);
+        const arg_val = try self.lowerExpr(ctx, a, env, f, cur_blk, arg_id, null, .rvalue);
+        const arg_ptr_ty = ts.mkPtr(arg_ty, false);
+        const arg_size = check_types.typeSize(self.context, arg_ty);
+        const arg_mem = self.callRuntimeAllocPtr(cur_blk, cur_blk.builder.tirValue(.ConstInt, cur_blk, usize_ty, loc, .{ .value = @as(u64, @intCast(arg_size)) }), loc);
+        const arg_slot = cur_blk.builder.tirValue(.CastBit, cur_blk, arg_ptr_ty, loc, .{ .value = arg_mem });
+        _ = cur_blk.builder.tirValue(.Store, cur_blk, arg_ty, loc, .{ .ptr = arg_slot, .value = arg_val, .@"align" = 0 });
+        const arg_ptr_void = cur_blk.builder.tirValue(.CastBit, cur_blk, ptr_void_ty, loc, .{ .value = arg_slot });
+        const elem_ptr = cur_blk.builder.gep(cur_blk, params_elem_ptr_ty, params_ptr, &.{ cur_blk.builder.gepConst(0), cur_blk.builder.gepConst(@intCast(idx)) }, loc);
         _ = cur_blk.builder.tirValue(.Store, cur_blk, ptr_void_ty, loc, .{ .ptr = elem_ptr, .value = arg_ptr_void, .@"align" = 0 });
     }
 
     // Append scratch pointers (global, profile), initialized to 0
     const zero_val = cur_blk.builder.tirValue(.ConstInt, cur_blk, u64_ty, loc, .{ .value = 0 });
     for (0..2) |idx| {
-        const scratch = cur_blk.builder.tirValue(.Alloca, cur_blk, u64_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
+        const scratch_ptr_ty = ts.mkPtr(u64_ty, false);
+        const scratch_mem = self.callRuntimeAllocPtr(cur_blk, cur_blk.builder.tirValue(.ConstInt, cur_blk, usize_ty, loc, .{ .value = 8 }), loc);
+        const scratch = cur_blk.builder.tirValue(.CastBit, cur_blk, scratch_ptr_ty, loc, .{ .value = scratch_mem });
         _ = cur_blk.builder.tirValue(.Store, cur_blk, u64_ty, loc, .{ .ptr = scratch, .value = zero_val, .@"align" = 0 });
         const scratch_ptr = cur_blk.builder.tirValue(.CastBit, cur_blk, ptr_void_ty, loc, .{ .value = scratch });
-        const slot = cur_blk.builder.gep(cur_blk, params_elem_ptr_ty, params_ptr, &.{ cur_blk.builder.gepConst(0), cur_blk.builder.gepConst(@intCast(kernel_args.len + idx)) }, loc);
+        const slot = cur_blk.builder.gep(cur_blk, params_elem_ptr_ty, params_ptr, &.{ cur_blk.builder.gepConst(0), cur_blk.builder.gepConst(@intCast(kernel_param_count + idx)) }, loc);
         _ = cur_blk.builder.tirValue(.Store, cur_blk, ptr_void_ty, loc, .{ .ptr = slot, .value = scratch_ptr, .@"align" = 0 });
     }
 
     const params_base = cur_blk.builder.gep(cur_blk, ptr_ptr_void_ty, params_ptr, &.{ cur_blk.builder.gepConst(0), cur_blk.builder.gepConst(0) }, loc);
-    const params_ptr_opt = cur_blk.builder.tirValue(.CastBit, cur_blk, opt_ptr_ptr_void_ty, loc, .{ .value = params_base });
 
     // Grid dimensions
     const grid_val = try self.lowerExpr(ctx, a, env, f, cur_blk, grid_expr, null, .rvalue);
@@ -3000,19 +3035,30 @@ fn lowerTritonLaunch(
         stream_val = try self.lowerExpr(ctx, a, env, f, cur_blk, st_expr, opt_ptr_void_ty, .rvalue);
     }
 
-    _ = cur_blk.builder.call(cur_blk, ts.tI32(), ts.strs.intern("rt_triton_launch"), &.{
-        kernel_name_ptr,
-        kernel_name_len,
-        params_ptr_opt,
-        grid_x,
-        grid_y,
-        grid_z,
-        block_x,
-        block_y,
-        block_z,
-        shared_mem,
-        stream_val,
-    }, loc);
+    const cfg_array_ty = ts.mkArray(u64_ty, 8);
+    const cfg_array_ptr_ty = ts.mkPtr(cfg_array_ty, false);
+    const cfg_size = check_types.typeSize(self.context, cfg_array_ty);
+    const cfg_mem = self.callRuntimeAllocPtr(cur_blk, cur_blk.builder.tirValue(.ConstInt, cur_blk, usize_ty, loc, .{ .value = @as(u64, @intCast(cfg_size)) }), loc);
+    const cfg_ptr = cur_blk.builder.tirValue(.CastBit, cur_blk, cfg_array_ptr_ty, loc, .{ .value = cfg_mem });
+    const cfg_elem_ptr_ty = ts.mkPtr(u64_ty, false);
+
+    const grid_x_u64 = self.emitCoerce(cur_blk, grid_x, i32_ty, u64_ty, loc);
+    const grid_y_u64 = self.emitCoerce(cur_blk, grid_y, i32_ty, u64_ty, loc);
+    const grid_z_u64 = self.emitCoerce(cur_blk, grid_z, i32_ty, u64_ty, loc);
+    const block_x_u64 = self.emitCoerce(cur_blk, block_x, i32_ty, u64_ty, loc);
+    const block_y_u64 = self.emitCoerce(cur_blk, block_y, i32_ty, u64_ty, loc);
+    const block_z_u64 = self.emitCoerce(cur_blk, block_z, i32_ty, u64_ty, loc);
+    const shared_mem_u64 = self.emitCoerce(cur_blk, shared_mem, i32_ty, u64_ty, loc);
+    const stream_usize = self.emitCoerce(cur_blk, stream_val, opt_ptr_void_ty, usize_ty, loc);
+    const stream_u64 = self.emitCoerce(cur_blk, stream_usize, usize_ty, u64_ty, loc);
+    const cfg_vals = [_]tir.ValueId{ grid_x_u64, grid_y_u64, grid_z_u64, block_x_u64, block_y_u64, block_z_u64, shared_mem_u64, stream_u64 };
+    for (cfg_vals, 0..) |cv, i| {
+        const slot = cur_blk.builder.gep(cur_blk, cfg_elem_ptr_ty, cfg_ptr, &.{ cur_blk.builder.gepConst(0), cur_blk.builder.gepConst(@intCast(i)) }, loc);
+        _ = cur_blk.builder.tirValue(.Store, cur_blk, u64_ty, loc, .{ .ptr = slot, .value = cv, .@"align" = 0 });
+    }
+    const cfg_base = cur_blk.builder.gep(cur_blk, cfg_elem_ptr_ty, cfg_ptr, &.{ cur_blk.builder.gepConst(0), cur_blk.builder.gepConst(0) }, loc);
+
+    _ = cur_blk.builder.call(cur_blk, ts.tI32(), ts.strs.intern("rt_triton_launch"), &.{ kernel_name_ptr, kernel_name_len, params_base, cfg_base }, loc);
 
     return self.safeUndef(cur_blk, self.getExprType(ctx, a, id), loc);
 }
@@ -3966,7 +4012,7 @@ fn lowerStructLit(
         return if (expected_ty) |want| self.emitCoerce(blk, v, ty0, want, loc) else v;
     }
 
-    var field_inits = List(tir.Rows.StructFieldInit){};
+    var field_inits = List(tir.Rows.StructFieldInit).empty;
     defer field_inits.deinit(self.gpa);
     try field_inits.ensureTotalCapacity(self.gpa, fids.len); // Optimization: Pre-allocate known minimum
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
+const sync = @import("sync.zig");
 
 /// Core utilities for tracking indices, ranges, strings, and locations.
 pub const FileId = u32;
@@ -94,7 +95,7 @@ pub fn OptRangeOf(comptime IdT: type) type {
 
 /// Backing storage for all Pools to reduce generic code bloat
 const UnifiedPool = struct {
-    data: std.ArrayListUnmanaged(u32) = .{},
+    data: std.ArrayListUnmanaged(u32) = .empty,
 
     fn push(self: *@This(), gpa: std.mem.Allocator, raw: u32) u32 {
         const idx: u32 = @intCast(self.data.items.len);
@@ -151,8 +152,8 @@ pub const StrId = Index(StrTag);
 pub const StringInterner = struct {
     gpa: std.mem.Allocator,
     map: std.StringHashMapUnmanaged(StrId) = .{},
-    strings: std.ArrayListUnmanaged([]const u8) = .{},
-    mutex: std.Thread.Mutex = .{},
+    strings: std.ArrayListUnmanaged([]const u8) = .empty,
+    mutex: sync.Mutex = .{},
 
     pub fn init(gpa: std.mem.Allocator) StringInterner {
         return .{ .gpa = gpa };
@@ -192,8 +193,8 @@ pub const LocTag = struct {};
 pub const LocId = Index(LocTag);
 
 pub const LocStore = struct {
-    data: std.ArrayListUnmanaged(Loc) = .{},
-    mutex: std.Thread.Mutex = .{},
+    data: std.ArrayListUnmanaged(Loc) = .empty,
+    mutex: sync.Mutex = .{},
 
     pub fn add(self: *LocStore, gpa: std.mem.Allocator, loc: Loc) LocId {
         self.mutex.lock();
@@ -234,7 +235,7 @@ pub fn Table(comptime T: type) type {
     } else {
         return struct {
             list: std.MultiArrayList(T) = .{},
-            mutex: std.Thread.Mutex = .{},
+            mutex: sync.Mutex = .{},
 
             pub fn add(self: *@This(), gpa: std.mem.Allocator, row: T) Index(T) {
                 self.mutex.lock();
@@ -368,7 +369,7 @@ pub const CommentId = Index(CommentTag);
 pub const CommentKind = enum { line, block, doc, container_doc };
 
 pub const CommentStore = struct {
-    list: std.ArrayListUnmanaged(Comment) = .{},
+    list: std.ArrayListUnmanaged(Comment) = .empty,
     pub fn add(self: *@This(), gpa: std.mem.Allocator, comment: Comment) CommentId {
         const idx: u32 = @intCast(self.list.items.len);
         self.list.append(gpa, comment) catch oom();
@@ -577,8 +578,8 @@ pub const ProgramDO = struct { top_decls: RangeOf(DeclId), package_name: OptStrI
 
 pub fn StoreIndex(comptime KindT: type) type {
     return struct {
-        kinds: std.ArrayListUnmanaged(KindT) = .{},
-        rows: std.ArrayListUnmanaged(u32) = .{},
+        kinds: std.ArrayListUnmanaged(KindT) = .empty,
+        rows: std.ArrayListUnmanaged(u32) = .empty,
         pub fn newId(self: *@This(), gpa: std.mem.Allocator, k: KindT, row: u32, comptime IdT: type) IdT {
             const i_raw: u32 = @intCast(self.kinds.items.len);
             self.kinds.append(gpa, k) catch oom();
@@ -824,7 +825,7 @@ comptime {
 }
 
 pub const DodPrinter = struct {
-    writer: *std.io.Writer,
+    writer: *std.Io.Writer,
     indent: usize = 0,
     exprs: *ExprStore,
     pats: *PatternStore,

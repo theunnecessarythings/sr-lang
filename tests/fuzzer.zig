@@ -58,7 +58,7 @@ fn testParser(data: []const u8) !void {
     defer arena.deinit();
     const gpa = arena.allocator();
 
-    var context = compiler.compile.Context.init(gpa);
+    var context = compiler.compile.Context.init(gpa, std.Io.failing);
     defer context.deinit();
 
     const source0 = try gpa.dupeZ(u8, data);
@@ -89,7 +89,7 @@ fn testLower(data: []const u8) !void {
     defer arena.deinit();
     const gpa = arena.allocator();
 
-    var context = compiler.compile.Context.init(gpa);
+    var context = compiler.compile.Context.init(gpa, std.Io.failing);
     defer context.deinit();
 
     const source0 = try gpa.dupeZ(u8, data);
@@ -109,8 +109,8 @@ fn testLower(data: []const u8) !void {
     const a = result.ast_unit;
 
     var buffer: [1024]u8 = undefined;
-    var sink = std.fs.File.stdout().writer(&buffer);
-    const writer = &sink.interface;
+    var sink = std.Io.Writer.fixed(&buffer);
+    const writer = &sink;
     var printer = ast.AstPrinter.init(writer, &a.exprs, &a.stmts, &a.pats);
     try printer.printUnit(&a.unit);
 }
@@ -127,7 +127,7 @@ fn testChecker(data: []const u8) !void {
     defer arena.deinit();
     const gpa = arena.allocator();
 
-    var context = compiler.compile.Context.init(gpa);
+    var context = compiler.compile.Context.init(gpa, std.Io.failing);
     defer context.deinit();
 
     var pipeline = compiler.pipeline.Pipeline.init(gpa, &context);

@@ -266,7 +266,7 @@ pub fn exprMentionsAnyNameBitset(
         const raw = name.toRaw();
         return raw < names.capacity() and names.isSet(raw);
     }
-    var ids = List(ast.ExprId){};
+    var ids = List(ast.ExprId).empty;
     defer ids.deinit(gpa);
     try collectExprIds(gpa, ast_unit, expr_id, &ids);
     for (ids.items) |eid| {
@@ -279,7 +279,7 @@ pub fn exprMentionsAnyNameBitset(
 }
 
 pub fn findAnyTypeExpr(gpa: std.mem.Allocator, ast_unit: *ast.Ast, expr_id: ast.ExprId) !?ast.ExprId {
-    var ids = List(ast.ExprId){};
+    var ids = List(ast.ExprId).empty;
     defer ids.deinit(gpa);
     try collectExprIds(gpa, ast_unit, expr_id, &ids);
     for (ids.items) |eid| {
@@ -529,10 +529,10 @@ pub fn storeSpecializationSnapshots(
 ) !void {
     if (expr_ids.len == 0) return;
 
-    var type_ids = std.ArrayListUnmanaged(u32){};
-    var type_vals = std.ArrayListUnmanaged(types.TypeId){};
-    var cv_ids = std.ArrayListUnmanaged(u32){};
-    var cv_vals = std.ArrayListUnmanaged(comp.ValueId){};
+    var type_ids = std.ArrayListUnmanaged(u32).empty;
+    var type_vals = std.ArrayListUnmanaged(types.TypeId).empty;
+    var cv_ids = std.ArrayListUnmanaged(u32).empty;
+    var cv_vals = std.ArrayListUnmanaged(comp.ValueId).empty;
     defer {
         type_ids.deinit(self.gpa);
         type_vals.deinit(self.gpa);
@@ -1568,7 +1568,7 @@ pub fn typeFromTypeExprWithBindings(
             var buf = try ts.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
             defer ts.gpa.free(buf);
 
-            var seen = std.AutoArrayHashMapUnmanaged(u32, ast.LocId){};
+            var seen = std.AutoArrayHashMapUnmanaged(u32, ast.LocId).empty;
             defer seen.deinit(self.gpa);
 
             for (sfs, 0..) |sf_idx, i| {
@@ -1750,7 +1750,7 @@ pub fn typeFromTypeExprWithBindings(
             const sfs = ast_unit.exprs.sfield_pool.slice(row.fields);
             var buf = try ts.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
             defer ts.gpa.free(buf);
-            var seen = std.AutoArrayHashMapUnmanaged(u32, ast.LocId){};
+            var seen = std.AutoArrayHashMapUnmanaged(u32, ast.LocId).empty;
             defer seen.deinit(self.gpa);
 
             for (sfs, 0..) |sf_idx, i| {
@@ -1791,7 +1791,7 @@ pub fn typeFromTypeExprWithBindings(
             const efs = ast_unit.exprs.efield_pool.slice(row.fields);
             var member_buf = try self.gpa.alloc(types.TypeStore.EnumMemberArg, efs.len);
             defer self.gpa.free(member_buf);
-            var seen = std.AutoArrayHashMapUnmanaged(u32, ast.LocId){};
+            var seen = std.AutoArrayHashMapUnmanaged(u32, ast.LocId).empty;
             defer seen.deinit(self.gpa);
             var enum_value_bindings: List(Binding) = .empty;
             defer enum_value_bindings.deinit(self.gpa);
@@ -1851,7 +1851,7 @@ pub fn typeFromTypeExprWithBindings(
             const vfs = ast_unit.exprs.vfield_pool.slice(row.fields);
             var case_buf = try self.gpa.alloc(types.TypeStore.StructFieldArg, vfs.len);
             defer self.gpa.free(case_buf);
-            var seen = std.AutoArrayHashMapUnmanaged(u32, ast.LocId){};
+            var seen = std.AutoArrayHashMapUnmanaged(u32, ast.LocId).empty;
             defer seen.deinit(self.gpa);
 
             for (vfs, 0..) |vf_idx, i| {
@@ -1908,7 +1908,7 @@ pub fn typeFromTypeExprWithBindings(
             const vfs = ast_unit.exprs.vfield_pool.slice(row.fields);
             var case_buf = try self.gpa.alloc(types.TypeStore.StructFieldArg, vfs.len);
             defer self.gpa.free(case_buf);
-            var seen = std.AutoArrayHashMapUnmanaged(u32, ast.LocId){};
+            var seen = std.AutoArrayHashMapUnmanaged(u32, ast.LocId).empty;
             defer seen.deinit(self.gpa);
 
             for (vfs, 0..) |vf_idx, i| {

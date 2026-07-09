@@ -4,6 +4,8 @@ const c = @cImport({
     @cInclude("stdlib.h");
     @cInclude("string.h");
     @cInclude("unistd.h");
+    @cInclude("sys/stat.h");
+    @cInclude("sys/types.h");
 });
 
 const CUresult = i32;
@@ -12,6 +14,8 @@ const CUfunction = ?*anyopaque;
 
 extern fn cuModuleLoad(module: *CUmodule, fname: [*]const u8) callconv(.c) CUresult;
 extern fn cuModuleGetFunction(hfunc: *CUfunction, hmod: CUmodule, name: [*]const u8) callconv(.c) CUresult;
+extern fn cuGetErrorName(err: CUresult, pStr: *?[*:0]const u8) callconv(.c) CUresult;
+extern fn cuGetErrorString(err: CUresult, pStr: *?[*:0]const u8) callconv(.c) CUresult;
 extern fn cuLaunchKernel(
     f: CUfunction,
     grid_dim_x: i32,
@@ -28,7 +32,18 @@ extern fn cuLaunchKernel(
 
 const TritonEntry = struct { mod: CUmodule, func: CUfunction, mtime: i128 };
 var triton_cache: ?std.StringHashMap(TritonEntry) = null;
-var triton_cache_mutex = std.Thread.Mutex{};
+const Mutex = struct {
+    state: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    fn lock(self: *Mutex) void {
+        while (self.state.swap(true, .acquire) == true) {
+            std.Thread.yield() catch {};
+        }
+    }
+    fn unlock(self: *Mutex) void {
+        self.state.store(false, .release);
+    }
+};
+var triton_cache_mutex = Mutex{};
 
 fn tritonCache() *std.StringHashMap(TritonEntry) {
     if (triton_cache == null) {
@@ -42,9 +57,23 @@ fn logMsg(msg: []const u8) void {
     _ = c.write(2, @ptrCast(msg.ptr), msg.len);
 }
 
+fn cstrOrUnknown(p: ?[*:0]const u8) []const u8 {
+    return if (p) |s| std.mem.span(s) else "unknown";
+}
+
 fn logErr(prefix: []const u8, code: i32, name: []const u8) void {
-    var buf: [256]u8 = undefined;
-    const slice = std.fmt.bufPrint(&buf, "{s} (code={d}) for {s}\n", .{ prefix, code, name }) catch return;
+    var err_name: ?[*:0]const u8 = null;
+    var err_desc: ?[*:0]const u8 = null;
+    _ = cuGetErrorName(code, &err_name);
+    _ = cuGetErrorString(code, &err_desc);
+    var buf: [512]u8 = undefined;
+    const slice = std.fmt.bufPrint(&buf, "{s} (code={d}, name={s}, desc={s}) for {s}\n", .{
+        prefix,
+        code,
+        cstrOrUnknown(err_name),
+        cstrOrUnknown(err_desc),
+        name,
+    }) catch return;
     logMsg(slice);
 }
 
@@ -54,16 +83,10 @@ fn logInfo(prefix: []const u8, name: []const u8) void {
     logMsg(slice);
 }
 
-fn fileMtime(path: []const u8) i128 {
-    const st = std.fs.cwd().statFile(path) catch return 0;
-    return @intCast(st.mtime);
-}
 
-/// Launch a Triton kernel with runtime caching of module/function.
-pub export fn rt_triton_launch(
-    kernel_name_ptr: [*]const u8,
-    kernel_name_len: usize,
-    kernel_params: ?**anyopaque,
+fn logLaunchErr(
+    code: i32,
+    name: []const u8,
     grid_x: i32,
     grid_y: i32,
     grid_z: i32,
@@ -72,8 +95,91 @@ pub export fn rt_triton_launch(
     block_z: i32,
     shared_mem_bytes: i32,
     stream: ?*anyopaque,
+    kernel_params: ?**anyopaque,
+) void {
+    var err_name: ?[*:0]const u8 = null;
+    var err_desc: ?[*:0]const u8 = null;
+    _ = cuGetErrorName(code, &err_name);
+    _ = cuGetErrorString(code, &err_desc);
+    const stream_addr: usize = if (stream) |p| @intFromPtr(p) else 0;
+    const params_addr: usize = if (kernel_params) |p| @intFromPtr(p) else 0;
+    var buf: [768]u8 = undefined;
+    const slice = std.fmt.bufPrint(
+        &buf,
+        "rt_triton_launch: cuLaunchKernel failed (code={d}, name={s}, desc={s}) for {s}; grid=({d},{d},{d}) block=({d},{d},{d}) smem={d} stream=0x{x} params=0x{x}\n",
+        .{
+            code,
+            cstrOrUnknown(err_name),
+            cstrOrUnknown(err_desc),
+            name,
+            grid_x,
+            grid_y,
+            grid_z,
+            block_x,
+            block_y,
+            block_z,
+            shared_mem_bytes,
+            stream_addr,
+            params_addr,
+        },
+    ) catch return;
+    logMsg(slice);
+}
+
+fn decodeLaunchCfg(launch_cfg: [*]const u64) struct {
+    grid_x: i32,
+    grid_y: i32,
+    grid_z: i32,
+    block_x: i32,
+    block_y: i32,
+    block_z: i32,
+    shared_mem_bytes: i32,
+    stream: ?*anyopaque,
+} {
+    const cfg = launch_cfg;
+    const stream_addr: usize = @intCast(cfg[7]);
+    return .{
+        .grid_x = @intCast(cfg[0]),
+        .grid_y = @intCast(cfg[1]),
+        .grid_z = @intCast(cfg[2]),
+        .block_x = @intCast(cfg[3]),
+        .block_y = @intCast(cfg[4]),
+        .block_z = @intCast(cfg[5]),
+        .shared_mem_bytes = @intCast(cfg[6]),
+        .stream = if (stream_addr == 0) null else @ptrFromInt(stream_addr),
+    };
+}
+
+fn fileMtime(path: []const u8) i128 {
+    var path_buf: [512]u8 = undefined;
+    if (path.len >= 512) return 0;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+    const path_z: [*:0]const u8 = @ptrCast(&path_buf);
+
+    var st: c.struct_stat = undefined;
+    if (c.stat(path_z, &st) != 0) return 0;
+    return @intCast(st.st_mtim.tv_sec);
+}
+
+/// Launch a Triton kernel with runtime caching of module/function.
+pub export fn rt_triton_launch(
+    kernel_name_ptr: [*]const u8,
+    kernel_name_len: usize,
+    kernel_params: [*]*anyopaque,
+    launch_cfg: [*]const u64,
 ) callconv(.c) i32 {
     if (kernel_name_len == 0) return -1;
+    const cfg = decodeLaunchCfg(launch_cfg);
+    const grid_x = cfg.grid_x;
+    const grid_y = cfg.grid_y;
+    const grid_z = cfg.grid_z;
+    const block_x = cfg.block_x;
+    const block_y = cfg.block_y;
+    const block_z = cfg.block_z;
+    const shared_mem_bytes = cfg.shared_mem_bytes;
+    const stream = cfg.stream;
+    const kernel_params_opt: ?**anyopaque = @ptrCast(kernel_params);
 
     const name = kernel_name_ptr[0..kernel_name_len];
     const no_cache = blk: {
@@ -99,8 +205,8 @@ pub export fn rt_triton_launch(
     const cache = tritonCache();
     if (!no_cache and !reload_cache) {
         if (cache.get(name)) |entry| {
-            const res = cuLaunchKernel(entry.func, grid_x, grid_y, grid_z, block_x, block_y, block_z, shared_mem_bytes, stream, kernel_params, null);
-            if (res != 0) logErr("rt_triton_launch: cuLaunchKernel failed", res, name);
+            const res = cuLaunchKernel(entry.func, grid_x, grid_y, grid_z, block_x, block_y, block_z, shared_mem_bytes, stream, kernel_params_opt, null);
+            if (res != 0) logLaunchErr(res, name, grid_x, grid_y, grid_z, block_x, block_y, block_z, shared_mem_bytes, stream, kernel_params_opt);
             return res;
         }
     }
@@ -136,8 +242,8 @@ pub export fn rt_triton_launch(
         if (cache.get(name)) |entry| {
             const mt = fileMtime(path_slice);
             if (mt != 0 and mt == entry.mtime) {
-                const res = cuLaunchKernel(entry.func, grid_x, grid_y, grid_z, block_x, block_y, block_z, shared_mem_bytes, stream, kernel_params, null);
-                if (res != 0) logErr("rt_triton_launch: cuLaunchKernel failed", res, name);
+                const res = cuLaunchKernel(entry.func, grid_x, grid_y, grid_z, block_x, block_y, block_z, shared_mem_bytes, stream, kernel_params_opt, null);
+                if (res != 0) logLaunchErr(res, name, grid_x, grid_y, grid_z, block_x, block_y, block_z, shared_mem_bytes, stream, kernel_params_opt);
                 return res;
             }
             logInfo("rt_triton_launch: reloading PTX", name);
@@ -164,7 +270,7 @@ pub export fn rt_triton_launch(
         _ = cache.put(key, .{ .mod = mod, .func = func, .mtime = mt }) catch {};
     }
 
-    const launch_res = cuLaunchKernel(func, grid_x, grid_y, grid_z, block_x, block_y, block_z, shared_mem_bytes, stream, kernel_params, null);
-    if (launch_res != 0) logErr("rt_triton_launch: cuLaunchKernel failed", launch_res, name);
+    const launch_res = cuLaunchKernel(func, grid_x, grid_y, grid_z, block_x, block_y, block_z, shared_mem_bytes, stream, kernel_params_opt, null);
+    if (launch_res != 0) logLaunchErr(launch_res, name, grid_x, grid_y, grid_z, block_x, block_y, block_z, shared_mem_bytes, stream, kernel_params_opt);
     return launch_res;
 }

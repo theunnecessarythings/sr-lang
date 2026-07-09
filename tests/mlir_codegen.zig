@@ -22,7 +22,7 @@ fn mlirContextOnce(alloc: std.mem.Allocator) compiler.mlir.Context {
 
 fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !Lowered {
     const context = try gpa.create(compiler.compile.Context);
-    context.* = compiler.compile.Context.init(gpa);
+    context.* = compiler.compile.Context.init(gpa, std.testing.io);
     errdefer {
         context.deinit();
         gpa.destroy(context);

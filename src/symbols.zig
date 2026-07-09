@@ -38,7 +38,7 @@ pub const SymbolStore = struct {
     scopes: dod.Table(ScopeRow) = .{},
     sym_pool: dod.Pool(SymbolId) = .{},
 
-    stack: std.ArrayListUnmanaged(StackFrame) = .{},
+    stack: std.ArrayListUnmanaged(StackFrame) = .empty,
 
     const StackFrame = struct { id: ScopeId, list: std.ArrayListUnmanaged(SymbolId) };
     /// Initialize an empty symbol store backed by `gpa`.
@@ -57,7 +57,7 @@ pub const SymbolStore = struct {
     /// Push a new scope with optional `parent` and return its ID.
     pub fn push(self: *SymbolStore, parent: ?ScopeId) !ScopeId {
         const sid = self.scopes.add(self.gpa, .{ .parent = if (parent) |p| .some(p) else .none(), .symbols = .empty() });
-        try self.stack.append(self.gpa, .{ .id = sid, .list = .{} });
+        try self.stack.append(self.gpa, .{ .id = sid, .list = .empty });
         return sid;
     }
 

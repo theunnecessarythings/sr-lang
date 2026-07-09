@@ -23,9 +23,9 @@ fn expectFormatted(
 
 fn expectFmt(store: *types.TypeStore, ty: types.TypeId, expected: []const u8) !void {
     var buffer: [512]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
-    try store.fmt(ty, stream.writer());
-    try expectFormatted(stream.getWritten(), expected);
+    var writer = std.Io.Writer.fixed(&buffer);
+    try store.fmt(ty, &writer);
+    try expectFormatted(writer.buffer[0..writer.end], expected);
 }
 
 fn expectDiagnostic(
@@ -35,9 +35,9 @@ fn expectDiagnostic(
     expected: []const u8,
 ) !void {
     var buffer: [512]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
-    try store.formatTypeForDiagnostic(ty, options, stream.writer());
-    try expectFormatted(stream.getWritten(), expected);
+    var writer = std.Io.Writer.fixed(&buffer);
+    try store.formatTypeForDiagnostic(ty, options, &writer);
+    try expectFormatted(writer.buffer[0..writer.end], expected);
 }
 
 fn runQualifiedNameDiagnostics(store: *types.TypeStore, interner: *cst.StringInterner) !void {

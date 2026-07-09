@@ -13,6 +13,7 @@ const Severity = lib.diagnostics.Severity;
 /// Cached semantic/AST data for a document version.
 const AnalysisCache = struct {
     gpa: std.mem.Allocator,
+    io: std.Io,
     map: std.StringHashMapUnmanaged(Entry) = .{},
 
     const Entry = struct {
@@ -21,17 +22,17 @@ const AnalysisCache = struct {
         path: []const u8,
         file_id: u32,
         ast_unit: ?*ast.Ast,
-        resolution_map: std.AutoArrayHashMap(u32, Symbol),
+        resolution_map: std.array_hash_map.Auto(u32, Symbol),
 
         fn deinit(self: *Entry, gpa: std.mem.Allocator) void {
-            self.resolution_map.deinit();
+            self.resolution_map.deinit(gpa);
             gpa.free(self.path);
             self.context.deinit();
         }
     };
 
-    fn init(gpa: std.mem.Allocator) AnalysisCache {
-        return .{ .gpa = gpa };
+    fn init(gpa: std.mem.Allocator, io: std.Io) AnalysisCache {
+        return .{ .gpa = gpa, .io = io };
     }
 
     fn deinit(self: *AnalysisCache) void {
@@ -62,7 +63,7 @@ const AnalysisCache = struct {
         // Only remove if the version is stale or it doesn't exist
         self.remove(uri);
 
-        var context: lib.compile.Context = .init(self.gpa);
+        var context: lib.compile.Context = .init(self.gpa, self.io);
         errdefer context.deinit();
 
         const path = try fileUriToPath(self.gpa, uri);
@@ -84,13 +85,13 @@ const AnalysisCache = struct {
         };
 
         const ast_unit_opt = findAstForFile(&context.compilation_unit, file_id);
-        var resolution_map: std.AutoArrayHashMap(u32, Symbol) = undefined;
+        var resolution_map: std.array_hash_map.Auto(u32, Symbol) = undefined;
         if (ast_unit_opt) |ast_unit| {
             resolution_map = try buildResolutionMap(self.gpa, ast_unit);
         } else {
-            resolution_map = .init(self.gpa);
+            resolution_map = .empty;
         }
-        errdefer resolution_map.deinit();
+        errdefer resolution_map.deinit(self.gpa);
 
         const entry = Entry{
             .version = doc.version,
@@ -388,23 +389,25 @@ const DocumentStore = struct {
 };
 
 /// Start the LSP server loop reading from stdin/stdout using `gpa`.
-pub fn run(gpa: std.mem.Allocator) !void {
-    const stdin_file = std.fs.File.stdin();
-    const stdout_file = std.fs.File.stdout();
+pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
+    const stdin_file = std.Io.File.stdin();
+    const stdout_file = std.Io.File.stdout();
 
-    var stdout = stdout_file.writer(&.{});
+    var stdout = stdout_file.writer(io, &.{});
 
     var docs: DocumentStore = .init(gpa);
     defer docs.deinit();
-    var analysis: AnalysisCache = .init(gpa);
+    var analysis: AnalysisCache = .init(gpa, io);
     defer analysis.deinit();
 
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
 
     // Persistent input buffer
-    var recv_buf = std.ArrayList(u8){};
+    var recv_buf = std.ArrayList(u8).empty;
     defer recv_buf.deinit(gpa);
+    var input_buf: [4096]u8 = undefined;
+    var stdin = stdin_file.reader(io, &input_buf);
 
     std.debug.print("[lsp] server started \n", .{});
 
@@ -418,11 +421,11 @@ pub fn run(gpa: std.mem.Allocator) !void {
             if (findHeaderEnd(recv_buf.items)) |idx| {
                 body_start_index = idx;
             } else {
-                var tmp: [4096]u8 = undefined;
-                const n = try stdin_file.read(&tmp);
+                var buffers = [_][]u8{input_buf[0..]};
+                const n = try stdin.interface.readVec(&buffers);
                 if (n == 0) return; // EOF
 
-                try recv_buf.appendSlice(gpa, tmp[0..n]);
+                try recv_buf.appendSlice(gpa, input_buf[0..n]);
 
                 if (recv_buf.items.len > 10 * 1024 * 1024) return error.ResourceExhausted;
             }
@@ -442,10 +445,10 @@ pub fn run(gpa: std.mem.Allocator) !void {
         // --- 3. Read Body ---
         const total_msg_len = body_start + content_len;
         while (recv_buf.items.len < total_msg_len) {
-            var tmp: [4096]u8 = undefined;
-            const n = try stdin_file.read(&tmp);
+            var buffers = [_][]u8{input_buf[0..]};
+            const n = try stdin.interface.readVec(&buffers);
             if (n == 0) return;
-            try recv_buf.appendSlice(gpa, tmp[0..n]);
+            try recv_buf.appendSlice(gpa, input_buf[0..n]);
         }
 
         // --- 4. Extract ---
@@ -523,7 +526,7 @@ fn parseContentLength(header_bytes: []const u8) !usize {
     var content_len: usize = 0;
 
     while (it.next()) |line_raw| {
-        const line = std.mem.trimRight(u8, line_raw, "\r");
+        const line = std.mem.trimEnd(u8, line_raw, "\r");
         if (line.len == 0) continue;
         if (std.ascii.startsWithIgnoreCase(line, "content-length:")) {
             const after = std.mem.trim(u8, line["content-length:".len..], " \t");
@@ -744,10 +747,10 @@ const SymbolResolver = struct {
     /// AST unit being analyzed.
     ast_unit: *ast.Ast,
     /// Map storing the resolved symbols keyed by declaration ID.
-    resolution_map: *std.AutoArrayHashMap(u32, Symbol),
+    resolution_map: *std.array_hash_map.Auto(u32, Symbol),
 
     /// Build symbol map by walking the AST and recording definitions.
-    pub fn run(gpa: std.mem.Allocator, ast_unit: *ast.Ast, resolution_map: *std.AutoArrayHashMap(u32, Symbol)) !void {
+    pub fn run(gpa: std.mem.Allocator, ast_unit: *ast.Ast, resolution_map: *std.array_hash_map.Auto(u32, Symbol)) !void {
         var self = SymbolResolver{
             .gpa = gpa,
             .ast_unit = ast_unit,
@@ -823,7 +826,7 @@ const SymbolResolver = struct {
             .Ident => {
                 const row = expr_store.get(.Ident, expr_id);
                 if (scope.lookup(expr_store.strs.get(row.name))) |symbol| {
-                    try self.resolution_map.put(expr_id.toRaw(), symbol);
+                    try self.resolution_map.put(self.gpa, expr_id.toRaw(), symbol);
                 }
             },
             .Block => {
@@ -1360,7 +1363,7 @@ fn computeReferences(
     const expr_id = findExprAt(ast_unit, offset) orelse return null;
     const symbol = entry.resolution_map.get(expr_id.toRaw()) orelse return null;
 
-    var refs = std.ArrayList(Loc){};
+    var refs = std.ArrayList(Loc).empty;
     errdefer refs.deinit(gpa);
 
     if (include_decl) {
@@ -1379,7 +1382,7 @@ fn computeReferences(
 }
 
 /// Handle find references requests.
-fn onReferences(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
+fn onReferences(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
     var p = try json.parseFromValue(ReferenceParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
@@ -1397,7 +1400,7 @@ fn onReferences(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStor
     if (refs_opt) |*refs| {
         defer refs.deinit(gpa);
 
-        var locs = std.ArrayList(struct { uri: []const u8, range: LspRange }){};
+        var locs = std.ArrayList(struct { uri: []const u8, range: LspRange }).empty;
         defer {
             for (locs.items) |l| gpa.free(l.uri);
             locs.deinit(gpa);
@@ -1416,7 +1419,7 @@ fn onReferences(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStor
 }
 
 /// Handle document symbol requests.
-fn onDocumentSymbol(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
+fn onDocumentSymbol(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
     var p = try json.parseFromValue(DocumentSymbolParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
@@ -1428,7 +1431,7 @@ fn onDocumentSymbol(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *Document
         return;
     };
 
-    var symbols = std.ArrayList(DocumentSymbol){};
+    var symbols = std.ArrayList(DocumentSymbol).empty;
     defer {
         freeDocumentSymbols(gpa, symbols.items);
         symbols.deinit(gpa);
@@ -1485,7 +1488,7 @@ fn computeDocumentSymbols(gpa: std.mem.Allocator, ast_unit: *ast.Ast, doc: *cons
 }
 
 /// Handle rename requests by recomputing AST and emitting edits.
-fn onRename(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
+fn onRename(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
     var p = try json.parseFromValue(RenameParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
@@ -1522,7 +1525,7 @@ fn onRename(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, a
             }
         };
 
-        var edits = std.ArrayList(TextEdit){};
+        var edits = std.ArrayList(TextEdit).empty;
         defer edits.deinit(gpa);
 
         for (refs.items) |loc| {
@@ -1630,7 +1633,7 @@ fn lspCompletionKindFromSemantic(kind: SemanticTokenKind) CompletionItemKind {
     };
 }
 
-fn onSignatureHelp(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
+fn onSignatureHelp(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
     var p = try json.parseFromValue(SignatureHelpParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
@@ -1708,9 +1711,9 @@ fn computeSignatureHelp(gpa: std.mem.Allocator, ast_unit: *ast.Ast, entry: *Anal
     // If we have 1 arg and offset > arg.end, active is 1 (ready for 2nd arg).
 
     // Resolve the function definition to get parameter names
-    var label = std.ArrayList(u8){};
+    var label = std.ArrayList(u8).empty;
     defer label.deinit(gpa);
-    var parameters = std.ArrayList(ParameterInformation){};
+    var parameters = std.ArrayList(ParameterInformation).empty;
     defer {
         for (parameters.items) |pm| gpa.free(pm.label);
         parameters.deinit(gpa);
@@ -1784,7 +1787,7 @@ fn computeSignatureHelp(gpa: std.mem.Allocator, ast_unit: *ast.Ast, entry: *Anal
     };
 }
 
-fn onCodeAction(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
+fn onCodeAction(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
     _ = docs;
     _ = analysis;
     _ = params;
@@ -1799,8 +1802,8 @@ fn onCompletion(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStor
     const uri = p.value.textDocument.uri;
     const doc = try requireDocumentOrRespondNull(out, gpa, docs, uri, id) orelse return;
 
-    var items = std.ArrayList(CompletionItem){};
-    var owned = std.ArrayList([]const u8){};
+    var items = std.ArrayList(CompletionItem).empty;
+    var owned = std.ArrayList([]const u8).empty;
     defer {
         for (owned.items) |buf| {
             gpa.free(buf);
@@ -2014,7 +2017,7 @@ fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docume
         return;
     };
 
-    var diags = std.ArrayList(LspDiagnostic){};
+    var diags = std.ArrayList(LspDiagnostic).empty;
     defer {
         for (diags.items) |diag| {
             gpa.free(diag.message);
@@ -2049,7 +2052,7 @@ fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docume
             continue;
         };
 
-        var related = std.ArrayList(RelatedInformation){};
+        var related = std.ArrayList(RelatedInformation).empty;
         defer related.deinit(gpa);
 
         var note_it = entry.context.diags.noteIterator(message);
@@ -2107,24 +2110,24 @@ const TokenEntry = struct {
 
 /// Deduplicates and orders semantic tokens before encoding them for LSP.
 const TokenAccumulator = struct {
-    map: std.AutoArrayHashMap(TokenKey, SemanticTokenKind),
+    map: std.array_hash_map.Auto(TokenKey, SemanticTokenKind),
     gpa: std.mem.Allocator,
 
     /// Initialize a token accumulator that deduplicates semantic tokens.
     fn init(gpa: std.mem.Allocator) TokenAccumulator {
-        return .{ .map = .init(gpa), .gpa = gpa };
+        return .{ .map = .empty, .gpa = gpa };
     }
 
     /// Release resources held by the accumulator.
     fn deinit(self: *TokenAccumulator) void {
-        self.map.deinit();
+        self.map.deinit(self.gpa);
     }
 
     /// Record a semantic token covering `[start,end)` of `kind`.
     fn add(self: *TokenAccumulator, start: usize, end: usize, kind: SemanticTokenKind) !void {
         if (start >= end) return;
         const key = TokenKey{ .start = start, .end = end };
-        const gop = try self.map.getOrPut(key);
+        const gop = try self.map.getOrPut(self.gpa, key);
         if (!gop.found_existing) {
             gop.value_ptr.* = kind;
         } else {
@@ -2168,7 +2171,7 @@ const TokenAccumulator = struct {
         const entries = try self.toSortedEntries();
         defer self.gpa.free(entries);
 
-        var data = std.ArrayList(u32){};
+        var data = std.ArrayList(u32).empty;
         errdefer data.deinit(self.gpa);
 
         var have_prev = false;
@@ -2273,15 +2276,15 @@ fn collectLexicalTokens(tokens: *TokenAccumulator, doc: *const DocumentStore.Doc
 }
 
 /// Gather semantic tokens from the AST and add them to `tokens`.
-fn gatherAstTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8, ast_unit: *ast.Ast, file_id: u32, resolution_map: *const std.AutoArrayHashMap(u32, Symbol)) !void {
+fn gatherAstTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8, ast_unit: *ast.Ast, file_id: u32, resolution_map: *const std.array_hash_map.Auto(u32, Symbol)) !void {
     try highlightPackage(tokens, text, ast_unit, file_id);
     try highlightDecls(tokens, text, ast_unit, file_id);
     try highlightExpressions(tokens, gpa, text, ast_unit, file_id, resolution_map);
 }
 
 /// Resolve symbols for `ast_unit` and return the populated map.
-fn buildResolutionMap(gpa: std.mem.Allocator, ast_unit: *ast.Ast) !std.AutoArrayHashMap(u32, Symbol) {
-    var map: std.AutoArrayHashMap(u32, Symbol) = .init(gpa);
+fn buildResolutionMap(gpa: std.mem.Allocator, ast_unit: *ast.Ast) !std.array_hash_map.Auto(u32, Symbol) {
+    var map: std.array_hash_map.Auto(u32, Symbol) = .empty;
     try SymbolResolver.run(gpa, ast_unit, &map);
     return map;
 }
@@ -2497,7 +2500,7 @@ fn highlightTypeExpr(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast
 }
 
 /// Highlight expressions and binding occurrences in `ast_unit`.
-fn highlightExpressions(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8, ast_unit: *ast.Ast, file_id: u32, resolution_map: *const std.AutoArrayHashMap(u32, Symbol)) !void {
+fn highlightExpressions(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8, ast_unit: *ast.Ast, file_id: u32, resolution_map: *const std.array_hash_map.Auto(u32, Symbol)) !void {
     _ = gpa;
     const expr_store = &ast_unit.exprs;
     const kinds_len = expr_store.index.kinds.items.len;
@@ -2878,7 +2881,7 @@ fn fileUriToPath(gpa: std.mem.Allocator, uri: []const u8) ![]u8 {
         rest = "";
     }
 
-    var out_buf = std.ArrayList(u8){};
+    var out_buf = std.ArrayList(u8).empty;
     errdefer out_buf.deinit(gpa);
 
     var i: usize = 0;
@@ -2916,7 +2919,7 @@ fn hexDigit(c: u8) ?u8 {
 
 /// Build a list of line start offsets for `text`.
 fn buildLineStarts(gpa: std.mem.Allocator, text: []const u8) ![]usize {
-    var starts = std.ArrayList(usize){};
+    var starts = std.ArrayList(usize).empty;
     errdefer starts.deinit(gpa);
     try starts.append(gpa, 0);
 
@@ -3008,7 +3011,7 @@ fn resolvePointer(type_store: *types.TypeStore, type_id: types.TypeId) types.Typ
 }
 
 /// Print the struct `fields_range` into hover output.
-fn printHoverFields(writer: *std.io.Writer, type_store: *types.TypeStore, fields_range: types.RangeField) !void {
+fn printHoverFields(writer: *std.Io.Writer, type_store: *types.TypeStore, fields_range: types.RangeField) !void {
     const fields = type_store.field_pool.slice(fields_range);
     if (fields.len > 0) {
         try writer.print("\n\n---\n", .{});

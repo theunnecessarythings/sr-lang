@@ -995,13 +995,13 @@ fn lowerPatRange(self: *Lower, r: cst.RangeOf(cst.PatternId)) anyerror!ast.Range
 
 /// Extract path segments from a type expression for matching/lookup.
 fn pathSegsFromTypeExpr(self: *Lower, id: cst.ExprId) !ast.RangePathSeg {
-    var segs = std.ArrayList(ast.PathSegId){};
+    var segs: std.ArrayListUnmanaged(ast.PathSegId) = .empty;
     defer segs.deinit(self.ast_unit.gpa); // We copy results into pool, can free ArrayList
     try self.collectPathSegs(id, &segs);
     return self.ast_unit.pats.seg_pool.pushMany(self.ast_unit.gpa, segs.items);
 }
 
-fn collectPathSegs(self: *Lower, id: cst.ExprId, segs: *std.ArrayList(ast.PathSegId)) anyerror!void {
+fn collectPathSegs(self: *Lower, id: cst.ExprId, segs: *std.ArrayListUnmanaged(ast.PathSegId)) anyerror!void {
     switch (self.cst_program.kind(id)) {
         .Ident => {
             const r = self.cst_program.exprs.get(.Ident, id);
@@ -1179,7 +1179,7 @@ const LiteralScanner = struct {
     fn unescapeString(gpa: std.mem.Allocator, strs: *ast.StringInterner, quoted_str: []const u8, raw: bool) !ast.StrId {
         const inner = if (raw) std.mem.trim(u8, quoted_str[1..], "\"#") else quoted_str[1 .. quoted_str.len - 1];
         if (raw) return strs.intern(inner);
-        var buf: std.ArrayList(u8) = std.ArrayList(u8){};
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
         defer buf.deinit(gpa);
 
         var i: usize = 0;

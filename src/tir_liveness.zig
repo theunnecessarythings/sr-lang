@@ -299,9 +299,9 @@ const LivenessAnalyzer = struct {
 
 // --- Top Level API ---
 
-pub fn dump(gpa: Allocator, t: *tir.TIR) !void {
+pub fn dump(gpa: Allocator, io: std.Io, t: *tir.TIR) !void {
     var out_buf: [4096]u8 = undefined;
-    var out = std.fs.File.stdout().writer(&out_buf);
+    var out = std.Io.File.Writer.init(.stdout(), io, &out_buf);
     const writer = &out.interface;
 
     const funcs = t.funcs.func_pool.inner.data.items;

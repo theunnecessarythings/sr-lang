@@ -174,7 +174,7 @@ pub const Pipeline = struct {
             .test_mode => .compile,
             else => .compile,
         };
-        try compile.convert_to_llvm_ir(mod.handle, link_args, lmode, opt_level, self.debug_info, self.use_sr_libc, output_path);
+        try compile.convert_to_llvm_ir(self.context.source_manager.io, mod.handle, link_args, lmode, opt_level, self.debug_info, self.use_sr_libc, output_path);
 
         if (self.context.diags.anyErrors()) return error.LLVMIRFailed;
         if (mode == .jit) {
@@ -305,7 +305,7 @@ pub const Pipeline = struct {
     fn runAstLowering(self: *Pipeline) !void {
         var pkg_iter = self.context.compilation_unit.packages.iterator();
         const threaded = !builtin.single_threaded and !builtin.cpu.arch.isWasm();
-        var threads = std.ArrayList(struct { std.Thread, *lower_to_ast.Lower, []const u8, []const u8 }){};
+        var threads = std.ArrayList(struct { std.Thread, *lower_to_ast.Lower, []const u8, []const u8 }).empty;
         defer threads.deinit(self.gpa);
 
         while (pkg_iter.next()) |pkg| {
@@ -352,7 +352,7 @@ pub const Pipeline = struct {
         if (cycles.cycles.items.len == 0) return false;
 
         for (cycles.cycles.items) |cy| {
-            var buf = std.ArrayList(u8){};
+            var buf = std.ArrayList(u8).empty;
             defer buf.deinit(self.gpa);
             for (cy.items, 0..) |id, i| {
                 if (i > 0) try buf.appendSlice(self.gpa, " -> ");
@@ -368,7 +368,7 @@ pub const Pipeline = struct {
             var pi = self.context.compilation_unit.packages.iterator();
             while (pi.next()) |p| {
                 var si = p.value_ptr.sources.iterator();
-                while (si.next()) |u| if (u.value_ptr.tir) |t| try tir_liveness.dump(self.gpa, t);
+                while (si.next()) |u| if (u.value_ptr.tir) |t| try tir_liveness.dump(self.gpa, self.context.source_manager.io, t);
             }
         }
         return .{ .compilation_unit = self.context.compilation_unit, .test_count = t_count };
@@ -385,7 +385,7 @@ pub const Pipeline = struct {
             return;
         }
 
-        std.fs.cwd().makePath("out/triton_kernels") catch |e| if (e != error.PathAlreadyExists) return e;
+        try std.Io.Dir.cwd().createDirPath(self.context.source_manager.io, "out/triton_kernels");
 
         for (self.context.triton_launches.items) |launch| {
             var tgen = codegen.Codegen.init(self.gpa, self.context, &self.mlir_ctx.?, true);
@@ -403,10 +403,18 @@ pub const Pipeline = struct {
             try self.dumpMlir(tmod, mlir_path);
 
             // Arena for driver args to avoid manual cleanup of multiple strings
-            var args = std.ArrayList([]const u8){};
+            var args = std.ArrayList([]const u8).empty;
             defer args.deinit(self.gpa);
 
-            try args.append(self.gpa, "third-party/triton/build/cmake.linux-x86_64-cpython-3.13/bin/triton_mlir_driver");
+            const exe_dir = try std.process.executableDirPathAlloc(self.context.source_manager.io, aa);
+            const zig_out_dir = std.fs.path.dirname(exe_dir) orelse return error.FileNotFound;
+            const project_root = std.fs.path.dirname(zig_out_dir) orelse return error.FileNotFound;
+            const triton_driver_path = try std.fs.path.join(aa, &.{
+                project_root,
+                "third-party/triton/build/cmake.linux-x86_64-cpython-3.13/bin/triton_mlir_driver",
+            });
+            std.Io.Dir.cwd().access(self.context.source_manager.io, triton_driver_path, .{}) catch return error.FileNotFound;
+            try args.append(self.gpa, triton_driver_path);
             try args.append(self.gpa, try std.fmt.allocPrint(aa, "--input={s}", .{mlir_path}));
             try args.append(self.gpa, try std.fmt.allocPrint(aa, "--emit-ptx={s}", .{ptx_path}));
 
@@ -420,11 +428,10 @@ pub const Pipeline = struct {
             else
                 try args.append(self.gpa, "--num-ctas=1");
 
-            var child = std.process.Child.init(args.items, self.gpa);
-            child.cwd = ".";
-            const term = try child.spawnAndWait();
+            var child = try std.process.spawn(self.context.source_manager.io, .{ .argv = args.items, .cwd = .{ .path = "." } });
+            const term = try child.wait(self.context.source_manager.io);
             switch (term) {
-                .Exited => |code| if (code != 0) return error.TritonDriverFailed,
+                .exited => |code| if (code != 0) return error.TritonDriverFailed,
                 else => return error.TritonDriverFailed,
             }
         }
@@ -438,8 +445,9 @@ pub const Pipeline = struct {
         var sink = codegen.PrintBuffer{ .list = &buf, .had_error = &err };
         mod.getOperation().print(codegen.printCallback, &sink);
         if (!err) {
-            std.fs.cwd().makePath("out") catch |e| if (e != error.PathAlreadyExists) return e;
-            try std.fs.cwd().writeFile(.{ .data = sink.list.items, .sub_path = path });
+            const cwd = std.Io.Dir.cwd();
+            try cwd.createDirPath(self.context.source_manager.io, "out");
+            try cwd.writeFile(self.context.source_manager.io, .{ .data = sink.list.items, .sub_path = path });
         }
     }
 

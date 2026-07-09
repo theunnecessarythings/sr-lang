@@ -68,7 +68,7 @@ fn printCb(str: mlir.c.MlirStringRef, ctx_ptr: ?*anyopaque) callconv(.c) void {
 }
 
 fn getAttrText(self: *Codegen, attr: mlir.Attribute) ![]const u8 {
-    var ctx = PrintCtx{ .list = .{}, .alloc = self.debug_arena.allocator(), .err = false };
+    var ctx = PrintCtx{ .list = .empty, .alloc = self.debug_arena.allocator(), .err = false };
     attr.print(printCb, &ctx);
     if (ctx.err) return error.DebugAttrParseFailed;
     return ctx.list.items;
@@ -121,7 +121,7 @@ fn addCompileUnitToModule(self: *Codegen, cu_attr: mlir.Attribute) !void {
         return;
     }
 
-    var elems = std.ArrayList(mlir.Attribute){};
+    var elems = std.ArrayList(mlir.Attribute).empty;
     defer elems.deinit(self.gpa);
 
     var present = false;
@@ -200,7 +200,7 @@ pub fn ensureDebugModuleAttrs(self: *Codegen) !void {
     const flags_name = mlir.StringRef.from("llvm.module.flags");
     const existing = mod_op.getDiscardableAttributeByName(flags_name);
 
-    var flags = std.ArrayList(mlir.Attribute){};
+    var flags = std.ArrayList(mlir.Attribute).empty;
     defer flags.deinit(self.gpa);
 
     var has_db = false;
@@ -330,7 +330,7 @@ pub fn ensureDIType(self: *Codegen, ty: types.TypeId) !mlir.Attribute {
             const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(try std.fmt.allocPrint(scratch, "comp_{d}_{s}", .{ nextDistinctId(self), @tagName(kind) })));
             try self.di_recursive_ids.put(ty, id_attr);
 
-            var elems_list = std.ArrayListUnmanaged(u8){};
+            var elems_list = std.ArrayListUnmanaged(u8).empty;
             var offset: u64 = 0;
             var max_align: u64 = 1;
             var name: []const u8 = "struct";
@@ -462,7 +462,7 @@ pub fn ensureDIType(self: *Codegen, ty: types.TypeId) !mlir.Attribute {
             const tag_txt = try getAttrText(self, tag_di);
 
             const scratch = self.debug_arena.allocator();
-            var elems = std.ArrayListUnmanaged(u8){};
+            var elems = std.ArrayListUnmanaged(u8).empty;
             for (self.context.type_store.enum_member_pool.slice(e.members), 0..) |mid, i| {
                 const mem = self.context.type_store.EnumMember.get(mid);
                 if (i > 0) try elems.appendSlice(scratch, ", ");
@@ -496,7 +496,7 @@ pub fn ensureDIType(self: *Codegen, ty: types.TypeId) !mlir.Attribute {
         .Function => blk: {
             const f = self.context.type_store.get(.Function, ty);
             const scratch = self.debug_arena.allocator();
-            var types_list = std.ArrayListUnmanaged(mlir.Attribute){};
+            var types_list = std.ArrayListUnmanaged(mlir.Attribute).empty;
 
             try types_list.append(self.gpa, try ensureDIType(self, f.result));
             for (self.context.type_store.type_pool.slice(f.params)) |p| try types_list.append(self.gpa, try ensureDIType(self, p));
@@ -512,7 +512,7 @@ pub fn ensureDIType(self: *Codegen, ty: types.TypeId) !mlir.Attribute {
             const scratch = self.debug_arena.allocator();
             const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(try std.fmt.allocPrint(scratch, "simd_{d}", .{nextDistinctId(self)})));
             const elem_di = try ensureDIType(self, s.elem);
-            var elems = std.ArrayListUnmanaged(u8){};
+            var elems = std.ArrayListUnmanaged(u8).empty;
             for (0..s.lanes) |i| {
                 if (i > 0) try elems.appendSlice(scratch, ", ");
                 try elems.appendSlice(scratch, try diDerived(self, "DW_TAG_member", try std.fmt.allocPrint(scratch, "{d}", .{i}), elem_di, 64, 64, i * 64));
@@ -544,7 +544,7 @@ pub fn ensureDIType(self: *Codegen, ty: types.TypeId) !mlir.Attribute {
             const scratch = self.debug_arena.allocator();
             const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(try std.fmt.allocPrint(scratch, "tensor_{d}", .{nextDistinctId(self)})));
             const elem_di = try ensureDIType(self, t.elem);
-            var elems = std.ArrayListUnmanaged(u8){};
+            var elems = std.ArrayListUnmanaged(u8).empty;
             for (0..len_u) |i| {
                 if (i > 0) try elems.appendSlice(scratch, ", ");
                 try elems.appendSlice(scratch, try diDerived(self, "DW_TAG_member", try std.fmt.allocPrint(scratch, "{d}", .{i}), elem_di, 64, 64, i * 64));
@@ -559,7 +559,7 @@ pub fn ensureDIType(self: *Codegen, ty: types.TypeId) !mlir.Attribute {
 
 /// Construct the DI subroutine type attribute for a function given its return/param types.
 fn buildDISubroutineTypeAttr(self: *Codegen, ret_ty: types.TypeId, params: []const tir.ParamId, t: *tir.TIR) !mlir.Attribute {
-    var types_buf = std.ArrayListUnmanaged(mlir.Attribute){};
+    var types_buf = std.ArrayListUnmanaged(mlir.Attribute).empty;
     defer types_buf.deinit(self.gpa);
 
     const null_attr = try ensureDINullTypeAttr(self);

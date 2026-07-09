@@ -13,6 +13,13 @@ const package = @import("package.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
 
+fn appendFormatted(gpa: Allocator, buf: *ArrayList(u8), comptime fmt: []const u8, args: anytype) !void {
+    var stream = std.Io.Writer.Allocating.init(gpa);
+    defer stream.deinit();
+    try stream.writer.print(fmt, args);
+    try buf.appendSlice(stream.written());
+}
+
 pub var enable_debug_info: bool = false;
 
 /// Recorded line and column numbers computed from a source index.
@@ -341,29 +348,29 @@ fn appendMlirSpliceValue(self: *Codegen, buf: *ArrayList(u8), value: comp.ValueI
                     .I64, .U64 => 64,
                     else => 0,
                 };
-                if (width != 0) return buf.writer().print("{d} : i{d}", .{ v, width });
+                if (width != 0) return appendFormatted(self.gpa, buf, "{d} : i{d}", .{ v, width });
             }
-            try buf.writer().print("{}", .{v});
+            try appendFormatted(self.gpa, buf, "{}", .{v});
         },
-        .Float => try buf.writer().print("{}", .{s.get(.Float, value).value}),
+        .Float => try appendFormatted(self.gpa, buf, "{}", .{s.get(.Float, value).value}),
         .Bool => try buf.appendSlice(if (s.get(.Bool, value).value) "true" else "false"),
         .String => try buf.appendSlice(s.get(.String, value).value),
         .Sequence => {
             const seq = s.get(.Sequence, value);
-            try buf.writer().print("[sequence len={d}]", .{s.val_pool.slice(seq.elems).len});
+            try appendFormatted(self.gpa, buf, "[sequence len={d}]", .{s.val_pool.slice(seq.elems).len});
         },
         .Struct => {
             const sv = s.get(.Struct, value);
-            try buf.writer().print("<struct len={d}>", .{s.struct_field_pool.slice(sv.fields).len});
+            try appendFormatted(self.gpa, buf, "<struct len={d}>", .{s.struct_field_pool.slice(sv.fields).len});
         },
         .Variant => try buf.appendSlice("<variant>"),
         .Map => {
             const mp = s.get(.Map, value);
-            try buf.writer().print("<map len={d}>", .{s.map_entry_pool.slice(mp.entries).len});
+            try appendFormatted(self.gpa, buf, "<map len={d}>", .{s.map_entry_pool.slice(mp.entries).len});
         },
         .Range => {
             const rg = s.get(.Range, value);
-            try buf.writer().print("range({d}..{d}{s})", .{ rg.start, rg.end, if (rg.inclusive) "=" else "" });
+            try appendFormatted(self.gpa, buf, "range({d}..{d}{s})", .{ rg.start, rg.end, if (rg.inclusive) "=" else "" });
         },
         .Type => {
             const type_val = s.get(.Type, value).ty;
@@ -374,7 +381,10 @@ fn appendMlirSpliceValue(self: *Codegen, buf: *ArrayList(u8), value: comp.ValueI
             if (self.llvmTypeOf(normalized)) |mlir_ty| {
                 try self.appendMlirTypeText(buf, mlir_ty);
             } else |_| {
-                try self.context.type_store.formatTypeForDiagnostic(type_val, .{}, buf.writer());
+                var stream = std.Io.Writer.Allocating.init(self.gpa);
+                defer stream.deinit();
+                try self.context.type_store.formatTypeForDiagnostic(type_val, .{}, &stream.writer);
+                try buf.appendSlice(stream.written());
             }
         },
         .MlirType => try self.appendMlirTypeText(buf, s.get(.MlirType, value).ty),
@@ -1680,7 +1690,7 @@ fn rewriteAsmParams(self: *Codegen, text: []const u8, params: []const tir.ParamI
                 const p = t.funcs.Param.get(p_id);
                 if (p.name.isNone()) continue;
                 if (std.mem.eql(u8, tok, t.instrs.strs.get(p.name.unwrap()))) {
-                    try out.writer().print("${d}", .{if (has_res) idx + 1 else idx});
+                    try appendFormatted(self.gpa, &out, "${d}", .{if (has_res) idx + 1 else idx});
                     replaced = true;
                     break;
                 }
@@ -3306,10 +3316,9 @@ fn checkCachedMlirValue(self: *Codegen, p: tir.Rows.MlirBlock) !?mlir.Value {
 fn buildMlirDefinitionText(self: *Codegen, template: []const u8, arg_vids: []const tir.ValueId) ![]u8 {
     if (arg_vids.len == 0) return self.gpa.dupe(u8, template);
 
-    var buf = ArrayList(u8).init(self.gpa);
+    var buf = std.Io.Writer.Allocating.init(self.gpa);
     defer buf.deinit();
-    try buf.ensureTotalCapacity(template.len + (arg_vids.len * 16));
-    const writer = buf.writer();
+    const writer = &buf.writer;
 
     // Cache string representations of arguments on demand?
     // Optimization: Just print directly when encountered.
@@ -3336,7 +3345,7 @@ fn buildMlirDefinitionText(self: *Codegen, template: []const u8, arg_vids: []con
         // Trim standard MLIR value output format: "  %name = ..." -> "%name"
         var trimmed = std.mem.trim(u8, raw, " \t\r\n");
         if (std.mem.indexOfScalar(u8, trimmed, '=')) |eq_idx| {
-            trimmed = std.mem.trimRight(u8, trimmed[0..eq_idx], " \t\r\n");
+            trimmed = std.mem.trimEnd(u8, trimmed[0..eq_idx], " \t\r\n");
         }
         arg_strs[i] = try self.gpa.dupe(u8, trimmed);
     }
@@ -3902,12 +3911,9 @@ fn emitInlineMlirOperation(
     defer self.gpa.free(func_name_buf);
 
     // 2. Build the function string inside a module
-    var func_str: ArrayList(u8) = .init(self.gpa);
+    var func_str = std.Io.Writer.Allocating.init(self.gpa);
     defer func_str.deinit();
-    // Heuristic pre-alloc
-    try func_str.ensureTotalCapacity(128 + mlir_text_raw.len + (count * 16));
-
-    var writer = func_str.writer();
+    var writer = &func_str.writer;
     try writer.print("module {{\nfunc.func private @{s}(", .{func_name_buf});
 
     // Reusable buffer for type printing
@@ -3952,7 +3958,7 @@ fn emitInlineMlirOperation(
     try writer.writeAll("}\n}");
 
     // 3. Parse module
-    var parsed_module = mlir.Module.createParse(self.mlir_ctx, mlir.StringRef.from(func_str.items));
+    var parsed_module = mlir.Module.createParse(self.mlir_ctx, mlir.StringRef.from(func_str.written()));
     if (parsed_module.isNull()) {
         const msg = self.diagnostic_data.msg orelse return error.CompilationFailed;
         const span = self.diagnostic_data.span orelse return error.CompilationFailed;

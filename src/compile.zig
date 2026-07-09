@@ -10,6 +10,7 @@ const TypeInfo = @import("types.zig").TypeInfo;
 const TypeStore = @import("types.zig").TypeStore;
 const Parser = @import("parser.zig").Parser;
 const mlir = @import("mlir_bindings.zig");
+const sync = @import("sync.zig");
 
 /// Tracks whether MLIR passes have already been registered globally.
 var g_passes_registered: bool = false;
@@ -17,6 +18,7 @@ var g_passes_registered: bool = false;
 /// Manages file paths, cached contents, and virtual overrides used across compilation.
 pub const SourceManager = struct {
     gpa: std.mem.Allocator,
+    io: std.Io,
     files: std.ArrayList(Entry) = .empty,
     lookup_cache: std.StringHashMap(u32),
     target_is_wasm: bool = false,
@@ -26,9 +28,10 @@ pub const SourceManager = struct {
         virtual_source: ?[]u8 = null,
     };
 
-    pub fn init(gpa: std.mem.Allocator) SourceManager {
+    pub fn init(gpa: std.mem.Allocator, io: std.Io) SourceManager {
         return .{
             .gpa = gpa,
+            .io = io,
             .lookup_cache = std.StringHashMap(u32).init(gpa),
         };
     }
@@ -64,19 +67,14 @@ pub const SourceManager = struct {
         const entry = self.files.items[index];
         if (entry.virtual_source) |src| return try self.gpa.dupe(u8, src);
 
-        var file = std.fs.cwd().openFile(entry.path, .{}) catch |err| {
-            std.debug.print("error opening: {s}\n", .{entry.path});
-            return err;
-        };
-        defer file.close();
+        var file = try std.Io.Dir.cwd().openFile(self.io, entry.path, .{ .mode = .read_only });
+        defer file.close(self.io);
 
-        const size = try file.getEndPos();
-        const size_u = std.math.cast(usize, size) orelse return error.FileTooLarge;
-        const buffer = try self.gpa.alloc(u8, size_u);
-        errdefer self.gpa.free(buffer);
-
-        if (try file.readAll(buffer) != size_u) return error.FileReadError;
-        return buffer;
+        const stat = try file.stat(self.io);
+        const size_u = std.math.cast(usize, stat.size) orelse return error.FileTooLarge;
+        var buf: [1024]u8 = undefined;
+        var reader = file.reader(self.io, &buf);
+        return try reader.interface.readAlloc(self.gpa, size_u);
     }
 
     pub fn get(self: *const SourceManager, index: u32) ?[]const u8 {
@@ -120,19 +118,19 @@ pub fn resolveImportPath(allocator: std.mem.Allocator, source_manager: *SourceMa
         try allocator.dupe(u8, filename_tmp);
     defer allocator.free(filename);
 
-    var paths_to_try = std.ArrayList([]const u8){};
+    var paths_to_try = std.ArrayListUnmanaged([]const u8).empty;
     defer paths_to_try.deinit(allocator);
     try paths_to_try.append(allocator, current_dir);
     try paths_to_try.append(allocator, try std.fs.path.join(allocator, &.{ current_dir, "imports" }));
     if (builtin.os.tag != .emscripten and builtin.os.tag != .wasi) {
-        try paths_to_try.append(allocator, try std.fs.path.join(allocator, &.{ try std.fs.selfExeDirPathAlloc(allocator), ".." }));
+        try paths_to_try.append(allocator, try std.fs.path.join(allocator, &.{ try std.process.executableDirPathAlloc(source_manager.io, allocator), ".." }));
     }
 
     for (paths_to_try.items) |base| {
         const joined = try std.fs.path.join(allocator, &.{ base, filename });
         defer allocator.free(joined);
-        if (std.fs.cwd().access(joined, .{})) |_| {
-            return std.fs.realpathAlloc(allocator, joined);
+        if (std.Io.Dir.cwd().access(source_manager.io, joined, .{})) |_| {
+            return std.Io.Dir.cwd().realPathFileAlloc(source_manager.io, joined, allocator);
         } else |err| {
             if (err != error.FileNotFound) return err;
         }
@@ -150,9 +148,9 @@ pub const Context = struct {
     compilation_unit: CompilationUnit,
     global_func_map: std.AutoHashMap(tir.StrId, struct { tir.FuncId, *tir.FuncStore }),
     load_imports: bool = true,
-    mutex: std.Thread.Mutex = .{},
-    parse_worklist: std.ArrayList(ParseRequest) = .{},
-    triton_launches: std.ArrayList(TritonLaunch) = .{},
+    mutex: sync.Mutex = .{},
+    parse_worklist: std.ArrayList(ParseRequest) = .empty,
+    triton_launches: std.ArrayList(TritonLaunch) = .empty,
     triton_launch_meta: TritonLaunchMeta = .{ .num_warps = null, .threads_per_warp = null, .num_ctas = null },
 
     const ParseRequest = struct {
@@ -163,7 +161,7 @@ pub const Context = struct {
         parser: *Parser,
     };
 
-    pub fn init(gpa: std.mem.Allocator) Context {
+    pub fn init(gpa: std.mem.Allocator, io: std.Io) Context {
         const interner = gpa.create(cst.StringInterner) catch unreachable;
         interner.* = cst.StringInterner.init(gpa);
         const type_store = gpa.create(TypeStore) catch unreachable;
@@ -171,7 +169,7 @@ pub const Context = struct {
         const diags = gpa.create(Diagnostics) catch unreachable;
         diags.* = Diagnostics.init(gpa, type_store, interner);
         const sm = gpa.create(SourceManager) catch unreachable;
-        sm.* = SourceManager.init(gpa);
+        sm.* = SourceManager.init(gpa, io);
         const loc_store = gpa.create(cst.LocStore) catch unreachable;
         loc_store.* = cst.LocStore{};
 
@@ -184,7 +182,7 @@ pub const Context = struct {
             .type_store = type_store,
             .compilation_unit = .init(gpa),
             .global_func_map = .init(gpa),
-            .triton_launches = .{},
+            .triton_launches = .empty,
             .triton_launch_meta = .{ .num_warps = null, .threads_per_warp = null, .num_ctas = null },
         };
     }
@@ -214,7 +212,7 @@ pub const DependencyLevels = struct {
     levels: std.ArrayList(std.ArrayList(u32)),
 
     pub fn init(allocator: std.mem.Allocator) DependencyLevels {
-        return .{ .allocator = allocator, .levels = .{} };
+        return .{ .allocator = allocator, .levels = .empty };
     }
     pub fn deinit(self: *DependencyLevels) void {
         for (self.levels.items) |*l| l.deinit(self.allocator);
@@ -298,9 +296,9 @@ pub fn computeDependencyLevels(allocator: std.mem.Allocator, unit: *CompilationU
     var res = DependencyLevels.init(allocator);
     errdefer res.deinit();
 
-    var queue = std.ArrayList(u32){};
+    var queue = std.ArrayList(u32).empty;
     defer queue.deinit(allocator);
-    var next_queue = std.ArrayList(u32){};
+    var next_queue = std.ArrayList(u32).empty;
     defer next_queue.deinit(allocator);
 
     // Kahn's Algorithm
@@ -312,7 +310,7 @@ pub fn computeDependencyLevels(allocator: std.mem.Allocator, unit: *CompilationU
     var processed_count: usize = 0;
 
     while (queue.items.len > 0) {
-        var level = std.ArrayList(u32){};
+        var level = std.ArrayList(u32).empty;
         try level.appendSlice(allocator, queue.items);
         try res.levels.append(allocator, level);
         processed_count += queue.items.len;
@@ -332,7 +330,7 @@ pub fn computeDependencyLevels(allocator: std.mem.Allocator, unit: *CompilationU
 
     // Nodes in cycles are leftover
     if (processed_count < graph.all_nodes.count()) {
-        var cycle_level = std.ArrayList(u32){};
+        var cycle_level = std.ArrayList(u32).empty;
         var nit = graph.all_nodes.iterator();
         while (nit.next()) |e| {
             if (graph.indegree.get(e.key_ptr.*).? > 0) try cycle_level.append(allocator, e.key_ptr.*);
@@ -349,7 +347,7 @@ pub const CycleReport = struct {
     blocked: std.ArrayList(u32),
 
     pub fn init(allocator: std.mem.Allocator) CycleReport {
-        return .{ .allocator = allocator, .cycles = .{}, .blocked = .{} };
+        return .{ .allocator = allocator, .cycles = .empty, .blocked = .empty };
     }
     pub fn deinit(self: *CycleReport) void {
         for (self.cycles.items) |*c| c.deinit(self.allocator);
@@ -365,7 +363,7 @@ pub fn detectImportCycles(allocator: std.mem.Allocator, unit: *CompilationUnit, 
     errdefer report.deinit();
 
     // Re-run Kahn's partially to strip acyclic nodes
-    var queue = std.ArrayList(u32){};
+    var queue = std.ArrayList(u32).empty;
     defer queue.deinit(allocator);
     var it = graph.indegree.iterator();
     while (it.next()) |e| if (e.value_ptr.* == 0) try queue.append(allocator, e.key_ptr.*);
@@ -389,7 +387,7 @@ pub fn detectImportCycles(allocator: std.mem.Allocator, unit: *CompilationUnit, 
     defer visited.deinit();
     var onstack = std.AutoHashMap(u32, bool).init(allocator);
     defer onstack.deinit();
-    var stack = std.ArrayList(u32){};
+    var stack = std.ArrayList(u32).empty;
     defer stack.deinit(allocator);
     var in_cycle = std.AutoHashMap(u32, void).init(allocator);
     defer in_cycle.deinit();
@@ -416,7 +414,7 @@ pub fn detectImportCycles(allocator: std.mem.Allocator, unit: *CompilationUnit, 
                         try ctx.run(v);
                     } else if (ctx.os.contains(v)) {
                         // Cycle found
-                        var cyc = std.ArrayList(u32){};
+                        var cyc = std.ArrayList(u32).empty;
                         var idx: usize = 0;
                         while (idx < ctx.st.items.len and ctx.st.items[idx] != v) : (idx += 1) {}
                         if (idx < ctx.st.items.len) {
@@ -518,7 +516,7 @@ pub fn runJit(module: mlir.c.MlirModule) void {
 
 pub const Mode = enum { llvm_ir, llvm_passes, wasm, compile };
 
-pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const u8, mode: Mode, opt_lvl: ?[]const u8, debug: bool, use_sr_libc: bool, output_path: ?[]const u8) !void {
+pub fn convert_to_llvm_ir(io: std.Io, module: mlir.c.MlirModule, link_args: []const []const u8, mode: Mode, opt_lvl: ?[]const u8, debug: bool, use_sr_libc: bool, output_path: ?[]const u8) !void {
     if (mode != .wasm) {
         _ = mlir.c.LLVMInitializeNativeTarget();
         _ = mlir.c.LLVMInitializeNativeAsmPrinter();
@@ -584,7 +582,7 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const 
 
     if (mode == .llvm_passes) return;
 
-    std.fs.cwd().makeDir("out") catch |e| if (e != error.PathAlreadyExists) return e;
+    try std.Io.Dir.cwd().createDirPath(io, "out");
     if (mlir.c.LLVMPrintModuleToFile(ir, "out/output.ll", &err) != 0) {
         std.debug.print("Emit Error: {s}\n", .{err});
         mlir.c.LLVMDisposeMessage(err);
@@ -602,28 +600,28 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const 
         const final_wasm = output_path orelse "out/output.wasm";
         const out_dir = std.fs.path.dirname(final_wasm) orelse ".";
 
-        var cmd_cc = std.ArrayList([]const u8){};
+        var cmd_cc = std.ArrayList([]const u8).empty;
         try cmd_cc.appendSlice(alloc, &[_][]const u8{ "zig", "cc", "-target", "wasm32-freestanding", "-c", "-o", "out/output.o", "out/output.ll" });
         if (opt_lvl) |lvl| try cmd_cc.append(alloc, try std.fmt.allocPrint(alloc, "-O{s}", .{lvl}));
 
-        var child_cc = std.process.Child.init(cmd_cc.items, alloc);
-        const term_cc = child_cc.spawnAndWait() catch return error.LinkFailed;
-        if (term_cc != .Exited or term_cc.Exited != 0) return error.LinkFailed;
+        var child_cc = std.process.spawn(io, .{ .argv = cmd_cc.items }) catch return error.LinkFailed;
+        const result_cc = child_cc.wait(io) catch return error.LinkFailed;
+        if (result_cc != .exited or result_cc.exited != 0) return error.LinkFailed;
 
-        var cmd_ld = std.ArrayList([]const u8){};
+        var cmd_ld = std.ArrayList([]const u8).empty;
         try cmd_ld.appendSlice(alloc, &[_][]const u8{ "zig", "wasm-ld", "--no-entry", "--export-dynamic", "--allow-undefined", "-o", final_wasm, "out/output.o" });
         try cmd_ld.appendSlice(alloc, link_args);
 
-        var child_ld = std.process.Child.init(cmd_ld.items, alloc);
-        const term_ld = child_ld.spawnAndWait() catch return error.LinkFailed;
-        if (term_ld != .Exited or term_ld.Exited != 0) return error.LinkFailed;
+        var child_ld = std.process.spawn(io, .{ .argv = cmd_ld.items }) catch return error.LinkFailed;
+        const term_ld = child_ld.wait(io) catch return error.LinkFailed;
+        if (term_ld != .exited or term_ld.exited != 0) return error.LinkFailed;
 
         // Generate HTML and JS
         const wasm_name = std.fs.path.basename(final_wasm);
         const index_path = try std.fs.path.join(alloc, &.{ out_dir, "index.html" });
 
         // Ensure out_dir exists
-        std.fs.cwd().makePath(out_dir) catch {};
+        std.Io.Dir.cwd().createDirPath(io, out_dir) catch {};
 
         const html_content = try std.fmt.allocPrint(alloc,
             \\<!DOCTYPE html>
@@ -648,43 +646,43 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const 
             \\</body>
             \\</html>
         , .{wasm_name});
-        try std.fs.cwd().writeFile(.{ .sub_path = index_path, .data = html_content });
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = index_path, .data = html_content });
 
         // Copy srlang.js from std/web/srlang.js
-        const exe_dir = try std.fs.selfExeDirPathAlloc(alloc);
+        const exe_dir = try std.process.executableDirPathAlloc(io, alloc);
         const js_src_dir_path = try std.fs.path.join(alloc, &.{ exe_dir[0 .. exe_dir.len - 4], "std/web" });
-        var js_src_dir = std.fs.openDirAbsolute(js_src_dir_path, .{}) catch |e| {
+        var js_src_dir = std.Io.Dir.openDirAbsolute(io, js_src_dir_path, .{}) catch |e| {
             std.debug.print("Warning: could not open js source dir {s}: {}\n", .{ js_src_dir_path, e });
             return;
         };
-        defer js_src_dir.close();
+        defer js_src_dir.close(io);
 
-        var dest_dir = std.fs.cwd().openDir(out_dir, .{}) catch |e| {
+        var dest_dir = std.Io.Dir.cwd().openDir(io, out_dir, .{}) catch |e| {
             std.debug.print("Warning: could not open dest dir {s}: {}\n", .{ out_dir, e });
             return;
         };
-        defer dest_dir.close();
+        defer dest_dir.close(io);
 
-        js_src_dir.copyFile("srlang.js", dest_dir, "srlang.js", .{}) catch |e| {
+        js_src_dir.copyFile("srlang.js", dest_dir, "srlang.js", io, .{}) catch |e| {
             std.debug.print("Warning: could not copy srlang.js to {s}: {}\n", .{ out_dir, e });
         };
 
         return;
     }
 
-    var cmd = std.ArrayList([]const u8){};
+    var cmd = std.ArrayList([]const u8).empty;
     try cmd.appendSlice(alloc, &[_][]const u8{ "zig", "cc", try std.fmt.allocPrint(alloc, "-O{s}", .{opt_lvl orelse "0"}), "-w" });
     if (debug) try cmd.append(alloc, "-g");
     try cmd.appendSlice(alloc, &[_][]const u8{ "-o", output_path orelse "out/output_program", "out/output.ll" });
 
-    const exe_dir = try std.fs.selfExeDirPathAlloc(alloc);
+    const exe_dir = try std.process.executableDirPathAlloc(io, alloc);
     if (use_sr_libc) {
         try cmd.appendSlice(alloc, &[_][]const u8{ "-nostdlib", "-nostartfiles", "-no-pie", "-Wl,-e,_start" });
     } else {
-        const rt_path = try std.fs.path.join(alloc, &.{ exe_dir[0 .. exe_dir.len - 4], "lib/libsr_runtime.a" });
+        const rt_path = try std.fs.path.join(alloc, &.{ exe_dir[0 .. exe_dir.len - 4], "lib/libsr_runtime.o" });
         try cmd.append(alloc, rt_path);
     }
-    const triton_rt_path = try std.fs.path.join(alloc, &.{ exe_dir[0 .. exe_dir.len - 4], "lib/libsr_triton_runtime.a" });
+    const triton_rt_path = try std.fs.path.join(alloc, &.{ exe_dir[0 .. exe_dir.len - 4], "lib/libsr_triton_runtime.o" });
     try cmd.appendSlice(alloc, &[_][]const u8{ "-Wl,-rpath,./out", "-Lout" });
 
     var op = mlir.Operation{ .handle = mlir.c.mlirModuleGetOperation(module) };
@@ -697,23 +695,25 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const 
     }
     try cmd.appendSlice(alloc, link_args);
 
-    var child = std.process.Child.init(cmd.items, alloc);
-    const term = child.spawnAndWait() catch return error.LinkFailed;
-    if (term != .Exited or term.Exited != 0) return error.LinkFailed;
+    var child = std.process.spawn(io, .{ .argv = cmd.items }) catch return error.LinkFailed;
+    const term = child.wait(io) catch return error.LinkFailed;
+    if (term != .exited or term.exited != 0) return error.LinkFailed;
 }
 
-pub fn runWithStatus() !u8 {
+pub fn runWithStatus(io: std.Io) !u8 {
     if (builtin.os.tag == .emscripten or builtin.os.tag == .wasi) {
         return error.UnsupportedPlatform;
     }
-    var child = std.process.Child.init(&[_][]const u8{"out/output_program"}, std.heap.page_allocator);
-    const term = try child.spawnAndWait();
+    var child = try std.process.spawn(io, .{ .argv = &[_][]const u8{"out/output_program"} });
+    const term = try child.wait(io);
     return switch (term) {
-        .Exited => |c| @intCast(c),
+        .exited => |c| @intCast(c),
         else => error.ProgramFailed,
     };
 }
 
 pub fn run() void {
-    _ = runWithStatus() catch {};
+    var io_instance: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+    defer io_instance.deinit();
+    _ = runWithStatus(io_instance.io()) catch {};
 }

@@ -42,11 +42,11 @@ pub const LoopCtx = struct {
 };
 
 pub const Env = struct {
-    map: std.AutoArrayHashMapUnmanaged(ast.StrId, ValueBinding) = .{},
-    bindings: List(LowerTir.EnvBindingSnapshot) = .{},
-    defers: List(DeferEntry) = .{},
-    marks: List(u32) = .{},
-    binding_marks: List(u32) = .{},
+    map: std.AutoArrayHashMapUnmanaged(ast.StrId, ValueBinding) = .empty,
+    bindings: List(LowerTir.EnvBindingSnapshot) = .empty,
+    defers: List(DeferEntry) = .empty,
+    marks: List(u32) = .empty,
+    binding_marks: List(u32) = .empty,
 
     pub fn deinit(self: *Env, gpa: std.mem.Allocator) void {
         self.map.deinit(gpa);

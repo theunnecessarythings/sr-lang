@@ -121,8 +121,8 @@ pub const TypeInfo = struct {
     store: *TypeStore,
     val_store: comp.ValueStore,
 
-    expr_types: std.ArrayListUnmanaged(?TypeId) = .{},
-    decl_types: std.ArrayListUnmanaged(?TypeId) = .{},
+    expr_types: std.ArrayListUnmanaged(?TypeId) = .empty,
+    decl_types: std.ArrayListUnmanaged(?TypeId) = .empty,
     field_index_for_expr: std.AutoArrayHashMapUnmanaged(u32, u32) = .{},
     comptime_values: std.AutoArrayHashMapUnmanaged(ast.ExprId, comp.ValueId) = .{},
     comptime_bindings: std.AutoArrayHashMapUnmanaged(ast.StrId, StoredComptimeBinding) = .{},
@@ -142,7 +142,7 @@ pub const TypeInfo = struct {
     spread_ranges: std.AutoArrayHashMapUnmanaged(u32, void) = .{},
     call_specializations: std.AutoArrayHashMapUnmanaged(u32, CallSpecialization) = .{},
     triton_launch_info: std.AutoArrayHashMapUnmanaged(u32, TritonLaunchInfo) = .{},
-    synthetic_decls: std.ArrayListUnmanaged(u32) = .{},
+    synthetic_decls: std.ArrayListUnmanaged(u32) = .empty,
     closure_captures: std.AutoArrayHashMapUnmanaged(u32, ClosureCaptureList) = .{},
 
     pub const ExportEntry = struct { ty: TypeId, decl_id: ast.DeclId };
@@ -193,7 +193,7 @@ pub const TypeInfo = struct {
     pub fn print(self: *TypeInfo) void {
         std.debug.print("TypeInfo:\n Expr types:\n", .{});
         var buffer: [1024]u8 = undefined;
-        var writer = std.fs.File.stdout().writer(&buffer);
+        var writer = std.Io.File.stdout().writer(&buffer);
         for (self.expr_types.items, 0..) |value, i| {
             writer.interface.print("  {}: ", .{i}) catch {};
             if (value) |ty| self.store.fmt(ty, &writer.interface) catch {} else writer.interface.print("null", .{}) catch {};

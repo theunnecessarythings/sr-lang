@@ -21,7 +21,7 @@ fn expectedMangled(
 }
 
 fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !Lowered {
-    var context = compiler.compile.Context.init(gpa);
+    var context = compiler.compile.Context.init(gpa, std.testing.io);
 
     const src0 = try std.mem.concatWithSentinel(gpa, u8, &.{src}, 0);
     defer gpa.free(src0);
@@ -746,7 +746,7 @@ test "tir: imported call uses mangled prefix" {
         try f.writeAll(main_src);
     }
 
-    var context = compiler.compile.Context.init(gpa);
+    var context = compiler.compile.Context.init(gpa, std.testing.io);
     defer context.deinit();
 
     var pipeline = compiler.pipeline.Pipeline.init(gpa, &context);
@@ -797,7 +797,7 @@ test "tir: runtime any specialization rejects mismatched numeric operands" {
         \\ }
     ;
 
-    var context = compiler.compile.Context.init(gpa);
+    var context = compiler.compile.Context.init(gpa, std.testing.io);
     defer context.deinit();
 
     const src0 = try std.mem.concatWithSentinel(gpa, u8, &.{src}, 0);
@@ -846,7 +846,7 @@ test "tir: runtime reflection reports comptime API missing" {
         \\ }
     ;
 
-    var context = compiler.compile.Context.init(gpa);
+    var context = compiler.compile.Context.init(gpa, std.testing.io);
     defer context.deinit();
 
     const src0 = try std.mem.concatWithSentinel(gpa, u8, &.{src}, 0);

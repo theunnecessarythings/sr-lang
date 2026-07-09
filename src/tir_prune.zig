@@ -151,7 +151,7 @@ const Pruner = struct {
 
     fn pruneUnit(self: *Pruner, unit: *package.FileUnit, t: *tir.TIR) !void {
         // Functions
-        var kept_funcs = std.ArrayListUnmanaged(u32){};
+        var kept_funcs = std.ArrayListUnmanaged(u32).empty;
         for (t.funcs.func_pool.inner.data.items) |fid_raw| {
             const fid = tir.FuncId.fromRaw(fid_raw);
             const f = t.funcs.Function.get(fid);
@@ -167,12 +167,13 @@ const Pruner = struct {
                 }
             }
         }
-        var old_funcs = t.funcs.func_pool.inner.data;
         t.funcs.func_pool.inner.data = kept_funcs;
-        old_funcs.deinit(t.funcs.allocator);
+        // Both lists use the TIR arena allocator. The arena owns the old
+        // storage and must reclaim it as a whole; individual deinit calls can
+        // release the arena node still referenced by a later old list.
 
         // Globals
-        var kept_globals = std.ArrayListUnmanaged(u32){};
+        var kept_globals = std.ArrayListUnmanaged(u32).empty;
         for (t.funcs.global_pool.inner.data.items) |gid_raw| {
             const gid = tir.GlobalId.fromRaw(gid_raw);
             const g = t.funcs.Global.get(gid);
@@ -192,9 +193,7 @@ const Pruner = struct {
             }
             if (keep) try kept_globals.append(t.funcs.allocator, gid.toRaw());
         }
-        var old_globals = t.funcs.global_pool.inner.data;
         t.funcs.global_pool.inner.data = kept_globals;
-        old_globals.deinit(t.funcs.allocator);
     }
 };
 

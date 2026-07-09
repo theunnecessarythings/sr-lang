@@ -14,9 +14,12 @@ fn linkMLIR(llvm_scan_dir: []const u8, llvm_link_dir: []const u8, exe: *std.Buil
     const is_wasi = target.os.tag == .wasi;
 
     if (!is_emscripten) {
-        const dir = try std.fs.cwd().openDir(llvm_scan_dir, .{ .iterate = true });
-        var iter = dir.iterate();
-        while (try iter.next()) |entry| {
+        const b = exe.step.owner;
+        var cwd = std.Io.Dir.cwd();
+        var dir = try cwd.openDir(b.graph.io, llvm_scan_dir, .{ .iterate = true });
+        defer dir.close(b.graph.io);
+        var iter = std.Io.Dir.iterate(dir);
+        while (try iter.next(b.graph.io)) |entry| {
             const name = entry.name;
             if (std.mem.startsWith(u8, name, "lib") and std.mem.endsWith(u8, name, ".a")) {
                 const libname = name[3 .. name.len - 2];
@@ -27,76 +30,75 @@ fn linkMLIR(llvm_scan_dir: []const u8, llvm_link_dir: []const u8, exe: *std.Buil
     }
     // Ensure runtime can locate the shared libs
     if (!is_wasm) {
-        exe.addRPath(.{ .cwd_relative = llvm_link_dir });
+        exe.root_module.addRPath(.{ .cwd_relative = llvm_link_dir });
     }
     // Ensure linker searches the LLVM/MLIR lib dir
-    exe.addLibraryPath(.{ .cwd_relative = llvm_link_dir });
-    exe.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
+    exe.root_module.addLibraryPath(.{ .cwd_relative = llvm_link_dir });
+    exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
 
     if (!is_wasm) {
-        exe.linkSystemLibrary("pthread");
-        exe.linkSystemLibrary("dl");
+        exe.root_module.linkSystemLibrary("pthread", .{});
+        exe.root_module.linkSystemLibrary("dl", .{});
     }
     if (!is_wasm) {
-        exe.linkSystemLibrary("m");
+        exe.root_module.linkSystemLibrary("m", .{});
     }
 
     if (!is_wasm) {
-        exe.linkSystemLibrary("z");
-        exe.linkSystemLibrary("zstd");
+        exe.root_module.linkSystemLibrary("z", .{});
+        exe.root_module.linkSystemLibrary("zstd", .{});
 
         // Force Link to libstdc++
-        exe.addObjectFile(.{
+        exe.root_module.addObjectFile(.{
             .cwd_relative = "/usr/lib/libstdc++.so.6",
         });
 
         // If we want to force link it to libc++ abi instead
-        // exe.addIncludePath(.{ .cwd_relative = "/usr/include/c++/v1" });
-        // exe.addObjectFile(.{ .cwd_relative = "/usr/lib/libc++.so" });
-        // exe.addObjectFile(.{ .cwd_relative = "/usr/lib/libc++abi.so" });
+        // exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include/c++/v1" });
+        // exe.root_module.addObjectFile(.{ .cwd_relative = "/usr/lib/libc++.so" });
+        // exe.root_module.addObjectFile(.{ .cwd_relative = "/usr/lib/libc++abi.so" });
 
-        exe.linkSystemLibrary("libunwind");
-        exe.linkSystemLibrary("gcc_s");
+        exe.root_module.linkSystemLibrary("libunwind", .{});
+        exe.root_module.linkSystemLibrary("gcc_s", .{});
     }
     if (!is_wasm or is_wasi) {
-        exe.linkLibC();
+        exe.root_module.link_libc = true;
     }
 }
 
 fn linkTriton(exe: *std.Build.Step.Compile) !void {
-    exe.addObjectFile(.{ .cwd_relative = "/home/sreeraj/Documents/triton/python/triton/_C/libtriton_mlir_plugin.so" });
-    exe.addRPath(.{ .cwd_relative = "/home/sreeraj/Documents/triton/python/triton/_C" });
+    exe.root_module.addObjectFile(.{ .cwd_relative = "/home/sreeraj/Documents/triton/python/triton/_C/libtriton_mlir_plugin.so" });
+    exe.root_module.addRPath(.{ .cwd_relative = "/home/sreeraj/Documents/triton/python/triton/_C" });
 }
 
-fn copyTree(allocator: std.mem.Allocator, src_root: []const u8, dst_root: []const u8) !void {
-    var src_dir = try std.fs.cwd().openDir(src_root, .{ .iterate = true });
-    defer src_dir.close();
+fn copyTree(io: std.Io, allocator: std.mem.Allocator, src_root: []const u8, dst_root: []const u8) !void {
+    var cwd = std.Io.Dir.cwd();
+    var src_dir = try cwd.openDir(io, src_root, .{ .iterate = true });
+    defer src_dir.close(io);
 
     var walker = try src_dir.walk(allocator);
     defer walker.deinit();
 
-    while (try walker.next()) |entry| {
+    while (try walker.next(io)) |entry| {
         const rel = entry.path;
         const dst_path = try std.fs.path.join(allocator, &.{ dst_root, rel });
         defer allocator.free(dst_path);
 
         switch (entry.kind) {
             .directory => {
-                std.fs.cwd().makePath(dst_path) catch |err| switch (err) {
+                cwd.createDirPath(io, dst_path) catch |err| switch (err) {
                     error.PathAlreadyExists => {},
                     else => return err,
                 };
             },
             .file => {
                 if (std.fs.path.dirname(dst_path)) |parent| {
-                    std.fs.cwd().makePath(parent) catch |err| switch (err) {
+                    cwd.createDirPath(io, parent) catch |err| switch (err) {
                         error.PathAlreadyExists => {},
                         else => return err,
                     };
                 }
-                const src_path = try std.fs.path.join(allocator, &.{ src_root, rel });
-                defer allocator.free(src_path);
-                std.fs.copyFileAbsolute(src_path, dst_path, .{}) catch return error.FileReadError;
+                try src_dir.copyFile(rel, cwd, dst_path, io, .{});
             },
             else => {},
         }
@@ -134,10 +136,8 @@ pub fn build(b: *std.Build) void {
 
     const LLVM_HOME_S =
         b.option([]const u8, "llvm_home", "Path to LLVM/MLIR lib directory") orelse
-        (std.process.getEnvVarOwned(b.allocator, "LLVM_HOME_S") catch |err| switch (err) {
-            error.EnvironmentVariableNotFound => "/usr/local/lib",
-            else => "/usr/local/lib",
-        });
+        b.graph.environ_map.get("LLVM_HOME_S") orelse
+        "/usr/local/lib";
     const LLVM_LINK_DIR_S =
         b.option([]const u8, "llvm_link_dir", "Path to LLVM/MLIR lib directory for linking") orelse LLVM_HOME_S;
     linkMLIR(LLVM_HOME_S, LLVM_LINK_DIR_S, exe) catch |err| {
@@ -145,31 +145,31 @@ pub fn build(b: *std.Build) void {
         @panic("Failed to link MLIR");
     };
 
-    // Build and install the runtime library (C ABI exports for generated programs)
-    const runtime_lib = b.addLibrary(.{
-        .name = "sr_runtime",
+    // Build and install the runtime object (C ABI exports for generated programs)
+    const runtime_obj = b.addObject(.{
+        .name = "libsr_runtime",
         .root_module = b.createModule(.{
             .root_source_file = b.path("runtime/runtime.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
-    runtime_lib.root_module.link_libc = !is_wasm or is_wasi;
-    if (is_wasm) runtime_lib.root_module.linkSystemLibrary("c", .{});
-    b.installArtifact(runtime_lib);
+    runtime_obj.root_module.link_libc = !is_wasm or is_wasi;
+    if (is_wasm) runtime_obj.root_module.linkSystemLibrary("c", .{});
+    b.getInstallStep().dependOn(&b.addInstallFile(runtime_obj.getEmittedBin(), "lib/libsr_runtime.o").step);
 
-    // Triton runtime (CUDA launch + caching), only linked for Triton programs
-    const triton_runtime_lib = b.addLibrary(.{
-        .name = "sr_triton_runtime",
+    // Triton runtime object (CUDA launch + caching), only linked for Triton programs
+    const triton_runtime_obj = b.addObject(.{
+        .name = "libsr_triton_runtime",
         .root_module = b.createModule(.{
             .root_source_file = b.path("runtime/triton_runtime.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
-    triton_runtime_lib.root_module.link_libc = !is_wasm or is_wasi;
-    if (is_wasm) triton_runtime_lib.root_module.linkSystemLibrary("c", .{});
-    b.installArtifact(triton_runtime_lib);
+    triton_runtime_obj.root_module.link_libc = !is_wasm or is_wasi;
+    if (is_wasm) triton_runtime_obj.root_module.linkSystemLibrary("c", .{});
+    b.getInstallStep().dependOn(&b.addInstallFile(triton_runtime_obj.getEmittedBin(), "lib/libsr_triton_runtime.o").step);
 
     if (!is_wasm or is_wasi) {
         b.installArtifact(exe);
@@ -184,62 +184,60 @@ pub fn build(b: *std.Build) void {
     }
 
     // copy std lib and vendor libs to install dir
-    var std_lib = std.fs.cwd().openDir("std", .{ .iterate = true }) catch unreachable;
-    var iter = std_lib.iterate();
-    std.fs.makeDirAbsolute(b.install_path) catch {};
-    var install_dir = std.fs.openDirAbsolute(b.install_path, .{}) catch unreachable;
-    defer install_dir.close();
-    install_dir.makeDir("std") catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => unreachable,
-    };
-    install_dir.makeDir("std/web") catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => unreachable,
-    };
-    install_dir.makeDir("vendor") catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => unreachable,
-    };
-    const root_src = std.fs.cwd().realpathAlloc(b.allocator, ".") catch unreachable;
+    var cwd = std.Io.Dir.cwd();
+    const io = b.graph.io;
+
+    var std_lib = cwd.openDir(io, "std", .{ .iterate = true }) catch unreachable;
+    defer std_lib.close(io);
+
+    cwd.createDirPath(io, b.install_path) catch {};
+    var install_dir = cwd.openDir(io, b.install_path, .{}) catch unreachable;
+    defer install_dir.close(io);
+
+    install_dir.createDirPath(io, "std") catch {};
+    install_dir.createDirPath(io, "std/web") catch {};
+    install_dir.createDirPath(io, "vendor") catch {};
+
+    const root_src = b.build_root.path.?;
 
     // Copy std/web files
     {
-        var std_web_lib = std.fs.cwd().openDir("std/web", .{ .iterate = true }) catch unreachable;
-        var web_iter = std_web_lib.iterate();
-        while (web_iter.next() catch null) |entry| {
+        var std_web_lib = cwd.openDir(io, "std/web", .{ .iterate = true }) catch unreachable;
+        defer std_web_lib.close(io);
+        var web_iter = std.Io.Dir.iterate(std_web_lib);
+        while (web_iter.next(io) catch null) |entry| {
             if (entry.kind != .file) continue;
             const dest = b.pathJoin(&.{ b.install_path, "std", "web", entry.name });
             const src = b.pathJoin(&.{ root_src, "std", "web", entry.name });
-            std.fs.copyFileAbsolute(src, dest, .{}) catch unreachable;
+            cwd.copyFile(src, cwd, dest, io, .{}) catch unreachable;
         }
     }
 
-    while (iter.next() catch null) |entry| {
+    var iter = std.Io.Dir.iterate(std_lib);
+    while (iter.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         const dest = b.pathJoin(&.{ b.install_path, "std", entry.name });
         const src = if (is_wasm and std.mem.eql(u8, entry.name, "io.sr"))
             b.pathJoin(&.{ root_src, "std", "io_wasm.sr" })
         else
             b.pathJoin(&.{ root_src, "std", entry.name });
-        std.fs.copyFileAbsolute(src, dest, .{}) catch unreachable;
+        cwd.copyFile(src, cwd, dest, io, .{}) catch unreachable;
     }
-    var vendor_lib = std.fs.cwd().openDir("vendor", .{ .iterate = true }) catch unreachable;
-    iter = vendor_lib.iterate();
-    while (iter.next() catch null) |entry| {
+
+    var vendor_lib = cwd.openDir(io, "vendor", .{ .iterate = true }) catch unreachable;
+    defer vendor_lib.close(io);
+    var vendor_iter = std.Io.Dir.iterate(vendor_lib);
+    while (vendor_iter.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         const dest = b.pathJoin(&.{ b.install_path, "vendor", entry.name });
         const src = b.pathJoin(&.{ root_src, "vendor", entry.name });
-        std.fs.copyFileAbsolute(src, dest, .{}) catch unreachable;
+        cwd.copyFile(src, cwd, dest, io, .{}) catch unreachable;
     }
 
-    install_dir.makeDir("libc") catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => unreachable,
-    };
+    install_dir.createDirPath(io, "libc") catch {};
     const libc_src = b.pathJoin(&.{ root_src, "sr-libc" });
     const libc_dst = b.pathJoin(&.{ b.install_path, "libc" });
-    copyTree(b.allocator, libc_src, libc_dst) catch unreachable;
+    copyTree(io, b.allocator, libc_src, libc_dst) catch unreachable;
 
     if (!is_wasm) {
         const run_step = b.step("run", "Run the app");
@@ -248,8 +246,8 @@ pub fn build(b: *std.Build) void {
 
         run_cmd.step.dependOn(b.getInstallStep());
         // Ensure runtime libraries are built/installed before running compiler (which links against them)
-        run_cmd.step.dependOn(&runtime_lib.step);
-        run_cmd.step.dependOn(&triton_runtime_lib.step);
+        run_cmd.step.dependOn(&runtime_obj.step);
+        run_cmd.step.dependOn(&triton_runtime_obj.step);
 
         if (b.args) |args| {
             run_cmd.addArgs(args);
@@ -333,9 +331,10 @@ pub fn build(b: *std.Build) void {
         emcc.addFileArg(exe_obj.getEmittedBin());
 
         // Link all LLVM/MLIR static libs into the wasm module.
-        const dir = std.fs.cwd().openDir(LLVM_HOME_S, .{ .iterate = true }) catch unreachable;
-        var iter_mlir = dir.iterate();
-        while (iter_mlir.next() catch null) |entry| {
+        var dir = cwd.openDir(io, LLVM_HOME_S, .{ .iterate = true }) catch unreachable;
+        defer dir.close(io);
+        var iter_mlir = std.Io.Dir.iterate(dir);
+        while (iter_mlir.next(io) catch null) |entry| {
             const name = entry.name;
             if (std.mem.startsWith(u8, name, "lib") and std.mem.endsWith(u8, name, ".a")) {
                 const libname = name[3 .. name.len - 2];

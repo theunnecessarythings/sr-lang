@@ -415,7 +415,7 @@ pub const TIR = struct {
     instrs: InstrStore,
     terms: TermStore,
     funcs: FuncStore,
-    value_defs: std.ArrayListUnmanaged(InstrId) = .{},
+    value_defs: std.ArrayListUnmanaged(InstrId) = .empty,
     loc_store: ?*const dod.LocStore = null,
 
     pub fn init(gpa: std.mem.Allocator, store: *types.TypeStore) TIR {
@@ -462,9 +462,9 @@ pub const Builder = struct {
     pub const FunctionFrame = struct {
         builder: *Builder,
         id: FuncId,
-        param_vals: std.ArrayListUnmanaged(ValueId) = .{},
-        param_ids: std.ArrayListUnmanaged(ParamId) = .{},
-        blocks: std.ArrayListUnmanaged(BlockId) = .{},
+        param_vals: std.ArrayListUnmanaged(ValueId) = .empty,
+        param_ids: std.ArrayListUnmanaged(ParamId) = .empty,
+        blocks: std.ArrayListUnmanaged(BlockId) = .empty,
         pub fn deinit(self: *FunctionFrame, gpa: std.mem.Allocator) void {
             self.param_vals.deinit(gpa);
             self.param_ids.deinit(gpa);
@@ -474,8 +474,8 @@ pub const Builder = struct {
     pub const BlockFrame = struct {
         builder: *Builder,
         id: BlockId,
-        instrs: std.ArrayListUnmanaged(InstrId) = .{},
-        params: std.ArrayListUnmanaged(ParamId) = .{},
+        instrs: std.ArrayListUnmanaged(InstrId) = .empty,
+        params: std.ArrayListUnmanaged(ParamId) = .empty,
         term: OptTermId = .none(),
         pub fn deinit(self: *BlockFrame, gpa: std.mem.Allocator) void {
             self.instrs.deinit(gpa);
@@ -657,7 +657,7 @@ pub const Builder = struct {
 };
 
 pub const TirPrinter = struct {
-    writer: *std.io.Writer,
+    writer: *std.Io.Writer,
     indent: usize = 0,
     tir: *TIR,
 

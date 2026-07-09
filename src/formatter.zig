@@ -7,7 +7,7 @@ const Loc = @import("lexer.zig").Token.Loc;
 
 /// Format a single source buffer and return the formatted text.
 pub fn formatSource(gpa: std.mem.Allocator, source: [:0]const u8, file_path: []const u8) ![]u8 {
-    var ctx: compile.Context = .init(gpa);
+    var ctx: compile.Context = .init(gpa, std.Io.failing);
     defer ctx.deinit();
     ctx.load_imports = false;
 
@@ -57,7 +57,7 @@ const Formatter = struct {
     locs: *cst.LocStore,
 
     /// Builder that accumulates the emitted bytes.
-    builder: std.ArrayList(u8) = .{},
+    builder: std.ArrayList(u8) = .empty,
     /// Current indentation level (in spaces).
     indent: usize = 0,
     /// Whether the next printed byte needs indentation padding.
@@ -70,7 +70,7 @@ const Formatter = struct {
 
     /// Generate formatted source text for the current program/builder.
     fn format(self: *Formatter) ![]u8 {
-        self.builder = .{};
+        self.builder = .empty;
         self.last_written_loc = 0;
         self.comment_idx = 0;
         try self.builder.ensureTotalCapacity(self.gpa, self.source.len + 1);
@@ -397,7 +397,7 @@ const Formatter = struct {
         }
 
         const snapshot = self.*;
-        self.builder = .{};
+        self.builder = .empty;
         errdefer self.builder.deinit(self.gpa);
 
         try self.printLiteral("if ");
@@ -477,13 +477,13 @@ const Formatter = struct {
 
         var it = std.mem.splitScalar(u8, body_trimmed, '\n');
         while (it.next()) |line_raw| {
-            const line = std.mem.trimRight(u8, line_raw, " \t\r");
+            const line = std.mem.trimEnd(u8, line_raw, " \t\r");
             if (line.len == 0) {
                 try self.newline();
                 continue;
             }
             try self.ws();
-            const stripped = std.mem.trimLeft(u8, line, " \t");
+            const stripped = std.mem.trimStart(u8, line, " \t");
             try self.printLiteral(stripped);
             try self.newline();
         }
@@ -814,7 +814,7 @@ const Formatter = struct {
                     return;
                 }
 
-                var tmp = std.ArrayList(u8){};
+                var tmp = std.ArrayListUnmanaged(u8).empty;
                 defer tmp.deinit(self.gpa);
 
                 const pieces = self.exprs.mlir_piece_pool.slice(node.pieces);

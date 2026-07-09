@@ -5,17 +5,16 @@ const alloc = std.testing.allocator;
 pub var link_lib: []const u8 = "-lm";
 
 pub fn runBehaviorTests() !void {
-    _ = std.fs.cwd().deleteFile("out/output_program") catch {};
+    const io = std.testing.io;
+    _ = std.Io.Dir.cwd().deleteFile(io, "out/output_program") catch {};
 
-    const compile_result = try std.process.Child.run(.{
-        .allocator = alloc,
+    const compile_result = try std.process.run(alloc, io, .{
         .argv = &.{ "zig-out/bin/sr_lang", "test", "tests/behavior.sr", link_lib },
-        .max_output_bytes = 16 * 1024 * 1024,
     });
     defer alloc.free(compile_result.stdout);
     defer alloc.free(compile_result.stderr);
     switch (compile_result.term) {
-        .Exited => |code| {
+        .exited => |code| {
             if (code != 0) {
                 std.debug.print("Compiler stdout:\n{s}\n", .{compile_result.stdout});
                 std.debug.print("Compiler stderr:\n{s}\n", .{compile_result.stderr});
@@ -29,19 +28,20 @@ pub fn runBehaviorTests() !void {
         },
     }
 
-    _ = std.fs.cwd().statFile("out/output_program") catch |err| {
-        std.debug.print("Error: {}\n", .{err});
-        return error.CompilationFailed;
-    };
-    const run_result = try std.process.Child.run(.{
-        .allocator = alloc,
+    {
+        const file = std.Io.Dir.cwd().openFile(io, "out/output_program", .{ .mode = .read_only }) catch |err| {
+            std.debug.print("Error: {}\n", .{err});
+            return error.CompilationFailed;
+        };
+        file.close(io);
+    }
+    const run_result = try std.process.run(alloc, io, .{
         .argv = &.{"out/output_program"},
-        .max_output_bytes = 16 * 1024 * 1024,
     });
     defer alloc.free(run_result.stdout);
     defer alloc.free(run_result.stderr);
     switch (run_result.term) {
-        .Exited => |code| {
+        .exited => |code| {
             if (code != 0) {
                 std.debug.print("Compiler stdout:\n{s}\n", .{run_result.stdout});
                 std.debug.print("Compiler stderr:\n{s}\n", .{run_result.stderr});
@@ -57,16 +57,15 @@ pub fn runBehaviorTests() !void {
 }
 
 fn runCrashTest(source_path: []const u8) !void {
-    const result = try std.process.Child.run(.{
-        .allocator = alloc,
+    const io = std.testing.io;
+    const result = try std.process.run(alloc, io, .{
         .argv = &.{ "zig-out/bin/sr_lang", "test", source_path, link_lib },
-        .max_output_bytes = 16 * 1024 * 1024,
     });
     defer alloc.free(result.stdout);
     defer alloc.free(result.stderr);
 
     switch (result.term) {
-        .Exited => |code| {
+        .exited => |code| {
             if (code == 0) {
                 std.debug.print("Expected crash for {s}, but it passed!\n", .{source_path});
                 std.debug.print("Stdout:\n{s}\n", .{result.stdout});
@@ -78,11 +77,10 @@ fn runCrashTest(source_path: []const u8) !void {
     }
 }
 
-fn runCommandExpectSuccess(argv: []const []const u8) !std.process.Child.RunResult {
-    const result = try std.process.Child.run(.{
-        .allocator = alloc,
+fn runCommandExpectSuccess(argv: []const []const u8) !std.process.RunResult {
+    const io = std.testing.io;
+    const result = try std.process.run(alloc, io, .{
         .argv = argv,
-        .max_output_bytes = 16 * 1024 * 1024,
     });
     errdefer {
         alloc.free(result.stdout);
@@ -90,7 +88,7 @@ fn runCommandExpectSuccess(argv: []const []const u8) !std.process.Child.RunResul
     }
 
     switch (result.term) {
-        .Exited => |code| {
+        .exited => |code| {
             if (code != 0) {
                 std.debug.print("Command failed: ", .{});
                 for (argv) |arg| std.debug.print("{s} ", .{arg});

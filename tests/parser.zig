@@ -95,7 +95,7 @@ fn expectInfix(ast: *cst.CST, id: cst.ExprId, op: cst.InfixOp) !struct { left: c
 
 test "expr: precedence 1 + 2 * 3" {
     const gpa = testing.allocator;
-    var context = Context.init(gpa);
+    var context = Context.init(gpa, std.testing.io);
     defer context.deinit();
     var r = try parseOneExpr(gpa, &context, "x = 1 + 2 * 3;");
     defer r.ast.deinit();
@@ -112,7 +112,7 @@ test "expr: precedence 1 + 2 * 3" {
 
 test "expr: optional unwrap postfix vs range infix" {
     const gpa = testing.allocator;
-    var context = Context.init(gpa);
+    var context = Context.init(gpa, std.testing.io);
     defer context.deinit();
     var r1 = try parseOneExpr(gpa, &context, "x = a?;");
     defer r1.ast.deinit();
@@ -126,7 +126,7 @@ test "expr: optional unwrap postfix vs range infix" {
 
 test "expr: ctor-like struct literal Foo{a:1}" {
     const gpa = testing.allocator;
-    var context = Context.init(gpa);
+    var context = Context.init(gpa, std.testing.io);
     defer context.deinit();
     var r = try parseOneExpr(gpa, &context, "Foo{ a: 1 };");
     defer r.ast.deinit();
@@ -144,7 +144,7 @@ test "expr: ctor-like struct literal Foo{a:1}" {
 
 test "match with guard" {
     const gpa = testing.allocator;
-    var context = Context.init(gpa);
+    var context = Context.init(gpa, std.testing.io);
     defer context.deinit();
     const src =
         \\match x {
@@ -166,9 +166,15 @@ test "match with guard" {
 
 test "full success test" {
     const gpa = testing.allocator;
-    var context = Context.init(gpa);
+    var context = Context.init(gpa, std.testing.io);
     defer context.deinit();
-    const src = try std.fs.cwd().readFileAlloc(gpa, "examples/test_success.sr", 8192);
+    const io = std.testing.io;
+    const file = try std.Io.Dir.cwd().openFile(io, "examples/test_success.sr", .{ .mode = .read_only });
+    defer file.close(io);
+    const stat = try file.stat(io);
+    var buf: [1024]u8 = undefined;
+    var reader = file.reader(io, &buf);
+    const src = try reader.interface.readAlloc(gpa, @intCast(stat.size));
     defer gpa.free(src);
 
     const src0 = try gpa.dupeZ(u8, src);
@@ -179,7 +185,7 @@ test "full success test" {
 
 test "decl: method path segments recorded" {
     const gpa = testing.allocator;
-    var context = Context.init(gpa);
+    var context = Context.init(gpa, std.testing.io);
     defer context.deinit();
 
     const src =
@@ -215,7 +221,7 @@ test "decl: method path segments recorded" {
 
 test "test decl parses into const proc with test attribute" {
     const gpa = testing.allocator;
-    var context = Context.init(gpa);
+    var context = Context.init(gpa, std.testing.io);
     defer context.deinit();
 
     const src =
@@ -272,7 +278,7 @@ test "test decl parses into const proc with test attribute" {
 
 test "multiple tests synthesize unique names" {
     const gpa = testing.allocator;
-    var context = Context.init(gpa);
+    var context = Context.init(gpa, std.testing.io);
     defer context.deinit();
 
     const src =

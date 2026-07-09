@@ -19,7 +19,7 @@ const MethodBinding = types.MethodBinding;
 const MethodEntry = types.MethodEntry;
 const mlir = @import("mlir_bindings.zig");
 
-const List = std.ArrayList;
+const List = std.ArrayListUnmanaged;
 const Map = std.AutoArrayHashMapUnmanaged;
 const SpecializationCache = std.HashMapUnmanaged(types.SpecializationKey, ast.DeclId, types.SpecializationKeyContext, std.hash_map.default_max_load_percentage);
 
@@ -29,9 +29,9 @@ pub const Checker = @This();
 gpa: std.mem.Allocator,
 context: *Context,
 pipeline: *Pipeline,
-checker_ctx: List(?*CheckerContext), // Indexed by file_id
-expr_id_scratch: List(ast.ExprId) = .{},
-expr_id_scratch_marks: List(usize) = .{},
+checker_ctx: List(?*CheckerContext) = .empty, // Indexed by file_id
+expr_id_scratch: List(ast.ExprId) = .empty,
+expr_id_scratch_marks: List(usize) = .empty,
 cached_typeinfo_ty: ?types.TypeId = null,
 cached_codeinfo_ty: ?types.TypeId = null,
 
@@ -41,28 +41,28 @@ pub const CheckerContext = struct {
     interp: ?interpreter.Interpreter = null,
 
     // Stacks
-    func_stack: List(FunctionCtx) = .{},
-    loop_stack: List(LoopCtx) = .{},
-    value_ctx: List(bool) = .{},
-    expected_ty_stack: List(?types.TypeId) = .{},
-    allow_nested_fn: List(bool) = .{},
-    allow_insert_target: List(bool) = .{},
-    insert_target_stack: List(InsertTarget) = .{},
-    insert_site_stack: List(InsertSite) = .{},
-    closure_frames: List(ClosureFrame) = .{},
+    func_stack: List(FunctionCtx) = .empty,
+    loop_stack: List(LoopCtx) = .empty,
+    value_ctx: List(bool) = .empty,
+    expected_ty_stack: List(?types.TypeId) = .empty,
+    allow_nested_fn: List(bool) = .empty,
+    allow_insert_target: List(bool) = .empty,
+    insert_target_stack: List(InsertTarget) = .empty,
+    insert_site_stack: List(InsertSite) = .empty,
+    closure_frames: List(ClosureFrame) = .empty,
     // Binding Scopes
-    loop_binding_stack: List(LoopBindingCtx) = .{},
-    catch_binding_stack: List(CatchBindingCtx) = .{},
-    match_binding_stack: List(MatchBindingCtx) = .{},
+    loop_binding_stack: List(LoopBindingCtx) = .empty,
+    catch_binding_stack: List(CatchBindingCtx) = .empty,
+    match_binding_stack: List(MatchBindingCtx) = .empty,
 
     // State & Cache
     resolving_type_decls: std.DynamicBitSetUnmanaged = .{},
     resolving_type_exprs: std.DynamicBitSetUnmanaged = .{},
-    param_specializations: List(ParamSpecialization) = .{},
+    param_specializations: List(ParamSpecialization) = .empty,
     specialization_cache: SpecializationCache = .{},
     spec_arena: std.heap.ArenaAllocator,
     temp_arena: std.heap.ArenaAllocator,
-    comptime_alias_bindings: List(interpreter.Binding) = .{},
+    comptime_alias_bindings: List(interpreter.Binding) = .empty,
 
     // Flags & Handles
     warned_code: bool = false,
@@ -122,7 +122,7 @@ const ClosureFrame = struct {
     loop_depth: usize,
     catch_depth: usize,
     match_depth: usize,
-    captures: std.ArrayListUnmanaged(CaptureInfo) = .{},
+    captures: std.ArrayListUnmanaged(CaptureInfo) = .empty,
     fn deinit(self: *ClosureFrame, gpa: std.mem.Allocator) void {
         self.captures.deinit(gpa);
     }
@@ -148,7 +148,7 @@ const LoopCtx = struct {
 // --- Checker Lifecycle ---
 
 pub fn init(gpa: std.mem.Allocator, context: *Context, pipeline: *Pipeline) Checker {
-    return .{ .gpa = gpa, .context = context, .pipeline = pipeline, .checker_ctx = .{}, .expr_id_scratch = .{}, .expr_id_scratch_marks = .{}, .cached_typeinfo_ty = null, .cached_codeinfo_ty = null };
+    return .{ .gpa = gpa, .context = context, .pipeline = pipeline, .checker_ctx = .empty, .expr_id_scratch = .empty, .expr_id_scratch_marks = .empty, .cached_typeinfo_ty = null, .cached_codeinfo_ty = null };
 }
 
 pub fn deinit(self: *Checker) void {
@@ -632,10 +632,10 @@ fn considerSymbolSuggestion(self: *Checker, ctx: *CheckerContext, ast_unit: *ast
 }
 
 fn formatTypeForNote(self: *Checker, type_id: types.TypeId) !ast.StrId {
-    var buf = List(u8){};
-    defer buf.deinit(self.gpa);
-    try self.context.type_store.formatTypeForDiagnostic(type_id, .{}, buf.writer(self.gpa));
-    return self.context.interner.intern(buf.items);
+    var stream = std.Io.Writer.Allocating.init(self.gpa);
+    defer stream.deinit();
+    try self.context.type_store.formatTypeForDiagnostic(type_id, .{}, &stream.writer);
+    return self.context.interner.intern(stream.written());
 }
 
 fn attachFunctionSignatureNote(self: *Checker, idx: usize, func_ty: types.TypeId) !void {
@@ -643,11 +643,11 @@ fn attachFunctionSignatureNote(self: *Checker, idx: usize, func_ty: types.TypeId
 }
 
 fn attachTryCastNote(self: *Checker, idx: usize, expected_ty: types.TypeId) !void {
-    var buf = List(u8){};
-    defer buf.deinit(self.gpa);
-    try buf.writer(self.gpa).print("cast to ", .{});
-    try self.context.type_store.formatTypeForDiagnostic(expected_ty, .{}, buf.writer(self.gpa));
-    try self.context.diags.attachNoteArgs(idx, null, .try_cast, StringNotePayload{ .value = self.context.interner.intern(buf.items) });
+    var stream = std.Io.Writer.Allocating.init(self.gpa);
+    defer stream.deinit();
+    try stream.writer.print("cast to ", .{});
+    try self.context.type_store.formatTypeForDiagnostic(expected_ty, .{}, &stream.writer);
+    try self.context.diags.attachNoteArgs(idx, null, .try_cast, StringNotePayload{ .value = self.context.interner.intern(stream.written()) });
 }
 
 fn checkDivByZero(self: *Checker, ast_unit: *ast.Ast, rhs: ast.ExprId, loc: Loc) !void {
@@ -702,7 +702,7 @@ pub fn ensureInterpreter(self: *Checker, ast_unit: *ast.Ast, ctx: *CheckerContex
     if (!ctx.interp_loaded_stored_bindings) {
         ctx.interp_loaded_stored_bindings = true;
         if (ast_unit.type_info.comptime_bindings.count() > 0) {
-            var tmp = List(interpreter.Binding){};
+            var tmp = List(interpreter.Binding).empty;
             defer tmp.deinit(self.gpa);
             var it = ast_unit.type_info.comptime_bindings.iterator();
             while (it.next()) |e| try tmp.append(self.gpa, .{ .name = e.key_ptr.*, .value = e.value_ptr.value, .store = &ast_unit.type_info.val_store });
@@ -980,7 +980,7 @@ fn predeclareFunction(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, 
     const param_types = if (params.len <= 32) pt_buf[0..params.len] else try self.gpa.alloc(types.TypeId, params.len);
     defer if (params.len > 32) self.gpa.free(param_types);
 
-    var bindings = List(check_types.Binding){};
+    var bindings = List(check_types.Binding).empty;
     defer {
         self.destroyComptimeBindings(bindings.items);
         bindings.deinit(self.gpa);
@@ -1086,7 +1086,7 @@ pub fn checkSpecializedFunction(
     defer if (interp_scope) |*s| s.deinit();
 
     if (comptime_params.len > 0 and ctx.interp != null) {
-        var tmp = std.ArrayListUnmanaged(interpreter.Binding){};
+        var tmp = std.ArrayListUnmanaged(interpreter.Binding).empty;
         defer tmp.deinit(self.gpa);
         try tmp.ensureTotalCapacity(self.gpa, comptime_params.len);
         for (comptime_params) |b| tmp.appendAssumeCapacity(.{ .name = b.name, .value = b.value, .store = &ast_unit.type_info.val_store });
@@ -1097,7 +1097,7 @@ pub fn checkSpecializedFunction(
     const backup_struct = struct { name: ast.StrId, ty: ?types.TypeId, value: ?comp.ValueId };
     var ct_backups = try std.ArrayListUnmanaged(backup_struct).initCapacity(self.gpa, comptime_params.len);
 
-    var val_bindings = List(check_types.Binding){};
+    var val_bindings = List(check_types.Binding).empty;
     try val_bindings.ensureTotalCapacity(self.gpa, comptime_params.len);
 
     defer {
@@ -1136,7 +1136,7 @@ pub fn checkSpecializedFunction(
     try check_types.collectDeclExprs(self.gpa, ast_unit, decl_id, &self.expr_id_scratch);
     const expr_ids = self.expr_id_scratch.items[mark..];
 
-    var removed_cv = List(comp.ValueId){};
+    var removed_cv = List(comp.ValueId).empty;
     defer removed_cv.deinit(self.gpa);
 
     const TypeBackup = struct { idx: u32, ty: ?types.TypeId };
@@ -1178,8 +1178,8 @@ pub fn checkSpecializedFunction(
     if (snapshot_decl) |tgt| {
         try check_types.storeSpecializationSnapshots(self, ast_unit, expr_ids, tgt);
 
-        var cids = List(u32){};
-        var cspecs = List(types.CallSpecialization){};
+        var cids = List(u32).empty;
+        var cspecs = List(types.CallSpecialization).empty;
         defer {
             cids.deinit(self.gpa);
             cspecs.deinit(self.gpa);
@@ -1246,7 +1246,7 @@ pub fn getOrInstantiateSpecialization(
 
     // Spec Collection Optimization: Use stack buffer for common case
     var spec_buf: [16]ParamSpecialization = undefined;
-    var specs_list = if (params.len > 16) List(ParamSpecialization){} else null;
+    var specs_list = if (params.len > 16) List(ParamSpecialization).empty else null;
     defer if (specs_list) |*l| l.deinit(self.gpa);
 
     const fn_params = ast_unit.exprs.param_pool.slice(ast_unit.exprs.get(.FunctionLit, decl.value).params);
@@ -2346,7 +2346,7 @@ pub fn checkExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: a
             try self.pushAllowInsertTarget(ctx, false);
             defer self.popAllowInsertTarget(ctx);
             const res = try self.checkExpr(ctx, ast_unit, cb.block);
-            var baseline = std.AutoArrayHashMapUnmanaged(ast.StrId, comp.ValueId){};
+            var baseline = std.AutoArrayHashMapUnmanaged(ast.StrId, comp.ValueId).empty;
             defer baseline.deinit(self.gpa);
             if (!self.isValueReq(ctx)) {
                 const count = ast_unit.type_info.comptime_bindings.count();
@@ -2566,7 +2566,7 @@ fn reportUndefinedIdentifier(self: *Checker, ctx: *CheckerContext, ast_unit: *as
     const target = ast_unit.exprs.strs.get(row.name);
     try self.context.diags.addError(exprLoc(ast_unit, row), .undefined_identifier, .{target});
 
-    var candidates = List([]const u8){};
+    var candidates = List([]const u8).empty;
     defer candidates.deinit(self.gpa);
 
     var cur: ?symbols.ScopeId = ctx.symtab.currentId();
@@ -3018,7 +3018,7 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     defer ctx.symtab.pop();
 
     // 3. Prepare Comptime Context
-    var value_bindings = List(check_types.Binding){};
+    var value_bindings = List(check_types.Binding).empty;
     defer {
         self.destroyComptimeBindings(value_bindings.items);
         value_bindings.deinit(self.gpa);
@@ -3590,7 +3590,7 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
             const last_diag_idx = self.context.diags.count();
             try self.context.diags.addError(field_loc, .unknown_struct_field, .{field_name});
 
-            var all_fields = List([]const u8){};
+            var all_fields = List([]const u8).empty;
             defer all_fields.deinit(self.gpa);
             for (fields) |fid| {
                 try all_fields.append(self.gpa, self.context.interner.get(self.context.type_store.Field.get(fid).name));
@@ -3670,7 +3670,7 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
                 }
 
                 try self.context.diags.addError(field_loc, .unknown_enum_tag, .{field_name});
-                var all_tags = List([]const u8){};
+                var all_tags = List([]const u8).empty;
                 defer all_tags.deinit(self.gpa);
                 try self.appendEnumMemberNames(&all_tags, members);
                 try self.attachSuggestionListNotes(self.context.diags.count() - 1, field_name, all_tags.items, .did_you_mean_tag, .available_tags);
@@ -3717,7 +3717,7 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
                     else => unreachable,
                 }
 
-                var all_tags = List([]const u8){};
+                var all_tags = List([]const u8).empty;
                 defer all_tags.deinit(self.gpa);
                 try self.appendFieldNames(&all_tags, fields);
                 if (inner_kind == .Struct) {
@@ -3772,7 +3772,7 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
             const last_diag_idx = self.context.diags.count();
             try self.context.diags.addError(field_loc, .unknown_variant_tag, StringPayload{ .value = field_name });
 
-            var all_tags = List([]const u8){};
+            var all_tags = List([]const u8).empty;
             defer all_tags.deinit(self.gpa);
             try self.appendFieldNames(&all_tags, variants);
             try self.attachSuggestionListNotes(last_diag_idx, field_name, all_tags.items, .did_you_mean_tag, .available_tags);
@@ -3892,7 +3892,7 @@ fn resolveAstModuleFieldAccess(self: *Checker, ast_ty: types.TypeId, field_name:
         const last_diag_idx = self.context.diags.count();
         try self.context.diags.addError(field_loc, .unknown_module_field, .{field_name});
 
-        var all_exports = List([]const u8){};
+        var all_exports = List([]const u8).empty;
         defer all_exports.deinit(self.gpa);
         if (checker_ctx) |c| {
             const scope = c.symtab.scopes.get(.fromRaw(0));
@@ -4096,7 +4096,7 @@ fn checkMissingFields(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, 
     const ty_expr = struct_lit.ty.unwrap();
     const expect_fields = ts.field_pool.slice(ts.get(.Struct, expect_ty).fields);
 
-    var missing = List([]const u8){};
+    var missing = List([]const u8).empty;
     defer missing.deinit(self.gpa);
 
     for (expect_fields) |efid| {
@@ -5059,7 +5059,7 @@ fn finalizeCallSpecialization(self: *Checker, ctx: *CheckerContext, ast_unit: *a
 
                 var comptime_hashes = try List(u64).initCapacity(self.gpa, fn_params.len);
                 defer comptime_hashes.deinit(self.gpa);
-                var comptime_bindings = List(ComptimeParamBinding){};
+                var comptime_bindings = List(ComptimeParamBinding).empty;
                 defer comptime_bindings.deinit(self.gpa);
 
                 for (fn_params, 0..) |pid, param_idx| {
@@ -5329,9 +5329,9 @@ fn checkTritonLaunch(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, i
     const loc = exprLoc(ast_unit, call_expr);
     const args = ast_unit.exprs.expr_pool.slice(call_expr.args);
 
-    var positional = std.ArrayList(ast.ExprId){};
+    var positional = std.ArrayList(ast.ExprId).empty;
     defer positional.deinit(self.gpa);
-    var named = std.AutoArrayHashMapUnmanaged(ast.StrId, ast.ExprId){};
+    var named = std.AutoArrayHashMapUnmanaged(ast.StrId, ast.ExprId).empty;
     defer named.deinit(self.gpa);
 
     for (args) |arg| {
@@ -5413,7 +5413,7 @@ fn checkTritonLaunch(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, i
     const params = k_ast.exprs.param_pool.slice(fn_lit.params);
     var comptime_hashes = try std.ArrayList(u64).initCapacity(self.gpa, params.len);
     defer comptime_hashes.deinit(self.gpa);
-    var comptime_bindings = std.ArrayList(ComptimeParamBinding){};
+    var comptime_bindings = std.ArrayList(ComptimeParamBinding).empty;
     defer comptime_bindings.deinit(self.gpa);
 
     for (params, 0..) |pid, param_idx| {
@@ -5436,6 +5436,7 @@ fn checkTritonLaunch(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, i
         var val_expr_ast: *ast.Ast = k_ast;
         var val_expr_ctx: *CheckerContext = target_ctx.?;
         if (named.get(pname.?)) |vexpr| {
+            _ = try self.checkExpr(ctx, ast_unit, vexpr);
             val_expr_opt = vexpr;
             val_expr_ast = ast_unit;
             val_expr_ctx = ctx;
@@ -5452,9 +5453,10 @@ fn checkTritonLaunch(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, i
             _ = try self.context.diags.addError(exprLocFromId(val_expr_ast, val_expr_opt.?), .checker_comptime_not_executed, .{});
             return;
         };
+        const cval_in_kernel_store = try k_ast.type_info.val_store.cloneValue(&val_expr_ast.type_info.val_store, cval);
 
         const pty = if (param_idx < param_types.len) param_types[param_idx] else ts.tAny();
-        try comptime_bindings.append(self.gpa, .{ .name = pname.?, .ty = pty, .value = cval });
+        try comptime_bindings.append(self.gpa, .{ .name = pname.?, .ty = pty, .value = cval_in_kernel_store });
         // Hash using the val_store that produced the comptime value.
         comptime_hashes.appendAssumeCapacity(val_expr_ast.type_info.val_store.hashValue(cval));
     }
@@ -5464,7 +5466,7 @@ fn checkTritonLaunch(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, i
     } else comptime_hashes.items.len = param_types.len;
 
     // Validate runtime args against non-comptime params
-    var expected_rt = std.ArrayList(types.TypeId){};
+    var expected_rt = std.ArrayList(types.TypeId).empty;
     defer expected_rt.deinit(self.gpa);
     for (params, 0..) |pid, param_idx| {
         const p = k_ast.exprs.Param.get(pid);
@@ -5773,14 +5775,14 @@ fn codeBlockStmts(self: *Checker, _: *CheckerContext, ast_unit: *ast.Ast, code: 
 }
 
 fn expandInsertBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, code: comp.CodeValue, loc: Loc) anyerror!void {
-    var expanded = List(ast.StmtId){};
+    var expanded = List(ast.StmtId).empty;
     defer expanded.deinit(self.gpa);
     try self.expandCodeBlockStmts(ctx, ast_unit, code, &expanded, loc);
     if (expanded.items.len == 0) return;
 
     switch (self.currentInsertTarget(ctx)) {
         .unit => {
-            var new_decls = List(ast.DeclId){};
+            var new_decls = List(ast.DeclId).empty;
             defer new_decls.deinit(self.gpa);
             for (expanded.items) |sid| {
                 if (ast_unit.kind(sid) != .Decl) {
@@ -5927,7 +5929,7 @@ fn resolveSpliceValue(
                         return null;
                     };
                     const code_caps = s.code_binding_pool.slice(code_val.captures);
-                    var new_captures = std.ArrayList(comp.ValueRows.CodeBinding){};
+                    var new_captures = std.ArrayList(comp.ValueRows.CodeBinding).empty;
                     defer new_captures.deinit(self.gpa);
                     for (code_caps) |cap_id| {
                         const b = s.CodeBinding.get(cap_id);
@@ -6052,7 +6054,7 @@ fn typeFromSpliceValue(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast,
                 break :blk try self.typeFromSpliceValue(ctx, ast_unit, items[0], loc, null);
             }
             // Create a tuple type
-            var elem_types = std.ArrayList(types.TypeId){};
+            var elem_types = std.ArrayListUnmanaged(types.TypeId).empty;
             defer elem_types.deinit(self.gpa);
             for (items) |v| {
                 const t = try self.typeFromSpliceValue(ctx, ast_unit, v, loc, null);
@@ -6065,7 +6067,7 @@ fn typeFromSpliceValue(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast,
             const fields = s.struct_field_pool.slice(sv.fields);
             // Create a struct type
             // Note: This creates an anonymous struct type. Named structs might need different handling if they have an original declaration.
-            var struct_fields = std.ArrayList(types.TypeStore.StructFieldArg){};
+            var struct_fields = std.ArrayList(types.TypeStore.StructFieldArg).empty;
             defer struct_fields.deinit(self.gpa);
             for (fields) |fid| {
                 const f = s.StructField.get(fid);
@@ -6087,7 +6089,7 @@ fn typeFromSpliceValue(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast,
                         break :blk ts.tTypeError();
                     };
                     const caps = ast_unit.type_info.val_store.code_binding_pool.slice(code.captures);
-                    var new_captures = std.ArrayList(comp.ValueRows.CodeBinding){};
+                    var new_captures = std.ArrayList(comp.ValueRows.CodeBinding).empty;
                     defer new_captures.deinit(self.gpa);
                     for (caps) |cid| {
                         const b = ast_unit.type_info.val_store.CodeBinding.get(cid);
@@ -6163,7 +6165,7 @@ fn bindDeclPatternInScope(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.A
     const decl = ast_unit.exprs.Decl.get(did);
     if (decl.pattern.isNone()) return;
 
-    var names = std.ArrayList(ast.StrId){};
+    var names = std.ArrayList(ast.StrId).empty;
     defer names.deinit(self.gpa);
     try pattern_matching.collectPatternBindings(self, ast_unit, decl.pattern.unwrap(), &names);
     if (names.items.len == 0) return;
@@ -6839,7 +6841,7 @@ fn checkClosure(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: as
     _ = try ctx.symtab.push(ctx.symtab.currentId());
     defer ctx.symtab.pop();
 
-    var value_bindings = List(check_types.Binding){};
+    var value_bindings = List(check_types.Binding).empty;
     defer {
         self.destroyComptimeBindings(value_bindings.items);
         value_bindings.deinit(self.gpa);

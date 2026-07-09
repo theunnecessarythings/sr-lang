@@ -21,7 +21,7 @@ pub const Interpreter = struct {
     ast: *ast.Ast,
     symtab: ?*@import("symbols.zig").SymbolStore,
     compilation_unit: ?*@import("package.zig").CompilationUnit,
-    bindings: std.ArrayListUnmanaged(Binding) = .{},
+    bindings: std.ArrayListUnmanaged(Binding) = .empty,
     method_table: std.AutoHashMap(MethodKey, ast.ExprId),
     get_module_symtab: ?*const fn (*anyopaque, u32) ?*@import("symbols.zig").SymbolStore = null,
     checker_context: *anyopaque = undefined,
@@ -138,7 +138,7 @@ pub const Interpreter = struct {
         defer name_set.deinit(self.allocator);
         try self.collectSpliceNamesInExpr(block_id, &name_set);
 
-        var captures = std.ArrayList(ValueRows.CodeBinding){};
+        var captures = std.ArrayListUnmanaged(ValueRows.CodeBinding).empty;
         defer captures.deinit(self.allocator);
 
         var it = name_set.iterator();
@@ -272,15 +272,15 @@ pub const Interpreter = struct {
 
     fn evalMlirBlock(self: *Interpreter, expr: ast.ExprId) !Value {
         const block = self.ast.exprs.get(.MlirBlock, expr);
-        var buf = std.ArrayListUnmanaged(u8){};
-        defer buf.deinit(self.allocator);
-        const w = buf.writer(self.allocator);
+        var stream = std.Io.Writer.Allocating.init(self.allocator);
+        defer stream.deinit();
+        const w = &stream.writer;
         const s = self.store();
 
         for (self.ast.exprs.mlir_piece_pool.slice(block.pieces)) |pid| {
             const piece = self.ast.exprs.MlirPiece.get(pid);
             switch (piece.kind) {
-                .literal => try buf.appendSlice(self.allocator, self.ast.exprs.strs.get(piece.text)),
+                .literal => try w.writeAll(self.ast.exprs.strs.get(piece.text)),
                 .splice => {
                     const v = try self.lookup(piece.text) orelse return Error.BindingNotFound;
                     switch (s.kind(v)) {
@@ -294,7 +294,7 @@ pub const Interpreter = struct {
                 },
             }
         }
-        const str_val = self.ast.type_info.store.strs.intern(buf.items);
+        const str_val = self.ast.type_info.store.strs.intern(stream.written());
         const ts = self.ast.type_info.store;
 
         const ty = switch (block.kind) {
@@ -415,7 +415,7 @@ pub const Interpreter = struct {
 
     fn evalTensorType(self: *Interpreter, row: ast.Rows.TensorType) !Value {
         const elem = try self.typeIdFromTypeExpr(row.elem);
-        var dims = std.ArrayList(usize){};
+        var dims = std.ArrayListUnmanaged(usize).empty;
         defer dims.deinit(self.allocator);
         const s = self.store();
         for (self.ast.exprs.expr_pool.slice(row.shape)) |eid| {
@@ -715,7 +715,7 @@ pub const Interpreter = struct {
 
                     const seq = s.get(.Sequence, stmts_v);
                     const items = s.val_pool.slice(seq.elems);
-                    var stmts = std.ArrayList(ast.StmtId){};
+                    var stmts = std.ArrayListUnmanaged(ast.StmtId).empty;
                     defer stmts.deinit(b.interp.allocator);
                     for (items) |sv| try stmts.append(b.interp.allocator, try b.buildStmt(sv));
 
@@ -914,7 +914,7 @@ pub const Interpreter = struct {
         const dst_store = self.store();
         const src_caps = src_store.code_binding_pool.slice(code.captures);
         if (src_caps.len > 0) {
-            var new_captures = std.ArrayList(comptime_mod.ValueRows.CodeBinding){};
+            var new_captures = std.ArrayList(comptime_mod.ValueRows.CodeBinding).empty;
             defer new_captures.deinit(self.allocator);
             for (src_caps) |cid| {
                 const b = src_store.CodeBinding.get(cid);
@@ -1389,7 +1389,7 @@ pub const Interpreter = struct {
     }
 
     fn makeTypeIdSequence(self: *Interpreter, ids: []const types.TypeId) !Value {
-        var list = std.ArrayListUnmanaged(Value){};
+        var list = std.ArrayListUnmanaged(Value).empty;
         defer list.deinit(self.allocator);
         try list.ensureTotalCapacity(self.allocator, ids.len);
         for (ids) |id| list.appendAssumeCapacity(self.store().add(.Int, .{ .value = id.toRaw() }));
@@ -1398,7 +1398,7 @@ pub const Interpreter = struct {
     }
 
     fn makeUsizeSequence(self: *Interpreter, dims: []const usize) !Value {
-        var list = std.ArrayListUnmanaged(Value){};
+        var list = std.ArrayListUnmanaged(Value).empty;
         defer list.deinit(self.allocator);
         try list.ensureTotalCapacity(self.allocator, dims.len);
         for (dims) |dim| list.appendAssumeCapacity(self.store().add(.Int, .{ .value = @intCast(dim) }));
@@ -1407,7 +1407,7 @@ pub const Interpreter = struct {
     }
 
     fn makeFieldInfoSequence(self: *Interpreter, fields: []const types.FieldId, keys: types.TypeStore.TypeInfoKeys) !Value {
-        var list = std.ArrayListUnmanaged(Value){};
+        var list = std.ArrayListUnmanaged(Value).empty;
         defer list.deinit(self.allocator);
         try list.ensureTotalCapacity(self.allocator, fields.len);
         for (fields) |fid| {
@@ -1423,7 +1423,7 @@ pub const Interpreter = struct {
     }
 
     fn makeEnumMemberSequence(self: *Interpreter, members: []const types.EnumMemberId, keys: types.TypeStore.TypeInfoKeys) !Value {
-        var list = std.ArrayListUnmanaged(Value){};
+        var list = std.ArrayListUnmanaged(Value).empty;
         defer list.deinit(self.allocator);
         try list.ensureTotalCapacity(self.allocator, members.len);
         for (members) |mid| {
@@ -1488,7 +1488,7 @@ pub const Interpreter = struct {
         defer {
             if (cross_ast) self.ast = saved_ast;
         }
-        var matches = std.ArrayListUnmanaged(Binding){};
+        var matches = std.ArrayListUnmanaged(Binding).empty;
         defer {
             matches.deinit(self.allocator);
         }
@@ -1777,7 +1777,7 @@ pub const Interpreter = struct {
 
     fn evalMatch(self: *Interpreter, row: ast.Rows.Match) !Value {
         const scrut = try self.evalExpr(row.expr);
-        var matches = std.ArrayListUnmanaged(Binding){};
+        var matches = std.ArrayListUnmanaged(Binding).empty;
         defer matches.deinit(self.allocator);
 
         for (self.ast.exprs.arm_pool.slice(row.arms)) |id| {
@@ -1816,7 +1816,7 @@ pub const Interpreter = struct {
     }
 
     fn runLoop(self: *Interpreter, pat: ast.PatternId, body: ast.ExprId, val: Value) !bool {
-        var matches = std.ArrayListUnmanaged(Binding){};
+        var matches = std.ArrayListUnmanaged(Binding).empty;
         defer matches.deinit(self.allocator);
         if (!try self.matchPattern(self.ast, val, pat, &matches)) return false;
         var scope = try self.pushBindings(&matches);
@@ -1827,7 +1827,7 @@ pub const Interpreter = struct {
     }
 
     fn evalWhile(self: *Interpreter, row: ast.Rows.While) !Value {
-        var matches = std.ArrayListUnmanaged(Binding){};
+        var matches = std.ArrayListUnmanaged(Binding).empty;
         defer matches.deinit(self.allocator);
         while (true) {
             matches.clearRetainingCapacity();
@@ -2368,7 +2368,7 @@ pub const Interpreter = struct {
     };
 
     pub fn pushBindings(self: *Interpreter, matches: *std.ArrayListUnmanaged(Binding)) !BindingScope {
-        var s = BindingScope{ .interp = self, .prev_len = self.bindings.items.len, .replaced = .{} };
+        var s = BindingScope{ .interp = self, .prev_len = self.bindings.items.len, .replaced = .empty };
         errdefer s.deinit();
         for (matches.items) |*b| {
             const v = b.value;

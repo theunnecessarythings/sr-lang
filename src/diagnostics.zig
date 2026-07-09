@@ -1,5 +1,6 @@
 const std = @import("std");
 const Loc = @import("lexer.zig").Token.Loc;
+const sync = @import("sync.zig");
 const Tag = @import("lexer.zig").Token.Tag;
 const Context = @import("compile.zig").Context;
 const BinaryOp = @import("ast.zig").BinaryOp;
@@ -27,25 +28,23 @@ const BinOpCount = std.meta.fields(BinaryOp).len;
 const UnOpCount = std.meta.fields(UnaryOp).len;
 const TypeKindCount = std.meta.fields(TypeKind).len;
 
-fn payloadTag() type {
-    const total_fields = TagCount + BinOpCount + UnOpCount + TypeKindCount;
-    return @Type(.{
-        .@"enum" = .{
-            .tag_type = std.math.IntFittingRange(0, total_fields - 1),
-            .fields = &generateFields(total_fields),
-            .decls = &.{},
-            .is_exhaustive = true,
-        },
-    });
-}
-
-fn generateFields(comptime N: usize) [N]std.builtin.Type.EnumField {
-    var fields: [N]std.builtin.Type.EnumField = undefined;
+fn generateEnumData(comptime N: usize) struct { [N][]const u8, [N]std.math.IntFittingRange(0, N - 1) } {
+    const IntType = std.math.IntFittingRange(0, N - 1);
+    var names: [N][]const u8 = undefined;
+    var values: [N]IntType = undefined;
     const all_source_fields = std.meta.fields(Tag) ++ std.meta.fields(BinaryOp) ++ std.meta.fields(UnaryOp) ++ std.meta.fields(TypeKind);
     inline for (all_source_fields, 0..) |f, i| {
-        fields[i] = .{ .name = f.name, .value = i };
+        names[i] = f.name;
+        values[i] = i;
     }
-    return fields;
+    return .{ names, values };
+}
+
+fn payloadTag() type {
+    const total_fields = TagCount + BinOpCount + UnOpCount + TypeKindCount;
+    const IntType = std.math.IntFittingRange(0, total_fields - 1);
+    const data = generateEnumData(total_fields);
+    return @Enum(IntType, .exhaustive, &data.@"0", &data.@"1");
 }
 
 const PayloadTag = payloadTag();
@@ -697,9 +696,9 @@ pub const Message = struct {
 
 pub const Diagnostics = struct {
     allocator: std.mem.Allocator,
-    messages: std.ArrayListUnmanaged(Message) = .{},
-    notes: std.ArrayListUnmanaged(Note) = .{},
-    mutex: std.Thread.Mutex = .{},
+    messages: std.ArrayListUnmanaged(Message) = .empty,
+    notes: std.ArrayListUnmanaged(Note) = .empty,
+    mutex: sync.Mutex = .{},
     type_store: ?*types.TypeStore = null,
     str_interner: ?*types.StringInterner = null,
 
@@ -836,25 +835,25 @@ pub const Diagnostics = struct {
     }
 
     pub fn messageToOwnedSlice(self: *Diagnostics, allocator: std.mem.Allocator, message: Message) ![]u8 {
-        var buf = std.ArrayList(u8){};
-        defer buf.deinit(allocator);
+        var buf = std.Io.Writer.Allocating.init(allocator);
+        defer buf.deinit();
         if (self.type_store == null or self.str_interner == null) {
-            try buf.writer(allocator).writeAll("Internal Error: Diagnostic context missing");
-            return buf.toOwnedSlice(allocator);
+            try buf.writer.writeAll("Internal Error: Diagnostic context missing");
+            return buf.toOwnedSlice();
         }
-        try writeInterpolated(buf.writer(allocator), diagnosticMessageFmt(message.code), message.payload, .{ .type_store = self.type_store.?, .str_interner = self.str_interner.?, .gpa = allocator });
-        return buf.toOwnedSlice(allocator);
+        try writeInterpolated(&buf.writer, diagnosticMessageFmt(message.code), message.payload, .{ .type_store = self.type_store.?, .str_interner = self.str_interner.?, .gpa = allocator });
+        return buf.toOwnedSlice();
     }
 
     pub fn noteToOwnedSlice(self: *Diagnostics, allocator: std.mem.Allocator, note: Note) ![]u8 {
-        var buf = std.ArrayList(u8){};
-        defer buf.deinit(allocator);
+        var buf = std.Io.Writer.Allocating.init(allocator);
+        defer buf.deinit();
         if (self.type_store == null or self.str_interner == null) {
-            try buf.writer(allocator).writeAll("Internal Error: Diagnostic context missing");
-            return buf.toOwnedSlice(allocator);
+            try buf.writer.writeAll("Internal Error: Diagnostic context missing");
+            return buf.toOwnedSlice();
         }
-        try writeInterpolated(buf.writer(allocator), diagnosticNoteFmt(note.code), note.payload, .{ .type_store = self.type_store.?, .str_interner = self.str_interner.?, .gpa = allocator });
-        return buf.toOwnedSlice(allocator);
+        try writeInterpolated(&buf.writer, diagnosticNoteFmt(note.code), note.payload, .{ .type_store = self.type_store.?, .str_interner = self.str_interner.?, .gpa = allocator });
+        return buf.toOwnedSlice();
     }
 
     pub fn emit(self: *Diagnostics, context: *Context, writer: anytype) !void {
@@ -863,14 +862,14 @@ pub const Diagnostics = struct {
 
     pub fn emitStyled(self: *Diagnostics, context: *Context, writer: anytype, color: bool) !void {
         const ctx = DiagnosticContext{ .type_store = context.type_store, .str_interner = context.interner, .gpa = context.gpa };
-        var source_map = std.AutoArrayHashMap(usize, []const u8).init(context.gpa);
-        defer source_map.deinit();
+        var source_map: std.array_hash_map.Auto(usize, []const u8) = .empty;
+        defer source_map.deinit(context.gpa);
 
         for (self.messages.items) |m| {
             if (m.severity != .err) continue; // Simplification: print errors primarily, can change logic if needed
             const src = source_map.get(m.loc.file_id) orelse blk: {
                 const d = try context.source_manager.read(m.loc.file_id);
-                try source_map.put(m.loc.file_id, d);
+                try source_map.put(context.gpa, m.loc.file_id, d);
                 break :blk d;
             };
             const lc = lineCol(src, m.loc.start);

@@ -11,7 +11,7 @@ const SymbolStore = compiler.symbols.SymbolStore;
 const gpa = testing.allocator;
 
 fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void {
-    var context = compiler.compile.Context.init(gpa);
+    var context = compiler.compile.Context.init(gpa, std.testing.io);
     defer context.deinit();
 
     var parser = Parser.init(gpa, src, 0, context.diags, &context);
